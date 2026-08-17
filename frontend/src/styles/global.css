@@ -1,0 +1,95 @@
+/* Global resets only. Everything visual belongs to the MUI theme -- this file
+   handles what a theme cannot reach: the document root and native scrollbars. */
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+  padding: 0;
+}
+
+/* Prevent layout shift when a long page appears and the scrollbar arrives. */
+html {
+  scrollbar-gutter: stable;
+}
+
+*::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+*::-webkit-scrollbar-thumb {
+  background-color: rgba(128, 128, 128, 0.4);
+  border-radius: 4px;
+}
+
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+/* ---------------------------------------------------------------- print -- */
+
+/* "Export PDF" goes through the browser's own print-to-PDF rather than a PDF
+   library, so these rules decide what the exported document contains. Without
+   them the output is a screenshot of the application: sidebar, app bar, filter
+   controls and all.
+
+   Elements opt out with `data-print="hide"`, which keeps the decision next to
+   the component instead of listing selectors here. */
+@media print {
+  @page {
+    size: A4 landscape;
+    margin: 12mm;
+  }
+
+  body {
+    background: #fff;
+  }
+
+  [data-print='hide'],
+  .MuiDrawer-root,
+  .MuiAppBar-root,
+  .MuiTablePagination-root,
+  .MuiSnackbar-root,
+  .MuiDialog-root {
+    display: none !important;
+  }
+
+  /* The layout offsets the main column to clear a sidebar that is no longer
+     there, and caps it to a scrolling viewport that a printer does not have. */
+  main {
+    width: 100% !important;
+    margin: 0 !important;
+    padding: 0 !important;
+    min-height: auto !important;
+  }
+
+  /* Cards and tables print as outlines; a filled background wastes toner and
+     renders as grey mush on a monochrome printer. */
+  .MuiPaper-root,
+  .MuiCard-root {
+    box-shadow: none !important;
+    border: 1px solid #ccc !important;
+    background: #fff !important;
+  }
+
+  /* A table that scrolls horizontally on screen must wrap, not clip, on paper. */
+  .MuiTableContainer-root,
+  [data-print='table'] {
+    overflow: visible !important;
+  }
+
+  table {
+    page-break-inside: auto;
+    font-size: 10px;
+  }
+
+  tr {
+    page-break-inside: avoid;
+  }
+
+  thead {
+    display: table-header-group;
+  }
+}

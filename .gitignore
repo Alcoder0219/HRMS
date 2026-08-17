@@ -1,0 +1,55 @@
+# Repository root ignores.
+#
+# The backend and frontend each have their own .gitignore for node_modules,
+# build output and .env files. This file covers what sits at the ROOT, which
+# nothing was excluding: the two directories here hold live production data,
+# not source code, and publishing either one is a data breach rather than an
+# untidy repository.
+
+# ---------------------------------------------------------------- secrets --
+# Also covered per-package, repeated here so a root-level file cannot slip out.
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# ------------------------------------------------- employee documents (PII) --
+# Uploaded identity documents: Aadhaar, PAN, passport and driving licence
+# scans of real people, stored outside the served tree precisely because they
+# must not be publicly readable. They belong on the server's disk and in
+# backups, never in source control.
+attachments/
+
+# ------------------------------------------------ database dumps (PII + creds) --
+# Mongo exports taken before migrations. These carry employee records, salary
+# structures, payslips and audit logs -- and users.json, refreshtokens.json and
+# verificationtokens.json, which hold password hashes and session tokens. A
+# pushed refresh token is an account takeover, and a deleted commit does not
+# un-publish it.
+backups/
+
+# ------------------------------------------------------------- dependencies --
+node_modules/
+
+# ------------------------------------------------------------------- build --
+dist/
+dist-ssr/
+build/
+
+# -------------------------------------------------------------------- logs --
+logs/
+*.log
+npm-debug.log*
+yarn-error.log*
+
+# ------------------------------------------------------------ uploads (PII) --
+# Avatars and documents written by the upload middleware at runtime.
+backend/uploads/
+
+# ------------------------------------------------------------------ editor --
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+*.swp

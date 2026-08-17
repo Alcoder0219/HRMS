@@ -1,0 +1,97 @@
+import os from 'node:os';
+import app from './app.js';
+import env from './config/env.js';
+import logger from './config/logger.js';
+import { connectDatabase, disconnectDatabase } from './config/database.js';
+
+let server;
+
+/**
+ * Every non-internal IPv4 address this machine answers on.
+ *
+ * Printed at boot so nobody has to run `ipconfig` to find out which address to
+ * give the rest of the office -- and so a machine with several interfaces
+ * (Wi-Fi and Ethernet both up) shows all of them.
+ */
+const lanAddresses = () =>
+  Object.values(os.networkInterfaces())
+    .flat()
+    .filter((entry) => entry && entry.family === 'IPv4' && !entry.internal)
+    .map((entry) => entry.address);
+
+const start = async () => {
+  // Connect before listening: a server that accepts traffic without a database
+  // just converts every request into a 500.
+  await connectDatabase();
+
+  // Let the mailer read SMTP settings configured in Administration, falling
+  // back to the environment. Wired here rather than imported inside the mailer
+  // so the helper stays usable in scripts and tests that never boot a server.
+  const { default: settingsService } = await import('./services/admin/settings.service.js');
+  const { useMailConfigResolver } = await import('./helpers/mailer.helper.js');
+  useMailConfigResolver(() => settingsService.resolveMailConfig(null));
+
+  // Binding to env.host (0.0.0.0 by default) is what accepts connections from
+  // other machines. Omitting the argument binds to every interface too, but
+  // making it explicit means it can be locked down to one interface in
+  // production without a code change.
+  server = app.listen(env.port, env.host, () => {
+    const addresses = lanAddresses();
+
+    logger.info(`HRMS API listening on ${env.host}:${env.port}`, {
+      environment: env.nodeEnv,
+      apiPrefix: env.apiPrefix,
+      network: addresses.map((address) => `http://${address}:${env.port}`),
+    });
+
+    console.log(`\n  HRMS API  ${env.nodeEnv}`);
+    console.log(`  Local     http://localhost:${env.port}${env.apiPrefix}`);
+    addresses.forEach((address) =>
+      console.log(`  Network   http://${address}:${env.port}${env.apiPrefix}`),
+    );
+    console.log('');
+  });
+};
+
+/**
+ * Graceful shutdown: stop accepting connections, let in-flight requests finish,
+ * then close MongoDB. Without this, a rolling deploy can abort a payroll write
+ * midway through.
+ */
+const shutdown = async (signal) => {
+  logger.info(`${signal} received, shutting down`);
+
+  const forceExit = setTimeout(() => {
+    logger.error('Graceful shutdown timed out, forcing exit');
+    process.exit(1);
+  }, 15_000).unref();
+
+  try {
+    if (server) await new Promise((resolve) => server.close(resolve));
+    await disconnectDatabase();
+    clearTimeout(forceExit);
+    process.exit(0);
+  } catch (error) {
+    logger.error('Error during shutdown', error);
+    process.exit(1);
+  }
+};
+
+['SIGTERM', 'SIGINT'].forEach((signal) => process.on(signal, () => shutdown(signal)));
+
+process.on('unhandledRejection', (reason) => {
+  logger.error('Unhandled promise rejection', reason);
+  shutdown('unhandledRejection');
+});
+
+process.on('uncaughtException', (error) => {
+  // The process state is undefined after this point, so it is logged and the
+  // process is replaced rather than kept alive.
+  logger.error('Uncaught exception', error);
+  shutdown('uncaughtException');
+});
+
+start().catch((error) => {
+  logger.error('Failed to start server', error);
+  process.exit(1);
+});
