@@ -17,17 +17,26 @@ Replace every placeholder — `PROJECT_ID`, `BACKEND_URL`, `FRONTEND_URL`, `MONG
 ## Architecture
 
 ```
-GitHub  ──push──▶  Cloud Build  ──▶  Artifact Registry  ──▶  Cloud Run
-                        │                                       │
-              backend/** │ frontend/**                  hrms-frontend (public)
-                                                             │  nginx
-                                                             │  /api, /uploads
-                                                             ▼
-                                                        hrms-backend
-                                                             │
-                                                             ├──▶ MongoDB Atlas
-                                                             └──▶ File storage
+GitHub ──push──▶ Cloud Build ─── docker build
+   backend/**  │                      ↓
+   frontend/** │                 docker push :SHA      ──▶ Artifact Registry
+               │                      ↓                         (asia-south1)
+               │                 docker push :latest    ──▶
+               │                      ↓
+               └───────────────▶ gcloud run deploy --image :SHA
+                                      ↓
+                                  Cloud Run
+                                      │
+                        hrms-frontend (public, nginx)
+                                      │  proxies /api, /uploads
+                                      ▼
+                                 hrms-backend
+                                      │
+                                      ├──▶ MongoDB Atlas
+                                      └──▶ File storage
 ```
+
+The push steps come **before** the deploy, deliberately: Cloud Build's `images:` field only uploads once every step has finished, so a deploy relying on it looks for an image that is not in the registry yet.
 
 The browser reaches `hrms-frontend` only. `hrms-backend` is reached through the proxy.
 
@@ -67,9 +76,10 @@ gcloud billing projects describe PROJECT_ID
 gcloud services enable \
   run.googleapis.com \
   cloudbuild.googleapis.com \
-  artifactregistry.googleapis.com \
-  secretmanager.googleapis.com
+  artifactregistry.googleapis.com
 ```
+
+Secret Manager is deliberately **not** enabled. Application configuration is entered directly on the Cloud Run service — see [Environment variables](#10-environment-variables).
 
 ---
 
@@ -128,10 +138,13 @@ gcloud projects add-iam-policy-binding PROJECT_ID \
 gcloud projects add-iam-policy-binding PROJECT_ID \
   --member="serviceAccount:${CB_SA}" --role="roles/iam.serviceAccountUser"
 
-# Push images.
+# Push images. Required by the explicit `docker push` steps in the pipeline --
+# without it the build succeeds and the push fails with a 403.
 gcloud projects add-iam-policy-binding PROJECT_ID \
   --member="serviceAccount:${CB_SA}" --role="roles/artifactregistry.writer"
 ```
+
+No `secretmanager.secretAccessor` grant is needed: configuration is held as plain environment variables on the service, which the runtime reads without extra permission.
 
 **Impact:** `run.admin` lets any Cloud Build job deploy or delete any Cloud Run service in the project. That is standard for a deployment pipeline, but it means write access to this repository is effectively deploy access to production. For tighter separation, create a dedicated build service account with `roles/run.developer` scoped to these two services and set it on each trigger.
 
@@ -169,30 +182,39 @@ A commit touching both directories fires both triggers, which is correct.
 
 ## 8. Backend deployment
 
-Secrets must exist before the first deploy — see [Secret Manager](#11-secret-manager). Then:
+The first build creates the service. It will start, then **fail its health check** — `MONGODB_URI`, `JWT_ACCESS_SECRET` and `JWT_REFRESH_SECRET` are mandatory and are not yet set, so the process exits on a missing variable. That is expected and is the app refusing to run half-configured.
 
 ```bash
 gcloud builds submit --config=cloudbuild.backend.yaml --substitutions=_TAG=manual .
 ```
 
-Attach the secrets and configuration to the service **once**. These persist across deploys, which is why `cloudbuild.backend.yaml` does not repeat them:
+Now add the application variables **once**, by hand:
+
+**Cloud Run → `hrms-backend` → Edit & Deploy New Revision → Containers → Variables & Secrets → Environment variables**
+
+| Name | Value |
+|---|---|
+| `MONGODB_URI` | your Atlas connection string |
+| `JWT_ACCESS_SECRET` | generate: `openssl rand -base64 48` |
+| `JWT_REFRESH_SECRET` | generate a **different** one |
+| `CLIENT_URL` | the frontend URL (step 9) |
+| `COOKIE_SECURE` | `true` |
+| `COOKIE_SAME_SITE` | `lax` |
+| `REQUIRE_EMAIL_VERIFICATION` | `true` |
+| `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASSWORD`, `MAIL_FROM` | your mail provider |
+
+Deploy the revision. It will boot.
+
+**These survive every future deploy.** The pipeline uses `--update-env-vars`, which merges — it sets only `NODE_ENV`, `LOG_TO_FILE` and `TRUST_PROXY` and leaves everything else alone. (`--set-env-vars` would replace the whole environment and delete them; that is why it is not used.)
+
+The same works from the CLI if you prefer:
 
 ```bash
 gcloud run services update hrms-backend --region=asia-south1 \
-  --update-secrets=MONGODB_URI=hrms-mongodb-uri:latest,\
-JWT_ACCESS_SECRET=hrms-jwt-access-secret:latest,\
-JWT_REFRESH_SECRET=hrms-jwt-refresh-secret:latest,\
-SMTP_PASSWORD=hrms-smtp-password:latest \
-  --update-env-vars=\
-CLIENT_URL=FRONTEND_URL,\
-COOKIE_SECURE=true,\
-COOKIE_SAME_SITE=lax,\
-REQUIRE_EMAIL_VERIFICATION=true,\
-SMTP_HOST=smtp.example.com,\
-SMTP_PORT=587,\
-SMTP_USER=no-reply@example.com,\
-[email protected]
+  --update-env-vars=MONGODB_URI='...',JWT_ACCESS_SECRET='...',JWT_REFRESH_SECRET='...'
 ```
+
+Note this puts the values in your shell history and in the command's audit log entry. The console avoids both.
 
 Get the URL:
 
@@ -228,24 +250,39 @@ The first deploy is necessarily circular: backend → frontend → update backen
 
 `VITE_*` values are compiled into the JavaScript at build time. Setting one on the Cloud Run **service** does nothing.
 
-### Backend — Cloud Run env vars (not secret)
+**Where each value comes from.** Three variables are owned by the pipeline and reapplied on every deploy. Everything else is owned by you, entered once in the Cloud Run console, and never touched by a deploy — the pipeline uses `--update-env-vars`, which merges into the existing environment rather than replacing it.
+
+### Backend — set by the pipeline (do not edit by hand; a deploy overwrites them)
 
 | Variable | Value | Notes |
 |---|---|---|
-| `NODE_ENV` | `production` | Set in the image |
-| `PORT` | *(unset)* | Cloud Run injects it |
-| `HOST` | `0.0.0.0` | Set in the image |
-| `TRUST_PROXY` | `2` | Cloud Run's frontend + nginx |
+| `NODE_ENV` | `production` | Also baked into the image |
 | `LOG_TO_FILE` | `false` | Log to stdout for Cloud Logging |
+| `TRUST_PROXY` | `2` | Cloud Run's frontend + nginx |
+
+### Backend — set by you, in the console (survive every deploy)
+
+**Cloud Run → `hrms-backend` → Edit & Deploy New Revision → Containers → Variables & Secrets**
+
+| Variable | Value | Sensitive |
+|---|---|---|
+| `MONGODB_URI` | Atlas connection string | **Yes** — contains the DB password |
+| `JWT_ACCESS_SECRET` | `openssl rand -base64 48` | **Yes** — forges any session |
+| `JWT_REFRESH_SECRET` | a different one | **Yes** — same, long-lived |
+| `SMTP_PASSWORD` | mail relay password | **Yes** |
 | `CLIENT_URL` | `FRONTEND_URL` | Email links; auto-added to the CORS allowlist |
-| `API_PREFIX` | `/api/v1` | Must match `VITE_API_URL` |
 | `COOKIE_SECURE` | `true` | |
 | `COOKIE_SAME_SITE` | `lax` | `none` only for cross-origin |
-| `ATTACHMENTS_DIR` | `/app/data/attachments` | **Ephemeral** — see §15 |
-| `UPLOAD_DIR` | `/app/data/uploads` | **Ephemeral** — see §15 |
 | `REQUIRE_EMAIL_VERIFICATION` | `true` | |
+| `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `MAIL_FROM` | your mail provider | |
+| `API_PREFIX` | `/api/v1` | Optional; must match `VITE_API_URL` |
+| `ATTACHMENTS_DIR` | `/app/data/attachments` | Image default. **Ephemeral** — see §15 |
+| `UPLOAD_DIR` | `/app/data/uploads` | Image default. **Ephemeral** — see §15 |
 | `MAX_ACTIVE_SESSIONS`, `RATE_LIMIT_*`, `AUTH_RATE_LIMIT_*`, `BCRYPT_SALT_ROUNDS`, `JWT_*_EXPIRES_IN`, `JWT_ISSUER`, `JWT_AUDIENCE` | defaults are sane | Override only as needed |
-| `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `MAIL_FROM` | your mail provider | Password is a secret |
+
+`PORT` and `HOST` are absent from both tables on purpose: Cloud Run injects `PORT`, and setting it by hand will break the deploy.
+
+Values marked sensitive are stored on the Cloud Run service itself. Anyone with `roles/run.viewer` on the project can read them in the console, and they appear in the revision's YAML. That is the trade for not using a secrets vault — acceptable for a small trusted team, worth revisiting if project access widens.
 
 ### Frontend
 
@@ -257,41 +294,35 @@ The first deploy is necessarily circular: backend → frontend → update backen
 
 ---
 
-## 11. Secret Manager
+## 11. Sensitive configuration
 
-Create secrets from a file, never as a shell argument — a `--data` flag lands in your shell history:
+**No secrets vault is used.** `MONGODB_URI`, `JWT_ACCESS_SECRET`, `JWT_REFRESH_SECRET` and `SMTP_PASSWORD` are ordinary Cloud Run environment variables, entered by hand in the console as described in [§10](#10-environment-variables). The pipeline never reads or writes them.
 
-```bash
-printf '%s' 'YOUR_MONGO_URI'        > /tmp/s && gcloud secrets create hrms-mongodb-uri        --data-file=/tmp/s --replication-policy=automatic
-printf '%s' "$(openssl rand -base64 48)" > /tmp/s && gcloud secrets create hrms-jwt-access-secret  --data-file=/tmp/s --replication-policy=automatic
-printf '%s' "$(openssl rand -base64 48)" > /tmp/s && gcloud secrets create hrms-jwt-refresh-secret --data-file=/tmp/s --replication-policy=automatic
-printf '%s' 'YOUR_SMTP_PASSWORD'    > /tmp/s && gcloud secrets create hrms-smtp-password      --data-file=/tmp/s --replication-policy=automatic
-rm -f /tmp/s
-```
-
-Generate the JWT secrets **on your own machine**, as above. They are not in this repository and must never be.
-
-Grant the runtime service account read access:
+Generate the JWT secrets **on your own machine** and paste them into the console:
 
 ```bash
-PROJECT_NUMBER=$(gcloud projects describe PROJECT_ID --format='value(projectNumber)')
-RUN_SA="${PROJECT_NUMBER}-compute@developer.gserviceaccount.com"
-
-for s in hrms-mongodb-uri hrms-jwt-access-secret hrms-jwt-refresh-secret hrms-smtp-password; do
-  gcloud secrets add-iam-policy-binding $s \
-    --member="serviceAccount:${RUN_SA}" --role="roles/secretmanager.secretAccessor"
-done
+openssl rand -base64 48   # JWT_ACCESS_SECRET
+openssl rand -base64 48   # JWT_REFRESH_SECRET  (must differ)
 ```
 
-### Secret vs. plain env var
+They are not in this repository and must never be.
 
-| Value | Secret Manager? | Why |
+### What this trade costs you
+
+| | Env vars on the service (current) | A secrets vault |
 |---|---|---|
-| `MONGODB_URI` | **Yes** | Contains the database password |
-| `JWT_ACCESS_SECRET` | **Yes** | Forges any user's session |
-| `JWT_REFRESH_SECRET` | **Yes** | Same, long-lived |
-| `SMTP_PASSWORD` | **Yes** | Mail-relay credential |
-| `CLIENT_URL`, `TRUST_PROXY`, `NODE_ENV`, `COOKIE_*`, `LOG_*`, rate limits | No | Not sensitive; visible in the console anyway |
+| Visible to | Anyone with `roles/run.viewer` | Only `secretAccessor` holders |
+| Appears in revision YAML | Yes | No — only a reference |
+| Rotation | Edit + deploy a revision | New version, no redeploy |
+| Access audit trail | No | Yes, per access |
+| Setup | None | Extra API, IAM, cost |
+
+Reasonable for a small trusted team. Worth revisiting if project access widens beyond the people who would be allowed to read the payroll database directly anyway — a `run.viewer` grant is enough to read the Atlas password today.
+
+Two habits that matter given this choice:
+
+- **Use the console, not the CLI**, for these values. A `gcloud run services update --update-env-vars=MONGODB_URI=...` lands in your shell history and in the command's audit log entry.
+- **Restrict `roles/run.viewer`** on this project to people who should see production credentials.
 
 **Rotating a JWT secret signs out every user immediately.** Existing tokens fail verification. Do it deliberately.
 
@@ -303,7 +334,7 @@ Use MongoDB Atlas. Cloud Run has no static outbound IP by default, so Atlas IP a
 
 Two options:
 
-**A — Allow all, rely on credentials + TLS (simplest).** Atlas → Network Access → `0.0.0.0/0`. Security rests entirely on the connection string, which is why it is in Secret Manager. Acceptable for many deployments; understand that it is a real trade.
+**A — Allow all, rely on credentials + TLS (simplest).** Atlas → Network Access → `0.0.0.0/0`. Security then rests entirely on the connection string — which, in this setup, is a plain environment variable readable by anyone with `roles/run.viewer`. Those two decisions compound: keep that role tight, or choose B.
 
 **B — Serverless VPC connector + Cloud NAT (recommended for PII).** Gives Cloud Run a fixed egress IP you can allowlist:
 
@@ -481,7 +512,9 @@ gcloud builds log --stream BUILD_ID
 |---|---|---|
 | Revision fails: "container failed to listen on PORT" | App bound the wrong port | Do not set `PORT`; Cloud Run injects it |
 | Revision fails immediately, `MongoServerSelectionError` in logs | Atlas unreachable or wrong URI | Check the secret and Atlas network access (§12). Working as designed — it refuses to serve without a DB |
-| Boot error `Missing required environment variable` | A mandatory var is unset | The message names it. Check `--update-secrets` ran |
+| Boot error `Missing required environment variable` | A mandatory var is unset | The message names it. Add it under Variables & Secrets (§10) |
+| Variables disappeared after a deploy | A deploy used `--set-env-vars`, which replaces the whole environment | The pipeline uses `--update-env-vars`, which merges. Do not change it back |
+| `Image ... not found` at the deploy step | The image was not pushed before the deploy ran | Fixed: the pipeline now has explicit `push-immutable` / `push-latest` steps before `deploy`. Do not rely on `images:` for ordering |
 | Every `/api` route 404s | `BACKEND_URL` has a trailing slash | Remove it; nginx strips `/api/` otherwise |
 | 502 from the frontend on `/api` | Backend rejecting the proxy, or down | `curl BACKEND_URL/health` directly |
 | Login works, user logged out ~15 min later | Refresh cookie rejected | Should not happen when proxied. If direct: needs `SameSite=none` + `Secure` (§13) |
@@ -526,10 +559,11 @@ Triggers evaluate their included-files filter
    └─ frontend/** changed → deploy-frontend
    │
    ▼
-Cloud Build (per trigger)
-   ├─ docker build   (--cache-from :latest)
-   ├─ push :SHORT_SHA and :latest to Artifact Registry
-   └─ gcloud run deploy --image ...:SHORT_SHA
+Cloud Build (per trigger), steps in this exact order
+   ├─ 1. build           docker build --cache-from :latest, tags :SHORT_SHA + :latest
+   ├─ 2. push-immutable  docker push ...:SHORT_SHA   ◀── must precede the deploy
+   ├─ 3. push-latest     docker push ...:latest       (cache pointer only)
+   └─ 4. deploy          gcloud run deploy --image ...:SHORT_SHA
    │
    ▼
 Cloud Run creates a revision, health-checks it, shifts traffic

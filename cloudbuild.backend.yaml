@@ -2,10 +2,27 @@
 # HRMS API -- build, push, deploy.
 #
 # Triggered from GitHub on changes under backend/ (see DEPLOYMENT.md, "GitHub
-# configuration"). Nothing secret belongs in this file: it is committed to the
-# repository and visible to anyone with read access. MONGODB_URI and the JWT
-# secrets are attached to the Cloud Run service from Secret Manager, once, and
-# are not re-specified per deploy -- see `--update-secrets` in DEPLOYMENT.md.
+# configuration").
+#
+# ORDERING, which is the whole point of this file:
+#
+#   build -> push :TAG -> push :latest -> deploy
+#
+# The push steps are EXPLICIT. It is tempting to let the `images:` block at the
+# foot of this file do the pushing, but Cloud Build only uploads those once
+# every step has finished -- which is after `gcloud run deploy` has already run
+# and failed with "Image ... not found". `images:` is kept purely so the tags
+# are listed as build artifacts in the console; nothing here depends on it.
+#
+# CONFIGURATION IS NOT MANAGED HERE. Application values -- MONGODB_URI, the
+# JWT signing keys, CLIENT_URL, SMTP -- are entered by hand in the Cloud Run
+# console under Variables & Secrets. No external vault is involved and this
+# pipeline neither reads nor writes those values.
+#
+# That is why the deploy step uses --update-env-vars, which MERGES into the
+# service's existing environment. The replacing form would declare the whole
+# environment and delete every manually entered variable on each deploy, and
+# the next revision would then fail to boot on a missing required value.
 # ---------------------------------------------------------------------------
 
 substitutions:
@@ -21,10 +38,6 @@ options:
   logging: CLOUD_LOGGING_ONLY
   machineType: E2_HIGHCPU_8
 
-images:
-  - ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPOSITORY}/${_SERVICE}:${_TAG}
-  - ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPOSITORY}/${_SERVICE}:latest
-
 steps:
   # ------------------------------------------------------------------ build --
   # `latest` is tagged alongside the immutable SHA tag. Deploys always reference
@@ -37,6 +50,11 @@ steps:
       - --build-arg=BUILDKIT_INLINE_CACHE=1
       # Reuse layers from the previous image: node_modules is only reinstalled
       # when package-lock.json actually changed.
+      #
+      # Safe on the very first build, when no `latest` exists yet. BuildKit
+      # treats an unresolvable cache reference as "no cache available" and
+      # carries on; it is not an error, so this does not have to be removed
+      # for the first run and added back afterwards.
       - --cache-from=${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPOSITORY}/${_SERVICE}:latest
       - -t=${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPOSITORY}/${_SERVICE}:${_TAG}
       - -t=${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPOSITORY}/${_SERVICE}:latest
@@ -45,12 +63,28 @@ steps:
     env:
       - DOCKER_BUILDKIT=1
 
+  # ---------------------------------------------------------- push immutable --
+  # The tag the deploy step actually references. This must land in Artifact
+  # Registry before that step runs, which is the bug this ordering fixes.
+  - id: push-immutable
+    name: gcr.io/cloud-builders/docker
+    args:
+      - push
+      - ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPOSITORY}/${_SERVICE}:${_TAG}
+
+  # ------------------------------------------------------------- push latest --
+  # Only a cache pointer for the next build's --cache-from. Nothing is ever
+  # deployed from `latest`. Its layers are already in the registry from the
+  # push above, so this transfers almost nothing.
+  - id: push-latest
+    name: gcr.io/cloud-builders/docker
+    args:
+      - push
+      - ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPOSITORY}/${_SERVICE}:latest
+
   # ----------------------------------------------------------------- deploy --
-  # The `images:` block above pushes both tags; this step only deploys.
-  #
-  # Only non-sensitive configuration is set here. Secrets are bound to the
-  # service separately and persist across deploys, so they are never printed
-  # into a build log.
+  # Deploys the immutable SHA tag, never `latest`, so the running revision is
+  # always traceable to one commit.
   - id: deploy
     name: gcr.io/google.com/cloudsdktool/cloud-sdk:slim
     entrypoint: gcloud
@@ -81,7 +115,22 @@ steps:
       - --concurrency=80
       # Long enough for a payroll run or a large export to finish.
       - --timeout=300s
-      - --set-env-vars=NODE_ENV=production,LOG_TO_FILE=false,TRUST_PROXY=2
+      # MERGE, do not replace.
+      #
+      # --set-env-vars declares the container's entire environment, so anything
+      # not listed is deleted. With MONGODB_URI and the JWT secrets entered by
+      # hand in the console, that flag would strip them on the next push and
+      # the new revision would fail to boot on a missing required variable.
+      # --update-env-vars adds and overwrites only these three and leaves every
+      # other variable on the service untouched.
+      - --update-env-vars=NODE_ENV=production,LOG_TO_FILE=false,TRUST_PROXY=2
       - --labels=app=hrms,component=backend
+
+# Reporting only -- the tags are already in the registry by the time Cloud Build
+# reaches this. It makes them appear under the build's Artifacts, and re-pushing
+# an identical digest is a no-op. Ordering is owned by the push steps above.
+images:
+  - ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPOSITORY}/${_SERVICE}:${_TAG}
+  - ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPOSITORY}/${_SERVICE}:latest
 
 timeout: 1200s
