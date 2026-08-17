@@ -1,0 +1,134 @@
+# ---------------------------------------------------------------------------
+# HRMS web tier: static SPA + reverse proxy to the API.
+#
+# `.template` is not decoration. The nginx image's entrypoint runs envsubst
+# over /etc/nginx/templates/*.template into /etc/nginx/conf.d/ before nginx
+# starts, so ${BACKEND_URL} is filled from the environment at CONTAINER START.
+# That matters because the backend's URL is not known when this image is
+# built -- Cloud Run assigns it on first deploy.
+#
+# envsubst is given an explicit list of variable names by that script, so
+# nginx's own $uri, $host and friends are left alone.
+#
+# WHY PROXY AT ALL, instead of pointing the bundle straight at the API:
+# the app authenticates with an httpOnly refresh cookie. Served from one
+# origin and calling another, that cookie is third-party -- Safari blocks it
+# outright and Chrome is phasing it out, so sessions would silently stop
+# refreshing. Proxying keeps browser-visible traffic on a single origin, which
+# is also the deployment shape frontend/.env.production was already written
+# for (VITE_API_URL=/api/v1).
+# ---------------------------------------------------------------------------
+
+server {
+    # Cloud Run routes to $PORT, which is 8080. IPv6 too, so the container is
+    # reachable however the platform connects to it.
+    listen       8080;
+    listen       [::]:8080;
+    server_name  _;
+
+    root  /usr/share/nginx/html;
+    index index.html;
+
+    # Uploads flow through this proxy, so nginx's 1 MB default would reject
+    # them with a 413 before the API ever saw the request. Sized above the
+    # app's own ceiling (MAX_UPLOAD_SIZE_MB / MAX_ATTACHMENT_PDF_MB, both 10 MB
+    # by default) so the API stays the component that enforces the limit and
+    # returns a proper error.
+    client_max_body_size ${MAX_UPLOAD_SIZE};
+
+    # Don't advertise the exact nginx version to the internet.
+    server_tokens off;
+
+    gzip              on;
+    gzip_vary         on;
+    gzip_min_length   1024;
+    gzip_proxied      any;
+    gzip_types        text/plain text/css application/json application/javascript
+                      application/x-javascript text/xml application/xml image/svg+xml;
+
+    # ----------------------------------------------------------------- api --
+    # Both /api and /uploads go to the backend. /uploads matters as much as
+    # /api: the API stores avatars and documents as root-relative paths
+    # (/uploads/avatars/x.jpg), which the browser resolves against THIS origin.
+    # Without this block every image on the site 404s.
+    location /api/ {
+        # BACKEND_URL must have NO trailing slash and NO path.
+        #
+        # This is nginx's sharpest edge. `proxy_pass https://host;` forwards the
+        # request URI unchanged, so /api/v1/auth/login arrives as
+        # /api/v1/auth/login -- correct, because the API serves under /api/v1.
+        # Write `https://host/` instead and nginx treats it as a replacement
+        # path: it strips the matched /api/ and the backend sees /v1/auth/login,
+        # so every route 404s with nothing in the logs to explain why.
+        proxy_pass ${BACKEND_URL};
+
+        # SNI. Cloud Run's frontend picks the service from the TLS handshake,
+        # so without this the connection lands nowhere.
+        proxy_ssl_server_name on;
+
+        # Host is deliberately NOT overridden -- nginx defaults it to
+        # $proxy_host (the backend's hostname), which is what Cloud Run needs
+        # to route. Forwarding the browser's Host here would 404.
+        proxy_http_version 1.1;
+        proxy_set_header   Connection        "";
+        proxy_set_header   X-Real-IP         $remote_addr;
+        proxy_set_header   X-Forwarded-For   $proxy_add_x_forwarded_for;
+        proxy_set_header   X-Forwarded-Proto $scheme;
+        proxy_set_header   X-Forwarded-Host  $host;
+
+        # Payroll runs, salary registers and Excel/PDF exports are slow by
+        # nature. The 60s default cuts a legitimate month-end export in half.
+        proxy_connect_timeout 30s;
+        proxy_send_timeout    300s;
+        proxy_read_timeout    300s;
+
+        # Let the API stream a generated payslip instead of nginx buffering
+        # the whole file before the first byte reaches the browser.
+        proxy_buffering off;
+    }
+
+    location /uploads/ {
+        proxy_pass ${BACKEND_URL};
+        proxy_ssl_server_name on;
+        proxy_http_version 1.1;
+        proxy_set_header   Connection        "";
+        proxy_set_header   X-Real-IP         $remote_addr;
+        proxy_set_header   X-Forwarded-For   $proxy_add_x_forwarded_for;
+        proxy_set_header   X-Forwarded-Proto $scheme;
+        proxy_read_timeout 300s;
+    }
+
+    # This container's own liveness, answered without touching the API, so a
+    # backend outage is never mistaken for the web tier being down.
+    location = /healthz {
+        access_log off;
+        add_header Content-Type application/json;
+        return 200 '{"status":"ok","service":"hrms-frontend"}';
+    }
+
+    # ------------------------------------------------------------- assets --
+    # Vite fingerprints everything under /assets, so the content of any given
+    # URL can never change. A year, immutable: the browser stops revalidating
+    # entirely and a repeat visit costs no requests at all.
+    location /assets/ {
+        expires 1y;
+        add_header Cache-Control "public, max-age=31536000, immutable";
+        access_log off;
+        try_files $uri =404;
+    }
+
+    # index.html is the opposite: it names the current hashed bundles, so a
+    # cached copy pins the user to an old deploy. Must be revalidated always.
+    location = /index.html {
+        add_header Cache-Control "no-cache, no-store, must-revalidate";
+        expires -1;
+    }
+
+    # ---------------------------------------------------------------- spa --
+    # React Router owns the URL space. A reload on /payroll/runs is a real
+    # request nginx has no file for, so anything unmatched falls back to the
+    # shell and the router resolves it client-side.
+    location / {
+        try_files $uri $uri/ /index.html;
+    }
+}

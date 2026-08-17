@@ -57,7 +57,13 @@ export const env = {
   isDevelopment: nodeEnv === 'development',
   isTest: nodeEnv === 'test',
 
-  port: readInt('PORT', 5000),
+  /**
+   * 8080 is the default because that is what Cloud Run, and container
+   * platforms generally, inject as PORT and then probe. A real PORT in the
+   * environment always wins -- dotenv does not override an existing variable
+   * -- so a local `.env` saying 5000 still gets 5000.
+   */
+  port: readInt('PORT', 8080),
   /**
    * Bind address. `0.0.0.0` listens on every interface, which is what makes
    * the API reachable from other machines on the LAN -- binding to localhost
@@ -66,6 +72,22 @@ export const env = {
    */
   host: read('HOST', '0.0.0.0'),
   apiPrefix: read('API_PREFIX', '/api/v1'),
+
+  /**
+   * How many reverse proxies sit in front, for Express's `trust proxy`.
+   *
+   * This decides which entry of X-Forwarded-For becomes `req.ip`, and `req.ip`
+   * is the key the rate limiter buckets by. Get it too low and every request
+   * appears to come from the proxy's address -- one shared bucket, so the
+   * global ceiling is consumed by all users together and the API starts
+   * 429-ing everyone at once. Too high and a client can spoof its own address
+   * by sending the header, evading the limiter entirely.
+   *
+   * 1 is right for a single nginx or a direct Cloud Run service. Two hops --
+   * Cloud Run's own frontend plus an nginx service in front of it -- want 2.
+   * Configurable because it is a property of the deployment, not of the code.
+   */
+  trustProxy: readInt('TRUST_PROXY', 1),
 
   mongoUri: read('MONGODB_URI'),
 
@@ -120,13 +142,36 @@ export const env = {
     from: read('MAIL_FROM', 'HRMS <no-reply@hrms.local>'),
   },
 
-  corsOrigins: readList('CORS_ORIGINS', 'http://localhost:5173'),
+  /**
+   * The CORS allowlist: whatever CORS_ORIGINS lists, plus CLIENT_URL.
+   *
+   * CLIENT_URL is folded in because it is already the trusted web origin --
+   * it is the address put into verification and password-reset emails. Having
+   * to name the same URL twice is a misconfiguration waiting to happen, and
+   * the failure it produces (CORS rejections on a correctly deployed
+   * frontend) is an obscure one to debug.
+   *
+   * The origin of a URL never carries a trailing slash, so `CLIENT_URL` is
+   * trimmed before comparison -- `https://app.example.com/` would otherwise
+   * never match the `https://app.example.com` a browser actually sends.
+   */
+  corsOrigins: [
+    ...new Set([
+      ...readList('CORS_ORIGINS', 'http://localhost:5173'),
+      read('CLIENT_URL', 'http://localhost:5173').replace(/\/+$/, ''),
+    ]),
+  ],
+
   /**
    * Accept any private-network origin. A development affordance so every
-   * workstation on the LAN works without its address being listed one by one;
-   * forced off in production, where origins must be explicit.
+   * workstation on the LAN works without its address being listed one by one.
+   *
+   * Hard-off in production rather than merely defaulting off, which is what
+   * the comment here always claimed. A `.env` copied from a LAN install
+   * carries `CORS_ALLOW_LAN=true`, and that one stale line would let any
+   * origin resolving to a private address through on a public deployment.
    */
-  corsAllowLan: readBool('CORS_ALLOW_LAN', !isProduction),
+  corsAllowLan: !isProduction && readBool('CORS_ALLOW_LAN', true),
 
   /**
    * Per-IP ceiling for the whole API.
@@ -150,21 +195,34 @@ export const env = {
    * `express.static` with no authentication, which is acceptable for avatars
    * and unacceptable for the identity documents kept here -- a PAN or passport
    * scan must not be readable by anyone who learns its URL.
+   *
+   * `resolve` rather than `join`, here and for uploads and logs below, so an
+   * ABSOLUTE path in the environment is taken as given instead of being glued
+   * onto the project root. That is what lets a container point this at a
+   * mounted volume (`/mnt/employee-docs`) without the code knowing.
    */
   attachments: {
-    dir: path.join(PROJECT_ROOT, read('ATTACHMENTS_DIR', 'attachments')),
+    dir: path.resolve(PROJECT_ROOT, read('ATTACHMENTS_DIR', 'attachments')),
     maxImageBytes: readInt('MAX_ATTACHMENT_IMAGE_MB', 2) * 1024 * 1024,
     maxPdfBytes: readInt('MAX_ATTACHMENT_PDF_MB', 10) * 1024 * 1024,
   },
 
   upload: {
-    dir: path.join(ROOT_DIR, read('UPLOAD_DIR', 'uploads')),
+    dir: path.resolve(ROOT_DIR, read('UPLOAD_DIR', 'uploads')),
     maxSizeBytes: readInt('MAX_UPLOAD_SIZE_MB', 10) * 1024 * 1024,
   },
 
   log: {
     level: read('LOG_LEVEL', isProduction ? 'info' : 'debug'),
-    dir: path.join(ROOT_DIR, read('LOG_DIR', 'logs')),
+    dir: path.resolve(ROOT_DIR, read('LOG_DIR', 'logs')),
+    /**
+     * Rotating log FILES on disk. Correct on a server with a real filesystem,
+     * pointless on Cloud Run: the container disk is in-memory and discarded
+     * with the instance, so a 90-day retention there costs RAM and keeps
+     * nothing. Set LOG_TO_FILE=false on Cloud Run and read the logs from Cloud
+     * Logging, which collects stdout.
+     */
+    toFile: readBool('LOG_TO_FILE', true),
   },
 };
 

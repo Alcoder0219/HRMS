@@ -14,6 +14,21 @@
 *.pem
 *.key
 
+# ------------------------------------------------- cloud credentials (GCP) --
+# Service-account key files. A committed key is a standing credential to the
+# whole project that survives in history after deletion, and GitHub's secret
+# scanning finds them faster than attackers only some of the time.
+#
+# None of these are needed for this deployment: Cloud Build and Cloud Run each
+# run as their own service identity, and `gcloud auth login` uses your account.
+# If a file matching these appears, something has gone wrong.
+*service-account*.json
+*serviceaccount*.json
+*sa-key*.json
+gcp-*.json
+application_default_credentials.json
+.gcloud/
+
 # ------------------------------------------------- employee documents (PII) --
 # Uploaded identity documents: Aadhaar, PAN, passport and driving licence
 # scans of real people, stored outside the served tree precisely because they

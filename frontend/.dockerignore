@@ -1,0 +1,39 @@
+# Kept out of the build context.
+#
+# Note what is NOT here: src/, index.html, vite.config.js, jsconfig.json,
+# public/ and nginx.conf.template are all required by the build or the runtime
+# stage. Only generated output, secrets and metadata are excluded.
+
+# -------------------------------------------------------------- dependencies
+# Reinstalled from the lockfile inside the image. Copying the host tree would
+# be slow and could carry platform-specific binaries into Linux.
+node_modules
+npm-debug.log*
+yarn-error.log*
+
+# --------------------------------------------------------------- build output
+# Rebuilt in the build stage. Copying a stale dist/ risks shipping it.
+dist
+dist-ssr
+build
+.vite
+
+# ------------------------------------------------------------------- secrets
+# Everything VITE_* is compiled into public JavaScript, so these hold no true
+# secrets -- but a local .env would silently override the build arguments and
+# bake the wrong API URL into a production bundle.
+.env
+.env.*
+!.env.example
+*.local
+
+# ------------------------------------------------------------------ git/meta
+.git
+.gitignore
+.dockerignore
+Dockerfile
+*.md
+.vscode
+.idea
+.DS_Store
+Thumbs.db

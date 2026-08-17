@@ -17,8 +17,10 @@ import routes from './routes/index.js';
 const app = express();
 
 // Behind a load balancer or reverse proxy, this is what makes req.ip and the
-// rate limiter see the real client address instead of the proxy's.
-app.set('trust proxy', 1);
+// rate limiter see the real client address instead of the proxy's. The hop
+// count is configurable because it depends on the deployment -- see
+// TRUST_PROXY in config/env.js.
+app.set('trust proxy', env.trustProxy);
 app.disable('x-powered-by');
 
 /* ---------------------------------------------------------------- security */

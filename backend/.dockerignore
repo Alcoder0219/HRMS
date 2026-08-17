@@ -1,0 +1,45 @@
+# What must never enter the build context.
+#
+# Two jobs: keep secrets and PII out of an image that gets pushed to a
+# registry, and keep the context small so builds stay fast. Everything else in
+# backend/ IS needed at runtime -- this app is plain ESM with no build step, so
+# the source files are the artifact.
+
+# ------------------------------------------------------------------- secrets
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+# Service-account keys must never be baked into an image. Cloud Run uses the
+# service's own identity; a key file in a layer is a credential that cannot be
+# rotated and is readable by anyone who can pull the image.
+*service-account*.json
+*sa-key*.json
+gcp-*.json
+
+# -------------------------------------------------------------- dependencies
+# Reinstalled in the image against the lockfile. Copying the host's tree would
+# also carry Windows/macOS native builds of bcrypt into a Linux container.
+node_modules
+npm-debug.log*
+yarn-error.log*
+
+# ------------------------------------------------------- runtime data (PII)
+# Employee documents, avatars and rotated logs. Generated at runtime, and in
+# the case of uploads and attachments they are real identity documents.
+uploads
+attachments
+logs
+*.log
+
+# ------------------------------------------------------------------ git/meta
+.git
+.gitignore
+.dockerignore
+Dockerfile
+*.md
+.vscode
+.idea
+.DS_Store
+Thumbs.db
