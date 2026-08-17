@@ -3,14 +3,26 @@
 #
 # Triggered from GitHub on changes under frontend/.
 #
-# The one thing to understand here: _VITE_API_URL is a BUILD argument, because
-# Vite compiles it into the JavaScript and it cannot be changed afterwards.
-# _BACKEND_URL is a RUNTIME variable, because it is nginx that uses it and
-# Cloud Run only issues the API its URL after the API's first deploy.
+# ORDERING, which is the point of the explicit push steps:
 #
-# Nothing secret belongs in this file, and nothing secret belongs in a VITE_*
-# value in any case -- every one of them is shipped to the browser in readable
-# JavaScript.
+#   build -> push :TAG -> push :latest -> deploy
+#
+# Cloud Build's `images:` block only uploads once every step has finished,
+# which is after `gcloud run deploy` has already run and failed with
+# "Image ... not found". The pushes are therefore real steps. `images:` is kept
+# only so the tags are listed as build artifacts; nothing sequences off it.
+#
+# BUILD TIME vs RUNTIME, the other thing to understand here:
+#
+#   _VITE_API_URL  is a BUILD argument. Vite substitutes it into the JavaScript
+#                  and freezes it. Setting it as a Cloud Run variable does
+#                  nothing whatsoever -- the bundle was written long before the
+#                  container started.
+#   _BACKEND_URL   is a RUNTIME variable, read by nginx through envsubst when
+#                  the container starts.
+#
+# Nothing secret belongs in either. Every VITE_* value is shipped to the
+# browser as readable JavaScript.
 # ---------------------------------------------------------------------------
 
 substitutions:
@@ -20,25 +32,35 @@ substitutions:
   # Overridden by the trigger with $SHORT_SHA; see cloudbuild.backend.yaml.
   _TAG: manual
 
-  # Relative on purpose. The bundle then calls whatever origin served it, and
-  # nginx inside this same container forwards /api and /uploads to the backend.
-  # One origin means no CORS and, critically, an httpOnly refresh cookie that
-  # stays first-party. Set an absolute URL here only after reading the
-  # cross-origin caveats in DEPLOYMENT.md.
-  _VITE_API_URL: /api/v1
+  # The API base the browser calls, compiled into the bundle.
+  #
+  # THE /api/v1 SUFFIX IS REQUIRED. This value becomes axios's `baseURL`
+  # verbatim (frontend/src/services/api/axiosClient.js), and every endpoint in
+  # services/api/endpoints.js is written relative to it -- '/auth', '/employees'
+  # and so on. Without the suffix each call would go to <host>/auth and 404,
+  # because the API is mounted at API_PREFIX, which is /api/v1.
+  #
+  # This is an ABSOLUTE URL, so the browser calls the API directly rather than
+  # through this container's nginx. That makes the session cookie cross-site
+  # and imposes requirements on the BACKEND service -- COOKIE_SAME_SITE=none,
+  # COOKIE_SECURE=true and CLIENT_URL set to this service's URL. See
+  # DEPLOYMENT.md, "Direct cross-origin mode".
+  _VITE_API_URL: https://hrms-backend-33987356171.asia-south1.run.app/api/v1
 
-  # The API's Cloud Run URL, e.g. https://hrms-backend-abc123-el.a.run.app
-  # Override this in the trigger. Left unset the container starts but every
-  # /api call fails, which is the intended loud failure.
-  _BACKEND_URL: http://backend-url-not-configured
+  # Where nginx forwards /api and /uploads.
+  #
+  # Unused while _VITE_API_URL above is absolute -- the browser bypasses the
+  # proxy entirely. Kept, and kept correct, so that switching back to a
+  # same-origin build is a one-line change to _VITE_API_URL and a rebuild,
+  # with no other configuration to remember.
+  #
+  # NO trailing slash: nginx would then treat it as a replacement path and
+  # strip the /api/ prefix off every request.
+  _BACKEND_URL: https://hrms-backend-33987356171.asia-south1.run.app
 
 options:
   logging: CLOUD_LOGGING_ONLY
   machineType: E2_HIGHCPU_8
-
-images:
-  - ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPOSITORY}/${_SERVICE}:${_TAG}
-  - ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPOSITORY}/${_SERVICE}:latest
 
 steps:
   # ------------------------------------------------------------------ build --
@@ -47,7 +69,12 @@ steps:
     args:
       - build
       - --build-arg=BUILDKIT_INLINE_CACHE=1
+      # The one value that must be present at build time. Passed to the
+      # Dockerfile's ARG VITE_API_URL, which promotes it to an ENV that
+      # `npm run build` reads.
       - --build-arg=VITE_API_URL=${_VITE_API_URL}
+      # Safe on the first build, when no `latest` exists yet: BuildKit treats
+      # an unresolvable cache reference as "no cache" and carries on.
       - --cache-from=${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPOSITORY}/${_SERVICE}:latest
       - -t=${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPOSITORY}/${_SERVICE}:${_TAG}
       - -t=${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPOSITORY}/${_SERVICE}:latest
@@ -56,7 +83,28 @@ steps:
     env:
       - DOCKER_BUILDKIT=1
 
+  # ---------------------------------------------------------- push immutable --
+  # The tag the deploy step references. It must be in Artifact Registry before
+  # that step runs -- this is the fix for "Image ... not found".
+  - id: push-immutable
+    name: gcr.io/cloud-builders/docker
+    args:
+      - push
+      - ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPOSITORY}/${_SERVICE}:${_TAG}
+
+  # ------------------------------------------------------------- push latest --
+  # A cache pointer for the next build's --cache-from. Never deployed from.
+  # Its layers are already uploaded by the push above, so this moves almost
+  # nothing over the wire.
+  - id: push-latest
+    name: gcr.io/cloud-builders/docker
+    args:
+      - push
+      - ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPOSITORY}/${_SERVICE}:latest
+
   # ----------------------------------------------------------------- deploy --
+  # Deploys the immutable SHA tag, never `latest`, so the running revision is
+  # always traceable to one commit.
   - id: deploy
     name: gcr.io/google.com/cloudsdktool/cloud-sdk:slim
     entrypoint: gcloud
@@ -80,10 +128,17 @@ steps:
       # through it are IO-bound.
       - --concurrency=250
       - --timeout=300s
-      # Runtime, not build time: nginx reads BACKEND_URL through envsubst when
-      # the container starts, so the API can be repointed with a redeploy of
-      # this service alone -- no rebuild of the bundle.
-      - --set-env-vars=BACKEND_URL=${_BACKEND_URL},MAX_UPLOAD_SIZE=25m
+      # MERGE, do not replace. --set-env-vars declares the container's whole
+      # environment and deletes anything not listed, which would discard any
+      # variable added by hand in the console. This touches only these two.
+      - --update-env-vars=BACKEND_URL=${_BACKEND_URL},MAX_UPLOAD_SIZE=25m
       - --labels=app=hrms,component=frontend
+
+# Reporting only -- the tags are already in the registry by the time Cloud Build
+# reaches this. It makes them appear under the build's Artifacts, and re-pushing
+# an identical digest is a no-op. Ordering is owned by the push steps above.
+images:
+  - ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPOSITORY}/${_SERVICE}:${_TAG}
+  - ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPOSITORY}/${_SERVICE}:latest
 
 timeout: 1200s

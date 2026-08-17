@@ -10,7 +10,7 @@ Replace every placeholder — `PROJECT_ID`, `BACKEND_URL`, `FRONTEND_URL`, `MONG
 
 **1. Employee documents do not survive a deploy.** The app writes uploads and identity documents to local disk. On Cloud Run that disk is in-memory, per-instance, and destroyed when the instance stops. Files uploaded today are gone after the next deploy, and a file uploaded on instance A is invisible to instance B. This is a **blocker for storing real employee documents** — see [File storage](#15-file-storage).
 
-**2. The frontend proxies the API; it does not call it cross-origin.** The browser only ever talks to the frontend's origin. nginx inside the frontend container forwards `/api` and `/uploads` to the backend. This is deliberate — see [CORS](#13-cors-configuration) for why the alternative breaks logins.
+**2. The frontend calls the API cross-origin, which needs three backend settings.** `_VITE_API_URL` is an absolute URL compiled into the bundle, so the browser talks to `hrms-backend` directly. That requires `CLIENT_URL`, `COOKIE_SAME_SITE=none` and `COOKIE_SECURE=true` on the backend service — miss any one and login or session refresh fails, in ways the browser reports unhelpfully. See [CORS](#13-cors-configuration), which also covers the third-party-cookie risk this carries and how to revert to the same-origin proxy.
 
 ---
 
@@ -28,7 +28,11 @@ GitHub ──push──▶ Cloud Build ─── docker build
                                   Cloud Run
                                       │
                         hrms-frontend (public, nginx)
-                                      │  proxies /api, /uploads
+                                      │
+                                      │  serves the SPA
+                                      ▼
+                                  Browser
+                                      │  calls the API directly (cross-origin)
                                       ▼
                                  hrms-backend
                                       │
@@ -38,7 +42,9 @@ GitHub ──push──▶ Cloud Build ─── docker build
 
 The push steps come **before** the deploy, deliberately: Cloud Build's `images:` field only uploads once every step has finished, so a deploy relying on it looks for an image that is not in the registry yet.
 
-The browser reaches `hrms-frontend` only. `hrms-backend` is reached through the proxy.
+**The browser calls `hrms-backend` directly.** `_VITE_API_URL` is an absolute URL, compiled into the bundle, so requests bypass the frontend container's nginx proxy. This is a **cross-origin** setup and imposes three requirements on the backend service — `COOKIE_SAME_SITE=none`, `COOKIE_SECURE=true`, and `CLIENT_URL` set to the frontend's URL. See [§13](#13-cors-configuration).
+
+The nginx proxy in the frontend image is still configured and still works; it is simply unused while the API URL is absolute. Switching back to same-origin is a one-line change to `_VITE_API_URL` plus a rebuild.
 
 ---
 
@@ -174,7 +180,9 @@ Then create two triggers. The **included files filter** is what stops a CSS chan
 | Branch | `^main$` |
 | Included files filter | `frontend/**`, `cloudbuild.frontend.yaml` |
 | Configuration | `cloudbuild.frontend.yaml` |
-| Substitutions | `_TAG` = `$SHORT_SHA`, `_BACKEND_URL` = the backend's URL from step 8 |
+| Substitutions | `_TAG` = `$SHORT_SHA` |
+
+`_VITE_API_URL` and `_BACKEND_URL` already default to the deployed backend inside `cloudbuild.frontend.yaml`, so the trigger only needs to supply `_TAG`. Override them in the trigger if the API ever moves — and remember `_VITE_API_URL` keeps its `/api/v1` suffix while `_BACKEND_URL` has no path and no trailing slash.
 
 A commit touching both directories fires both triggers, which is correct.
 
@@ -222,24 +230,43 @@ Get the URL:
 gcloud run services describe hrms-backend --region=asia-south1 --format='value(status.url)'
 ```
 
-`COOKIE_SAME_SITE=lax` is correct **because the frontend proxies the API** — the cookie is first-party. Only use `none` if you switch to direct cross-origin calls, and it then requires `COOKIE_SECURE=true`.
+`COOKIE_SAME_SITE=none` with `COOKIE_SECURE=true` is **required** in the current cross-origin setup. The browser calls the backend from a different origin, so the refresh cookie is cross-site; with `lax` the browser refuses to send it and sessions stop refreshing. The backend's cookie helper silently downgrades `none` to `lax` when `COOKIE_SECURE` is false, so both must be set together or neither takes effect.
 
 ---
 
 ## 9. Frontend deployment
 
-Pass the backend URL from step 8. **No trailing slash** — with one, nginx strips the `/api/` prefix and every route 404s:
+`_VITE_API_URL` is compiled into the bundle and **must include `/api/v1`** — it becomes axios's `baseURL` verbatim, and every endpoint is written relative to it.
 
 ```bash
-gcloud builds submit --config=cloudbuild.frontend.yaml \
-  --substitutions=_TAG=manual,_BACKEND_URL=https://hrms-backend-xxxx-el.a.run.app .
+gcloud builds submit --config=cloudbuild.frontend.yaml --substitutions=\
+_TAG=manual,\
+_VITE_API_URL=https://hrms-backend-33987356171.asia-south1.run.app/api/v1,\
+_BACKEND_URL=https://hrms-backend-33987356171.asia-south1.run.app .
 ```
 
-Then close the loop — the backend needs the frontend's URL for email links:
+Both defaults are already set in `cloudbuild.frontend.yaml`, so a plain `--substitutions=_TAG=manual` works too. Neither URL may carry a trailing slash.
+
+Then close the loop. The backend needs the frontend's URL for email links **and** to allow it through CORS — `CLIENT_URL` feeds both:
 
 ```bash
 FRONTEND_URL=$(gcloud run services describe hrms-frontend --region=asia-south1 --format='value(status.url)')
-gcloud run services update hrms-backend --region=asia-south1 --update-env-vars=CLIENT_URL=$FRONTEND_URL
+
+gcloud run services update hrms-backend --region=asia-south1 --update-env-vars=\
+CLIENT_URL=$FRONTEND_URL,COOKIE_SAME_SITE=none,COOKIE_SECURE=true
+```
+
+**Without that last command, login fails.** The browser's preflight is rejected because the frontend origin is not in the allowlist. Set it before testing.
+
+### Reverting to same-origin
+
+If cross-site cookies become a problem (see §13), rebuild with a relative URL — no other change is needed, because `_BACKEND_URL` already points nginx at the API:
+
+```bash
+gcloud builds submit --config=cloudbuild.frontend.yaml \
+  --substitutions=_TAG=manual,_VITE_API_URL=/api/v1 .
+gcloud run services update hrms-backend --region=asia-south1 \
+  --update-env-vars=COOKIE_SAME_SITE=lax
 ```
 
 The first deploy is necessarily circular: backend → frontend → update backend. Only the first time.
@@ -270,9 +297,9 @@ The first deploy is necessarily circular: backend → frontend → update backen
 | `JWT_ACCESS_SECRET` | `openssl rand -base64 48` | **Yes** — forges any session |
 | `JWT_REFRESH_SECRET` | a different one | **Yes** — same, long-lived |
 | `SMTP_PASSWORD` | mail relay password | **Yes** |
-| `CLIENT_URL` | `FRONTEND_URL` | Email links; auto-added to the CORS allowlist |
-| `COOKIE_SECURE` | `true` | |
-| `COOKIE_SAME_SITE` | `lax` | `none` only for cross-origin |
+| `CLIENT_URL` | `FRONTEND_URL` | Email links **and** the CORS allowlist. Required — logins fail without it |
+| `COOKIE_SECURE` | `true` | Required alongside `SameSite=none` |
+| `COOKIE_SAME_SITE` | `none` | Required for cross-origin. Use `lax` only if you rebuild same-origin |
 | `REQUIRE_EMAIL_VERIFICATION` | `true` | |
 | `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `MAIL_FROM` | your mail provider | |
 | `API_PREFIX` | `/api/v1` | Optional; must match `VITE_API_URL` |
@@ -364,19 +391,27 @@ Put the Atlas cluster in `asia-south1` too — a cross-region hop is added to ev
 
 ## 13. CORS configuration
 
-**In the proxied setup, CORS does not apply.** The browser makes same-origin requests to the frontend; nginx forwards them server-side, where the same-origin policy has no jurisdiction. Nothing to configure.
+**CORS applies, and it must be configured.** `_VITE_API_URL` is absolute, so the browser calls `hrms-backend` from the `hrms-frontend` origin — a genuine cross-origin request with credentials.
 
-The backend allowlist ([`backend/config/cors.js`](backend/config/cors.js)) still exists and still applies to any direct call. `CLIENT_URL` is folded into it automatically, and `CORS_ALLOW_LAN` is forced off when `NODE_ENV=production`.
+Three settings on the **backend** service make it work. All three, or none of them do:
 
-### Why not point the bundle straight at the backend?
+| Variable | Value | If missing |
+|---|---|---|
+| `CLIENT_URL` | the frontend's URL | Preflight rejected — every API call fails, login included |
+| `COOKIE_SAME_SITE` | `none` | Browser refuses to send the refresh cookie; sessions die at the 15-minute access-token expiry |
+| `COOKIE_SECURE` | `true` | The cookie helper downgrades `none` back to `lax`, so the setting above silently does nothing |
 
-You can (`_VITE_API_URL=https://hrms-backend-xxx.a.run.app/api/v1`), but then:
+`CLIENT_URL` is folded into the allowlist automatically ([`backend/config/cors.js`](backend/config/cors.js)), so the frontend origin only needs naming once. `CORS_ALLOW_LAN` is forced off under `NODE_ENV=production`. A wildcard origin is impossible here regardless — browsers reject `*` alongside credentials.
 
-- The refresh token cookie becomes **third-party**. Safari blocks it outright; Chrome is phasing it out. Sessions stop refreshing and users are logged out every 15 minutes with no error to explain it.
-- It requires `COOKIE_SAME_SITE=none` and `COOKIE_SECURE=true`.
-- The backend URL is frozen into the bundle — moving the API means a rebuild.
+### The cost of this choice
 
-The proxy avoids all three. Only go direct if you have a specific reason.
+Going direct rather than through the proxy has a real, dated risk:
+
+- **The refresh cookie is third-party.** Safari's ITP blocks third-party cookies by default today. Chrome is phasing them out. When that lands for your users, `SameSite=none` stops being enough and sessions break with no error message that points at the cause.
+- **The backend URL is frozen into the bundle.** Moving or renaming the API means rebuilding the frontend, not just redeploying it.
+- **Every API call pays a CORS preflight** on non-simple requests — an extra round trip.
+
+The same-origin proxy avoids all three, and the frontend image still supports it. If sessions start dropping in Safari, that is this, and [§9 "Reverting to same-origin"](#9-frontend-deployment) is the fix.
 
 ---
 
@@ -517,11 +552,13 @@ gcloud builds log --stream BUILD_ID
 | `Image ... not found` at the deploy step | The image was not pushed before the deploy ran | Fixed: the pipeline now has explicit `push-immutable` / `push-latest` steps before `deploy`. Do not rely on `images:` for ordering |
 | Every `/api` route 404s | `BACKEND_URL` has a trailing slash | Remove it; nginx strips `/api/` otherwise |
 | 502 from the frontend on `/api` | Backend rejecting the proxy, or down | `curl BACKEND_URL/health` directly |
-| Login works, user logged out ~15 min later | Refresh cookie rejected | Should not happen when proxied. If direct: needs `SameSite=none` + `Secure` (§13) |
+| Login works, user logged out ~15 min later | Refresh cookie not being sent | Set `COOKIE_SAME_SITE=none` AND `COOKIE_SECURE=true` on the backend -- either alone does nothing (§13) |
+| Login fails, browser console shows a CORS error | `CLIENT_URL` not set to the frontend origin | `gcloud run services update hrms-backend --update-env-vars=CLIENT_URL=<frontend url>` |
+| API calls 404 with a valid backend | `_VITE_API_URL` missing the `/api/v1` suffix | It is used as axios's baseURL verbatim (§9) |
+| Sessions break in Safari only | Third-party cookie blocking | Expected in cross-origin mode. Revert to same-origin (§9) |
 | Uploads fail with 413 | nginx body limit below the app's | Raise `MAX_UPLOAD_SIZE` |
 | Uploaded files vanish after a deploy | Ephemeral filesystem | Expected. §15 |
 | Everyone 429s at once | `TRUST_PROXY` too low — all users share one bucket | Set `TRUST_PROXY=2` |
-| CORS rejection in the browser console | Direct cross-origin call | Set `CLIENT_URL` to the exact frontend origin |
 | Build fails at `npm ci` | Lockfile out of sync | `npm install` locally, commit the lockfile |
 
 ---
