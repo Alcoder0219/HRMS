@@ -4,7 +4,6 @@ import {
   PAYSLIP_STATUS,
   LOAN_TYPES,
   LOAN_STATUS,
-  TAX_REGIME,
   BANK_FILE_FORMATS,
   COMPONENT_CODE,
 } from '../../utils/constants.js';
@@ -44,17 +43,21 @@ export const createStructureSchema = {
     monthlyCtc: money(),
 
     basic: money().required(),
-    hra: money().default(0),
-    da: money().default(0),
-    specialAllowance: money().default(0),
+    hraAllowance: money().default(0),
+    foodAllowance: money().default(0),
+    transportationAllowance: money().default(0),
+    communicationAllowance: money().default(0),
+    mediclaim: money().default(0),
+    schoolFeesAllowance: money().default(0),
+    // Per annum by entitlement, supplied as its monthly equivalent.
+    annualLeaveAllowance: money().default(0),
+    performanceIncentive: money().default(0),
     otherAllowances: Joi.array().items(allowance).max(15).default([]),
 
-    pfApplicable: Joi.boolean().default(true),
-    esiApplicable: Joi.boolean().default(true),
-    ptApplicable: Joi.boolean().default(true),
-    tdsApplicable: Joi.boolean().default(true),
-    taxRegime: Joi.string().valid(...Object.values(TAX_REGIME)).default(TAX_REGIME.NEW),
-    tdsOverride: money().allow(null),
+    nssfApplicable: Joi.boolean().default(true),
+    nhifApplicable: Joi.boolean().default(true),
+    payeApplicable: Joi.boolean().default(true),
+    payeOverride: money().allow(null),
 
     overtimeEligible: Joi.boolean().default(true),
     overtimeMultiplier: Joi.number().min(1).max(4).default(2),
@@ -63,12 +66,22 @@ export const createStructureSchema = {
   }),
 };
 
+/**
+ * The CTC split preview.
+ *
+ * Every percentage is OF BASIC, and basic is solved for rather than supplied --
+ * which is why there is no `basicPercent` here. See `deriveStructureFromCtc`.
+ */
 export const ctcPreviewSchema = {
   query: Joi.object({
     annualCtc: money(1_000_000_000).required(),
-    basicPercent: Joi.number().min(20).max(70).default(40),
-    hraPercent: Joi.number().min(0).max(100).default(50),
-    daPercent: Joi.number().min(0).max(100).default(0),
+    hraPercent: Joi.number().min(0).max(200).default(0),
+    transportationPercent: Joi.number().min(0).max(200).default(10),
+    communicationPercent: Joi.number().min(0).max(200).default(5),
+    annualLeavePercent: Joi.number().min(0).max(200).default(100),
+    foodAllowanceAmount: money().default(0),
+    mediclaimAmount: money().default(0),
+    schoolFeesAllowanceAmount: money().default(0),
   }),
 };
 
@@ -267,42 +280,36 @@ export const upsertSettingsSchema = {
     currency: Joi.string().trim().uppercase().length(3),
     financialYearStartMonth: month,
 
-    pf: Joi.object({
+    nssf: Joi.object({
       enabled: Joi.boolean(),
       employeeRate: Joi.number().min(0).max(100),
       employerRate: Joi.number().min(0).max(100),
-      pensionRate: Joi.number().min(0).max(100),
-      wageCeiling: money(),
-      applyCeiling: Joi.boolean(),
-      includeDaInWages: Joi.boolean(),
-      establishmentCode: Joi.string().trim().max(40).allow('', null),
+      registrationNumber: Joi.string().trim().max(40).allow('', null),
     }),
 
-    esi: Joi.object({
+    nhif: Joi.object({
       enabled: Joi.boolean(),
-      employeeRate: Joi.number().min(0).max(100),
-      employerRate: Joi.number().min(0).max(100),
-      grossCeiling: money(),
-      establishmentCode: Joi.string().trim().max(40).allow('', null),
+      // Flat amounts by band, so `amount` carries the figure and `rate` is nil.
+      slabs: Joi.array().items(slab).max(20),
+      registrationNumber: Joi.string().trim().max(40).allow('', null),
     }),
 
-    professionalTax: Joi.object({
+    // Employer-only levies. Neither accepts an employee rate, because there is
+    // no employee half and a field for one would invite somebody to deduct it.
+    sdl: Joi.object({
       enabled: Joi.boolean(),
-      state: Joi.string().trim().max(60).allow('', null),
+      rate: Joi.number().min(0).max(100),
+    }),
+
+    wcf: Joi.object({
+      enabled: Joi.boolean(),
+      rate: Joi.number().min(0).max(100),
+    }),
+
+    paye: Joi.object({
+      enabled: Joi.boolean(),
       slabs: Joi.array().items(slab).max(12),
-      februaryAmount: money(10_000),
-      annualCap: money(100_000),
-    }),
-
-    incomeTax: Joi.object({
-      enabled: Joi.boolean(),
-      regime: Joi.string().valid(...Object.values(TAX_REGIME)),
-      standardDeduction: money(1_000_000),
-      slabs: Joi.array().items(slab).max(12),
-      rebateLimit: money(10_000_000),
-      rebateAmount: money(1_000_000),
-      cessRate: Joi.number().min(0).max(100),
-      tanNumber: Joi.string().trim().max(20).allow('', null),
+      tinNumber: Joi.string().trim().max(20).allow('', null),
     }),
 
     payableDaysBasis: Joi.string().valid('CALENDAR', 'WORKING'),
@@ -313,7 +320,7 @@ export const upsertSettingsSchema = {
       format: Joi.string().valid(...Object.values(BANK_FILE_FORMATS)),
       companyAccountNumber: Joi.string().trim().max(30).allow('', null),
       companyName: Joi.string().trim().max(120).allow('', null),
-      ifsc: Joi.string().trim().uppercase().max(11).allow('', null),
+      swiftCode: Joi.string().trim().uppercase().max(11).allow('', null),
       debitNarration: Joi.string().trim().max(20).allow('', null),
     }),
   }).min(1),

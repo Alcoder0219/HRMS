@@ -4,6 +4,7 @@ import settlementService from '../../services/payroll/settlement.service.js';
 import assetService from '../../services/employee/asset.service.js';
 import payrollRepository from '../../repositories/payroll/payroll.repository.js';
 import { buildSettlementPdf } from '../../helpers/pdf.helper.js';
+import { CURRENCY } from '../../utils/constants.js';
 
 const query = (req) => req.validatedQuery ?? {};
 
@@ -91,7 +92,7 @@ export const pdf = asyncHandler(async (req, res) => {
 
   const buffer = await buildSettlementPdf(settlement, {
     name: settings?.bank?.companyName ?? 'HRMS',
-    currency: settings?.currency ?? 'INR',
+    currency: settings?.currency ?? CURRENCY.CODE,
   });
 
   res.setHeader('Content-Type', 'application/pdf');

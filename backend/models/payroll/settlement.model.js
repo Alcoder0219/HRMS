@@ -97,7 +97,15 @@ const settlementSchema = new Schema(
       default: null,
     },
 
-    gratuity: { type: Schema.Types.Mixed, default: null },
+    /**
+     * The severance working: eligibility, the years counted, the wage base and
+     * the reason when nothing is payable.
+     *
+     * Mixed because the shape is the calculator's own output and a settlement
+     * has to reproduce exactly what was shown at the time -- pinning it to a
+     * schema would silently drop a field the rules later start returning.
+     */
+    severance: { type: Schema.Types.Mixed, default: null },
 
     /* ------------------------------------------------------- snapshots -- */
     employeeSnapshot: { type: Schema.Types.Mixed, default: null },

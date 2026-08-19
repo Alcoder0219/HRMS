@@ -17,8 +17,8 @@ import PageHeader from '@components/common/PageHeader.jsx';
 import usePermissions from '@hooks/usePermissions.js';
 import { RESOURCES, ACTIONS } from '@utils/permissions.js';
 import payrollService from '@services/modules/payroll.service.js';
-import { formatCurrency } from '@utils/format.js';
 import { PATHS } from '@routes/paths.js';
+import BiometricDevicesSection from './components/BiometricDevicesSection.jsx';
 
 const MONTHS = Array.from({ length: 12 }, (_, index) => ({
   value: index + 1,
@@ -29,7 +29,7 @@ const MONTHS = Array.from({ length: 12 }, (_, index) => ({
  * Organisation-wide payroll and statutory settings.
  *
  * Every deduction in the system is priced from these numbers, which is why the
- * API gates the write on APPROVE rather than UPDATE -- changing the PF ceiling
+ * API gates the write on APPROVE rather than UPDATE -- changing the NSSF rate
  * silently re-prices the next run for everyone.
  */
 const SystemSettingsPage = () => {
@@ -51,7 +51,7 @@ const SystemSettingsPage = () => {
       .finally(() => setLoading(false));
   }, []);
 
-  /** Nested path setter, so `pf.employeeRate` edits without clobbering `pf`. */
+  /** Nested path setter, so `nssf.employeeRate` edits without clobbering `nssf`. */
   const setNested = (group, field) => (event) => {
     const raw = event.target.type === 'checkbox' ? event.target.checked : event.target.value;
     const value = event.target.type === 'number' ? Number(raw) : raw;
@@ -77,43 +77,36 @@ const SystemSettingsPage = () => {
         payableDaysBasis: settings.payableDaysBasis,
         overtimeMultiplier: settings.overtimeMultiplier,
         requireAttendanceLock: settings.requireAttendanceLock,
-        pf: {
-          enabled: settings.pf?.enabled,
-          employeeRate: settings.pf?.employeeRate,
-          employerRate: settings.pf?.employerRate,
-          pensionRate: settings.pf?.pensionRate,
-          wageCeiling: settings.pf?.wageCeiling,
-          applyCeiling: settings.pf?.applyCeiling,
-          includeDaInWages: settings.pf?.includeDaInWages,
-          establishmentCode: settings.pf?.establishmentCode ?? '',
+        nssf: {
+          enabled: settings.nssf?.enabled,
+          employeeRate: settings.nssf?.employeeRate,
+          employerRate: settings.nssf?.employerRate,
+          registrationNumber: settings.nssf?.registrationNumber ?? '',
         },
-        esi: {
-          enabled: settings.esi?.enabled,
-          employeeRate: settings.esi?.employeeRate,
-          employerRate: settings.esi?.employerRate,
-          grossCeiling: settings.esi?.grossCeiling,
-          establishmentCode: settings.esi?.establishmentCode ?? '',
+        // The band table is not sent: it is edited through the API, and posting
+        // it back from a screen that does not render it would replace the
+        // stored bands with whatever this page happened to be holding.
+        nhif: {
+          enabled: settings.nhif?.enabled,
+          registrationNumber: settings.nhif?.registrationNumber ?? '',
         },
-        professionalTax: {
-          enabled: settings.professionalTax?.enabled,
-          state: settings.professionalTax?.state ?? '',
-          februaryAmount: settings.professionalTax?.februaryAmount,
-          annualCap: settings.professionalTax?.annualCap,
+        sdl: {
+          enabled: settings.sdl?.enabled,
+          rate: settings.sdl?.rate,
         },
-        incomeTax: {
-          enabled: settings.incomeTax?.enabled,
-          regime: settings.incomeTax?.regime,
-          standardDeduction: settings.incomeTax?.standardDeduction,
-          rebateLimit: settings.incomeTax?.rebateLimit,
-          rebateAmount: settings.incomeTax?.rebateAmount,
-          cessRate: settings.incomeTax?.cessRate,
-          tanNumber: settings.incomeTax?.tanNumber ?? '',
+        wcf: {
+          enabled: settings.wcf?.enabled,
+          rate: settings.wcf?.rate,
+        },
+        paye: {
+          enabled: settings.paye?.enabled,
+          tinNumber: settings.paye?.tinNumber ?? '',
         },
         bank: {
           format: settings.bank?.format,
           companyAccountNumber: settings.bank?.companyAccountNumber ?? '',
           companyName: settings.bank?.companyName ?? '',
-          ifsc: settings.bank?.ifsc ?? '',
+          swiftCode: settings.bank?.swiftCode ?? '',
           debitNarration: settings.bank?.debitNarration ?? 'SALARY',
         },
       });
@@ -181,6 +174,14 @@ const SystemSettingsPage = () => {
     );
   }
 
+  /**
+   * A tenant with no payroll settings yet still gets the device section.
+   *
+   * The two are independent: biometric terminals are read through their own
+   * endpoints and saved per action, and hiding them behind an unconfigured
+   * payroll would make attendance hardware unreachable on a fresh install --
+   * which is exactly when somebody is setting the terminals up.
+   */
   if (!settings) {
     return (
       <Box>
@@ -188,10 +189,12 @@ const SystemSettingsPage = () => {
           title="System Settings"
           breadcrumbs={[{ label: 'Home', to: PATHS.dashboard }, { label: 'Administration' }, { label: 'Settings' }]}
         />
-        <Alert severity="info">
+        <Alert severity="info" sx={{ mb: 2 }}>
           No payroll settings have been configured. Statutory calculations fall back to the built-in
           statutory defaults until they are.
         </Alert>
+
+        <BiometricDevicesSection />
       </Box>
     );
   }
@@ -288,73 +291,42 @@ const SystemSettingsPage = () => {
       )}
 
       {section(
-        'Provident fund',
-        'Rates, the wage ceiling and whether it is applied.',
+        'NSSF',
+        'Social security, charged on gross. Both sides contribute at their own rate.',
         <>
-          {toggle('PF enabled', 'pf', 'enabled')}
-          {field('Employee rate %', 'pf', 'employeeRate', { extra: { min: 0, max: 100, step: 0.01 } })}
-          {field('Employer rate %', 'pf', 'employerRate', { extra: { min: 0, max: 100, step: 0.01 } })}
-          {field('Pension rate %', 'pf', 'pensionRate', { extra: { min: 0, max: 100, step: 0.01 } })}
-          {field('Wage ceiling', 'pf', 'wageCeiling', {
-            helper: formatCurrency(settings.pf?.wageCeiling),
-            extra: { min: 0 },
-          })}
-          {toggle('Apply the ceiling', 'pf', 'applyCeiling')}
-          {toggle('Include DA in PF wages', 'pf', 'includeDaInWages')}
-          {field('Establishment code', 'pf', 'establishmentCode', { type: 'text' })}
+          {toggle('NSSF enabled', 'nssf', 'enabled')}
+          {field('Employee rate %', 'nssf', 'employeeRate', { extra: { min: 0, max: 100, step: 0.01 } })}
+          {field('Employer rate %', 'nssf', 'employerRate', { extra: { min: 0, max: 100, step: 0.01 } })}
+          {field('Employer registration number', 'nssf', 'registrationNumber', { type: 'text' })}
         </>,
       )}
 
       {section(
-        'ESI',
-        'Rates and the gross ceiling above which ESI stops applying.',
+        'NHIF',
+        `A flat monthly amount per salary band, not a rate. The band table is managed through the API — ${settings.nhif?.slabs?.length ?? 0} band(s) configured.`,
         <>
-          {toggle('ESI enabled', 'esi', 'enabled')}
-          {field('Employee rate %', 'esi', 'employeeRate', { extra: { min: 0, max: 100, step: 0.01 } })}
-          {field('Employer rate %', 'esi', 'employerRate', { extra: { min: 0, max: 100, step: 0.01 } })}
-          {field('Gross ceiling', 'esi', 'grossCeiling', {
-            helper: formatCurrency(settings.esi?.grossCeiling),
-            extra: { min: 0 },
-          })}
-          {field('Establishment code', 'esi', 'establishmentCode', { type: 'text' })}
+          {toggle('NHIF enabled', 'nhif', 'enabled')}
+          {field('Employer registration number', 'nhif', 'registrationNumber', { type: 'text' })}
         </>,
       )}
 
       {section(
-        'Professional tax',
-        `State slabs are managed through the API. ${settings.professionalTax?.slabs?.length ?? 0} slab(s) configured.`,
+        'Employer levies',
+        'SDL and WCF are charged on the payroll, not on the individual — neither is ever deducted from anybody’s pay.',
         <>
-          {toggle('PT enabled', 'professionalTax', 'enabled')}
-          {field('State', 'professionalTax', 'state', { type: 'text' })}
-          {field('February amount', 'professionalTax', 'februaryAmount', { extra: { min: 0 } })}
-          {field('Annual cap', 'professionalTax', 'annualCap', { extra: { min: 0 } })}
+          {toggle('SDL enabled', 'sdl', 'enabled')}
+          {field('SDL rate %', 'sdl', 'rate', { extra: { min: 0, max: 100, step: 0.01 } })}
+          {toggle('WCF enabled', 'wcf', 'enabled')}
+          {field('WCF rate %', 'wcf', 'rate', { extra: { min: 0, max: 100, step: 0.01 } })}
         </>,
       )}
 
       {section(
-        'Income tax',
-        `Slab table is managed through the API. ${settings.incomeTax?.slabs?.length ?? 0} slab(s) configured.`,
+        'PAYE',
+        `Progressive monthly slabs, assessed month by month. The slab table is managed through the API — ${settings.paye?.slabs?.length ?? 0} slab(s) configured.`,
         <>
-          {toggle('TDS enabled', 'incomeTax', 'enabled')}
-          <Grid size={{ xs: 12, sm: 6, md: 3 }}>
-            <TextField
-              select
-              size="small"
-              fullWidth
-              label="Default regime"
-              value={settings.incomeTax?.regime ?? 'NEW'}
-              onChange={setNested('incomeTax', 'regime')}
-              disabled={!canEdit}
-            >
-              <MenuItem value="NEW">New regime</MenuItem>
-              <MenuItem value="OLD">Old regime</MenuItem>
-            </TextField>
-          </Grid>
-          {field('Standard deduction', 'incomeTax', 'standardDeduction', { extra: { min: 0 } })}
-          {field('Rebate limit', 'incomeTax', 'rebateLimit', { extra: { min: 0 } })}
-          {field('Rebate amount', 'incomeTax', 'rebateAmount', { extra: { min: 0 } })}
-          {field('Cess %', 'incomeTax', 'cessRate', { extra: { min: 0, max: 100, step: 0.1 } })}
-          {field('TAN', 'incomeTax', 'tanNumber', { type: 'text' })}
+          {toggle('PAYE enabled', 'paye', 'enabled')}
+          {field('Employer TIN', 'paye', 'tinNumber', { type: 'text', width: 4 })}
         </>,
       )}
 
@@ -375,17 +347,23 @@ const SystemSettingsPage = () => {
               {/* Mirrors BANK_FILE_FORMATS in backend/utils/constants.js —
                   an extra bank here would fail validation, not add support. */}
               <MenuItem value="GENERIC_CSV">Generic CSV</MenuItem>
-              <MenuItem value="HDFC">HDFC</MenuItem>
-              <MenuItem value="ICICI">ICICI</MenuItem>
-              <MenuItem value="SBI">SBI</MenuItem>
+              <MenuItem value="CRDB">CRDB</MenuItem>
+              <MenuItem value="NMB">NMB</MenuItem>
+              <MenuItem value="NBC">NBC</MenuItem>
             </TextField>
           </Grid>
           {field('Company name', 'bank', 'companyName', { type: 'text' })}
           {field('Company account number', 'bank', 'companyAccountNumber', { type: 'text' })}
-          {field('IFSC', 'bank', 'ifsc', { type: 'text' })}
+          {field('SWIFT code', 'bank', 'swiftCode', { type: 'text' })}
           {field('Debit narration', 'bank', 'debitNarration', { type: 'text' })}
         </>,
       )}
+
+      {/*
+        Devices own their own state and save per action, so they sit outside
+        the payroll form and its Save button rather than inside `section()`.
+      */}
+      <BiometricDevicesSection />
     </Box>
   );
 };

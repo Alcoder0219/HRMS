@@ -33,8 +33,8 @@ const YEARS = Array.from({ length: 5 }, (_, index) => now.getFullYear() - 3 + in
  * The statutory register additionally demands TENANT reach on the server, not
  * just `payroll:read` -- every employee holds that action so they can see their
  * own payslip, which is far too coarse for a return listing the whole
- * organisation's UAN and ESI numbers. A narrower role sees the refusal rather
- * than a silently empty table.
+ * organisation's NSSF and NHIF membership numbers. A narrower role sees the
+ * refusal rather than a silently empty table.
  */
 const PayrollReportsPage = () => {
   const [tab, setTab] = useState('statutory');
@@ -71,24 +71,25 @@ const PayrollReportsPage = () => {
 
   /* ------------------------------------------------------------ columns -- */
 
-  const PF_COLUMNS = [
+  const NSSF_COLUMNS = [
     { key: 'employeeCode', label: 'Code' },
     { key: 'fullName', label: 'Employee' },
-    { key: 'uan', label: 'UAN', render: (row) => row.uan ?? '—' },
-    { key: 'pfNumber', label: 'PF number', render: (row) => row.pfNumber ?? '—' },
-    { key: 'wages', label: 'PF wages', align: 'right', render: (row) => formatCurrency(row.wages) },
+    { key: 'nssfNumber', label: 'NSSF number', render: (row) => row.nssfNumber ?? '—' },
+    { key: 'wages', label: 'Contributory wages', align: 'right', render: (row) => formatCurrency(row.wages) },
     { key: 'employee', label: 'Employee', align: 'right', render: (row) => formatCurrency(row.employee) },
     { key: 'employer', label: 'Employer', align: 'right', render: (row) => formatCurrency(row.employer) },
-    { key: 'pension', label: 'Pension (EPS)', align: 'right', render: (row) => formatCurrency(row.pension) },
+    // The fund is remitted one figure per member, not two.
+    { key: 'total', label: 'Remitted', align: 'right', render: (row) => <strong>{formatCurrency(row.total)}</strong> },
   ];
 
-  const ESI_COLUMNS = [
+  // No employer column: NHIF is an employee-only contribution here, so there
+  // would be nothing but zeroes to show.
+  const NHIF_COLUMNS = [
     { key: 'employeeCode', label: 'Code' },
     { key: 'fullName', label: 'Employee' },
-    { key: 'esiNumber', label: 'ESI number', render: (row) => row.esiNumber ?? '—' },
-    { key: 'gross', label: 'Gross', align: 'right', render: (row) => formatCurrency(row.gross) },
-    { key: 'employee', label: 'Employee', align: 'right', render: (row) => formatCurrency(row.employee) },
-    { key: 'employer', label: 'Employer', align: 'right', render: (row) => formatCurrency(row.employer) },
+    { key: 'nhifNumber', label: 'NHIF number', render: (row) => row.nhifNumber ?? '—' },
+    { key: 'gross', label: 'Gross (band)', align: 'right', render: (row) => formatCurrency(row.gross) },
+    { key: 'employee', label: 'Contribution', align: 'right', render: (row) => formatCurrency(row.employee) },
   ];
 
   const DEPARTMENT_COLUMNS = [
@@ -160,52 +161,58 @@ const PayrollReportsPage = () => {
           <Grid container spacing={2} sx={{ mb: 3 }}>
             <Grid size={{ xs: 12, sm: 6, md: 3 }}>
               <StatCard
-                label="PF contributions"
-                value={formatCurrency((data?.pf?.totals?.employee ?? 0) + (data?.pf?.totals?.employer ?? 0))}
-                caption={`${data?.pf?.count ?? 0} employee(s) · wages ${formatCurrency(data?.pf?.totals?.wages)}`}
+                label="NSSF contributions"
+                value={formatCurrency(data?.nssf?.totals?.total)}
+                caption={`${data?.nssf?.count ?? 0} member(s) · wages ${formatCurrency(data?.nssf?.totals?.wages)}`}
                 loading={loading}
               />
             </Grid>
             <Grid size={{ xs: 12, sm: 6, md: 3 }}>
               <StatCard
-                label="ESI contributions"
-                value={formatCurrency((data?.esi?.totals?.employee ?? 0) + (data?.esi?.totals?.employer ?? 0))}
-                caption={`${data?.esi?.count ?? 0} employee(s)`}
+                label="NHIF contributions"
+                value={formatCurrency(data?.nhif?.totals?.employee)}
+                caption={`${data?.nhif?.count ?? 0} member(s)`}
                 loading={loading}
               />
             </Grid>
             <Grid size={{ xs: 12, sm: 6, md: 3 }}>
-              <StatCard label="Professional tax" value={formatCurrency(data?.professionalTax?.total)} loading={loading} />
+              <StatCard label="PAYE" value={formatCurrency(data?.paye?.total)} loading={loading} />
             </Grid>
             <Grid size={{ xs: 12, sm: 6, md: 3 }}>
-              <StatCard label="TDS" value={formatCurrency(data?.tds?.total)} loading={loading} />
+              <StatCard
+                label="SDL & WCF"
+                value={formatCurrency((data?.sdl?.total ?? 0) + (data?.wcf?.total ?? 0))}
+                caption={`SDL ${formatCurrency(data?.sdl?.total)} · WCF ${formatCurrency(data?.wcf?.total)}`}
+                loading={loading}
+              />
             </Grid>
           </Grid>
 
           <Typography variant="caption" color="text.secondary" display="block" sx={{ mb: 1 }}>
-            These registers carry the identifiers used for statutory filing. Treat exports accordingly.
+            These registers carry the identifiers used for statutory filing. Treat exports accordingly. SDL and
+            WCF are employer levies and have no per-employee register.
           </Typography>
 
           <Typography variant="h6" sx={{ mb: 1 }}>
-            Provident fund
+            NSSF
           </Typography>
           <DataTable
-            columns={PF_COLUMNS}
-            rows={data?.pf?.rows ?? []}
+            columns={NSSF_COLUMNS}
+            rows={data?.nssf?.rows ?? []}
             loading={loading}
             getKey={(row) => row.employeeCode}
-            emptyMessage="No PF contributions for this period."
+            emptyMessage="No NSSF contributions for this period."
           />
 
           <Typography variant="h6" sx={{ mt: 3, mb: 1 }}>
-            ESI
+            NHIF
           </Typography>
           <DataTable
-            columns={ESI_COLUMNS}
-            rows={data?.esi?.rows ?? []}
+            columns={NHIF_COLUMNS}
+            rows={data?.nhif?.rows ?? []}
             loading={loading}
             getKey={(row) => row.employeeCode}
-            emptyMessage="No ESI contributions for this period."
+            emptyMessage="No NHIF contributions for this period."
           />
         </>
       )}

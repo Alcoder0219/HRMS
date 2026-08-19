@@ -223,8 +223,11 @@ const PayslipDetailPage = () => {
               {line('Code', snapshot.employeeCode ?? '—')}
               {line('Department', snapshot.department ?? '—')}
               {line('Designation', snapshot.designation ?? '—')}
-              {snapshot.uan ? line('UAN', snapshot.uan) : null}
-              {snapshot.pan ? line('PAN', snapshot.pan) : null}
+              {/* Only what the payslip actually carries: a slip issued for
+                  someone outside NHIF has no membership number to quote. */}
+              {snapshot.tinNumber ? line('TIN', snapshot.tinNumber) : null}
+              {snapshot.nssfNumber ? line('NSSF no.', snapshot.nssfNumber) : null}
+              {snapshot.nhifNumber ? line('NHIF no.', snapshot.nhifNumber) : null}
 
               <Divider sx={{ my: 2 }} />
 
@@ -290,7 +293,7 @@ const PayslipDetailPage = () => {
               <CardContent>
                 <Typography variant="h6">Employer contributions</Typography>
                 <Typography variant="caption" color="text.secondary">
-                  Cost to company — never deducted from salary
+                  NSSF, SDL and WCF — a cost the company carries on top of the salary, never deducted from it
                 </Typography>
                 <Divider sx={{ my: 2 }} />
                 {componentTable(
@@ -309,10 +312,13 @@ const PayslipDetailPage = () => {
               <CardContent>
                 <Typography variant="h6">Year to date</Typography>
                 <Divider sx={{ my: 2 }} />
-                {line('Gross', formatCurrency(payslip.ytd.grossEarnings))}
-                {line('Deductions', formatCurrency(payslip.ytd.totalDeductions))}
-                {line('Net', formatCurrency(payslip.ytd.netPayable))}
-                {payslip.ytd.tds !== undefined ? line('TDS', formatCurrency(payslip.ytd.tds)) : null}
+                {/* The stored YTD block's own keys -- `gross`, `deductions`,
+                    `net` -- not the payslip's monthly ones. */}
+                {line('Gross', formatCurrency(payslip.ytd.gross))}
+                {line('Deductions', formatCurrency(payslip.ytd.deductions))}
+                {line('Net', formatCurrency(payslip.ytd.net))}
+                {payslip.ytd.nssf !== undefined ? line('NSSF', formatCurrency(payslip.ytd.nssf)) : null}
+                {payslip.ytd.paye !== undefined ? line('PAYE', formatCurrency(payslip.ytd.paye)) : null}
               </CardContent>
             </Card>
           </Grid>

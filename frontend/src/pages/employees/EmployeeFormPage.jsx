@@ -4,6 +4,10 @@ import Alert from '@mui/material/Alert';
 import Box from '@mui/material/Box';
 import Button from '@mui/material/Button';
 import Checkbox from '@mui/material/Checkbox';
+import Dialog from '@mui/material/Dialog';
+import DialogActions from '@mui/material/DialogActions';
+import DialogContent from '@mui/material/DialogContent';
+import DialogTitle from '@mui/material/DialogTitle';
 import Divider from '@mui/material/Divider';
 import FormControlLabel from '@mui/material/FormControlLabel';
 import Grid from '@mui/material/Grid';
@@ -27,7 +31,7 @@ import {
   clearCurrent,
   selectEmployees,
 } from '@redux/slices/employeeSlice.js';
-import { toDateInput, formatCurrency } from '@utils/format.js';
+import { toDateInput, formatCurrency, formatDate } from '@utils/format.js';
 import { getRowId, employeeIdentifiers } from '@utils/dataGrid.js';
 import {
   GENDER_OPTIONS,
@@ -44,6 +48,8 @@ import {
   OVERTIME_MULTIPLIER_OPTIONS,
   PREMIUM_MULTIPLIER_OPTIONS,
   OVERTIME_PREMIUM_FIELDS,
+  PORTAL_ROLE_OPTIONS,
+  PORTAL_STATUS_OPTIONS,
 } from '@utils/employeeOptions.js';
 import { PATHS } from '@routes/paths.js';
 import EmployeeDocumentsTab from './components/EmployeeDocumentsTab.jsx';
@@ -70,18 +76,21 @@ const EMPTY_SALARY = {
   grade: '',
   band: '',
   basic: '',
-  hra: '',
-  conveyanceAllowance: '',
-  specialAllowance: '',
-  medicalAllowance: '',
-  otherAllowance: '',
-  pfEmployee: '',
-  pfEmployer: '',
-  esiEmployee: '',
-  esiEmployer: '',
-  lwfEmployee: '',
-  lwfEmployer: '',
-  professionalTax: '',
+  hraAllowance: '',
+  foodAllowance: '',
+  transportationAllowance: '',
+  communicationAllowance: '',
+  mediclaim: '',
+  schoolFeesAllowance: '',
+  // Held as its monthly equivalent, matching the field on the server.
+  annualLeaveAllowance: '',
+  performanceIncentive: '',
+  nssfEmployee: '',
+  nssfEmployer: '',
+  nhif: '',
+  sdl: '',
+  wcf: '',
+  paye: '',
 };
 
 const EMPTY = {
@@ -116,6 +125,16 @@ const EMPTY = {
   // API takes minutes, and the two conversions live beside this constant.
   standardDutyHours: '08:30',
   workLocation: '',
+
+  /* ----------------------------------------------------- portal access -- */
+  // Not employee fields. The server splits these off and applies them to the
+  // login account; see backend/services/employee/portalAccess.service.js.
+  portalAccess: false,
+  portalEmail: '',
+  portalRole: 'EMPLOYEE',
+  portalPassword: '',
+  portalStatus: 'ACTIVE',
+
   salaryStructure: EMPTY_SALARY,
   overtime: {
     eligible: false,
@@ -134,31 +153,34 @@ const EMPTY = {
     nightShiftCustomMultiplier: '',
   },
   statutory: {
-    pfNumber: '',
-    esiNumber: '',
-    uan: '',
-    pan: '',
-    aadhaar: '',
+    nssfNumber: '',
+    nhifNumber: '',
+    tinNumber: '',
+    nationalIdNumber: '',
     passportNumber: '',
     drivingLicense: '',
-    pfApplicable: false,
-    esiApplicable: false,
-    lwfApplicable: false,
-    professionalTaxApplicable: true,
+    workPermitNumber: '',
+    // All three default on, matching the schema: NSSF, NHIF and PAYE apply to
+    // essentially every employed person here, so the exception is the employee
+    // held outside one of them.
+    nssfApplicable: true,
+    nhifApplicable: true,
+    payeApplicable: true,
   },
   bankDetails: {
     accountHolderName: '',
     accountNumber: '',
     bankName: '',
     branch: '',
-    ifsc: '',
+    swiftCode: '',
+    branchCode: '',
     accountType: '',
   },
   emergencyContacts: [
     { name: '', relationship: '', phone: '', alternatePhone: '', isPrimary: true },
   ],
-  currentAddress: { line1: '', line2: '', city: '', state: '', postalCode: '', country: 'India' },
-  permanentAddress: { line1: '', line2: '', city: '', state: '', postalCode: '', country: 'India' },
+  currentAddress: { line1: '', line2: '', city: '', state: '', postalCode: '', country: 'Tanzania' },
+  permanentAddress: { line1: '', line2: '', city: '', state: '', postalCode: '', country: 'Tanzania' },
   sameAsCurrentAddress: false,
   remarks: '',
   notes: '',
@@ -179,6 +201,25 @@ const toFormState = (employee) => ({
   unitId: employee.unitId?._id ?? employee.unitId ?? '',
   gradeId: employee.gradeId?._id ?? employee.gradeId ?? '',
   salaryTemplateId: employee.salaryTemplateId?._id ?? employee.salaryTemplateId ?? '',
+
+  /**
+   * Portal access, read from the populated login account.
+   *
+   * A DEACTIVATED account is shown as access OFF. The link from the employee is
+   * kept on the server so the history survives and a returning employee gets
+   * their old account back, but "deactivated" is not access -- showing the
+   * toggle on would claim this person can sign in when they cannot.
+   */
+  portalAccess: Boolean(employee.userId) && employee.userId?.status !== 'DEACTIVATED',
+  portalEmail: employee.userId?.email ?? employee.workEmail ?? '',
+  portalRole: employee.userId?.role ?? 'EMPLOYEE',
+  // Never prefilled. The server does not return it and blank means "unchanged".
+  portalPassword: '',
+  portalStatus:
+    employee.userId?.status && employee.userId.status !== 'DEACTIVATED'
+      ? employee.userId.status
+      : 'ACTIVE',
+
   salaryStructure: { ...EMPTY.salaryStructure, ...(employee.salaryStructure ?? {}) },
   // Records predating this field have no figure, so they read the 08:30 default.
   standardDutyHours: dutyToInput(employee.standardDutyMinutes),
@@ -238,16 +279,17 @@ const round = (value) => Math.round((Number(value) || 0) * 100) / 100;
 /**
  * Live salary arithmetic, mirroring `deriveSalaryTotals` on the server.
  *
- * Every formula here is duplicated in `backend/models/employee/employee.model.js`
- * and the two are asserted to agree by `salary-formulas.mjs`. The client copy
- * exists so the totals move as you type; the server recomputes and stores its
- * own, because a total arriving in a request body is attacker-supplied.
+ * Every formula here is duplicated in `backend/models/employee/employee.model.js`.
+ * The client copy exists so the totals move as you type; the server recomputes
+ * and stores its own, because a total arriving in a request body is
+ * attacker-supplied.
  *
- *   Gross            = basic + HRA + conveyance + medical + other + special
- *   Employee ded.    = PF(ee) + ESI(ee) + LWF(ee) + professional tax
- *   Employer contrib = PF(er) + ESI(er) + LWF(er)
- *   Net              = Gross − employee deductions − employer contributions
- *   Monthly CTC      = Gross + employer contributions
+ *   Gross            = basic + every allowance
+ *   Employee ded.    = NSSF(ee) + NHIF + PAYE
+ *   Employer contrib = NSSF(er) + SDL + WCF
+ *   Net              = Gross − employee deductions
+ *   Monthly CTC      = Gross
+ *   Cost to company  = Net + employee deductions + employer contributions
  *   Annual CTC       = Monthly CTC × 12
  *   Total amount     = Net + bonus
  *
@@ -258,12 +300,13 @@ const calculateTotals = (salary = {}) => {
   const sum = (fields) => fields.reduce((total, field) => total + toNumber(salary[field.key]), 0);
 
   /**
-   * The earning components sum to the cost to company, not to gross.
+   * The earning components sum to GROSS, undiminished.
    *
-   * Employer PF, ESI and LWF are already inside that figure and are taken out
-   * before gross is stated -- they are a cost the company carries, not
-   * something the employee earns. Mirrors `deriveSalaryTotals` on the server
-   * exactly, so the figures on screen are the figures that get saved.
+   * The employer's NSSF, SDL and WCF are a cost the company carries on top of
+   * the salary, not something the employee earns and then loses, so they are
+   * not netted out here -- they are reported separately and added back for the
+   * true cost to company. Mirrors `deriveSalaryTotals` on the server exactly,
+   * so the figures on screen are the figures that get saved.
    */
   const monthlyCtc = round(sum(SALARY_EARNING_FIELDS));
   const employerContribution = round(sum(SALARY_EMPLOYER_FIELDS));
@@ -271,7 +314,7 @@ const calculateTotals = (salary = {}) => {
 
   // Floored at zero -- a negative wage is a data-entry error, not a figure to
   // display.
-  const grossSalary = Math.max(0, round(monthlyCtc - employerContribution));
+  const grossSalary = monthlyCtc;
   const netSalary = Math.max(0, round(grossSalary - totalDeductions));
 
   const bonus = Math.max(0, round(toNumber(salary.bonus)));
@@ -283,6 +326,7 @@ const calculateTotals = (salary = {}) => {
     netSalary,
     monthlyCtc,
     annualCtc: round(monthlyCtc * 12),
+    costToCompany: Math.max(0, round(netSalary + totalDeductions + employerContribution)),
     bonus,
     totalAmount: Math.max(0, round(netSalary + bonus)),
 
@@ -323,6 +367,8 @@ const EmployeeFormPage = () => {
 
   const [tab, setTab] = useState(0);
   const [form, setForm] = useState(EMPTY);
+  // Held only long enough to show it. The server cannot produce it a second time.
+  const [generatedPassword, setGeneratedPassword] = useState(null);
 
   useEffect(() => {
     dispatch(fetchMasters());
@@ -366,6 +412,23 @@ const EmployeeFormPage = () => {
     }));
   };
 
+  /**
+   * Turning portal access on seeds the login email from the work email.
+   *
+   * Only when the field is still empty: an administrator who typed a different
+   * address -- some people sign in with a personal one -- must not have it
+   * overwritten by toggling the section closed and open again.
+   */
+  const setPortalAccess = (event) => {
+    const { checked } = event.target;
+
+    setForm((previous) => ({
+      ...previous,
+      portalAccess: checked,
+      portalEmail: checked && !previous.portalEmail ? (previous.workEmail ?? '') : previous.portalEmail,
+    }));
+  };
+
   /** Checkbox/switch handler. Kept separate because the value is `checked`. */
   const setFlag = (path) => (event) => {
     const { checked } = event.target;
@@ -400,6 +463,13 @@ const EmployeeFormPage = () => {
    * defaults, leaving every field editable afterwards -- the template is a
    * starting point, not a lock. Requires a gross to work from, so it uses the
    * gross already entered, or derives one from the annual CTC.
+   *
+   * BASIC IS SOLVED FOR, not taken as a percentage of gross. Every template
+   * percentage is expressed against basic -- the Tanzanian convention -- so
+   * the split has to be inverted: the fixed shilling allowances come off the
+   * gross first, and what is left is divided by one plus the percentages that
+   * ride on basic. That is what makes the components total the gross exactly,
+   * without a residual component existing purely to absorb the difference.
    */
   const applySalaryTemplate = (templateId) => {
     const template = masters.salaryTemplates?.find((entry) => entry._id === templateId);
@@ -407,31 +477,36 @@ const EmployeeFormPage = () => {
     setForm((previous) => {
       if (!template) return { ...previous, salaryTemplateId: templateId };
 
+      const statutory = {
+        ...previous.statutory,
+        nssfApplicable: template.nssfApplicable,
+        nhifApplicable: template.nhifApplicable,
+        payeApplicable: template.payeApplicable,
+      };
+
       const currentGross = calculateTotals(previous.salaryStructure).grossSalary;
       const gross = currentGross || Math.round(toNumber(previous.salaryStructure.ctc) / 12);
 
-      if (!gross) {
-        // Nothing to apportion yet -- carry the statutory defaults only.
-        return {
-          ...previous,
-          salaryTemplateId: templateId,
-          statutory: {
-            ...previous.statutory,
-            pfApplicable: template.pfApplicable,
-            esiApplicable: template.esiApplicable,
-            lwfApplicable: template.lwfApplicable,
-            professionalTaxApplicable: template.professionalTaxApplicable,
-          },
-        };
-      }
+      // Nothing to apportion yet -- carry the statutory defaults only.
+      if (!gross) return { ...previous, salaryTemplateId: templateId, statutory };
 
-      const basic = Math.round((gross * template.basicPercent) / 100);
-      const hra = Math.round((basic * template.hraPercentOfBasic) / 100);
-      const conveyance = template.conveyanceAmount ?? 0;
-      const medical = template.medicalAmount ?? 0;
-      const other = template.otherAllowanceAmount ?? 0;
-      // Special allowance balances the split so the components total the gross.
-      const special = Math.max(0, gross - basic - hra - conveyance - medical - other);
+      const food = toNumber(template.foodAllowanceAmount);
+      const mediclaim = toNumber(template.mediclaimAmount);
+      const schoolFees = toNumber(template.schoolFeesAllowanceAmount);
+
+      const remaining = Math.max(0, gross - food - mediclaim - schoolFees);
+
+      const hraPercent = toNumber(template.hraPercent);
+      const transportPercent = toNumber(template.transportationPercent);
+      const commsPercent = toNumber(template.communicationPercent);
+      const leavePercent = toNumber(template.annualLeavePercent);
+
+      // The annual leave allowance is stated per annum, so its share of a
+      // month's basic is a twelfth of the percentage.
+      const multiplier =
+        1 + hraPercent / 100 + transportPercent / 100 + commsPercent / 100 + leavePercent / 100 / 12;
+
+      const basic = Math.round(remaining / (multiplier || 1));
 
       return {
         ...previous,
@@ -439,19 +514,15 @@ const EmployeeFormPage = () => {
         salaryStructure: {
           ...previous.salaryStructure,
           basic,
-          hra,
-          conveyanceAllowance: conveyance,
-          medicalAllowance: medical,
-          otherAllowance: other,
-          specialAllowance: special,
+          hraAllowance: Math.round((basic * hraPercent) / 100),
+          foodAllowance: food,
+          transportationAllowance: Math.round((basic * transportPercent) / 100),
+          communicationAllowance: Math.round((basic * commsPercent) / 100),
+          mediclaim,
+          schoolFeesAllowance: schoolFees,
+          annualLeaveAllowance: Math.round((basic * leavePercent) / 100 / 12),
         },
-        statutory: {
-          ...previous.statutory,
-          pfApplicable: template.pfApplicable,
-          esiApplicable: template.esiApplicable,
-          lwfApplicable: template.lwfApplicable,
-          professionalTaxApplicable: template.professionalTaxApplicable,
-        },
+        statutory,
       };
     });
   };
@@ -482,6 +553,19 @@ const EmployeeFormPage = () => {
 
     try {
       const saved = await dispatch(saveEmployee({ id, payload })).unwrap();
+
+      /**
+       * A generated password is shown before leaving the page.
+       *
+       * The server returns it exactly once -- it is stored only as a hash and
+       * cannot be read back -- so navigating straight to the detail page would
+       * lose the only copy and leave an account nobody can sign into.
+       */
+      if (saved.portalGeneratedPassword) {
+        setGeneratedPassword({ password: saved.portalGeneratedPassword, employee: saved });
+        return;
+      }
+
       // Resolved through the shared rule so the redirect works whether the
       // response was serialised with virtuals or not.
       navigate(PATHS.employeeDetail(getRowId(saved)));
@@ -528,6 +612,21 @@ const EmployeeFormPage = () => {
 
   const totals = calculateTotals(form.salaryStructure);
 
+  /** Whether a login account exists on the server, whatever the toggle says. */
+  const hasAccount = Boolean(current?.userId);
+
+  /**
+   * The work email and the login email have diverged.
+   *
+   * Only worth raising once both are set and portal access is on -- an empty
+   * login email simply defaults to the work one on save.
+   */
+  const emailDrift =
+    form.portalAccess &&
+    Boolean(form.workEmail) &&
+    Boolean(form.portalEmail) &&
+    form.workEmail.trim().toLowerCase() !== form.portalEmail.trim().toLowerCase();
+
   /**
    * Live overtime rate, mirroring `deriveOvertimeRate` on the server.
    *
@@ -547,7 +646,9 @@ const EmployeeFormPage = () => {
 
     const now = new Date();
     const days = new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate();
-    const monthName = now.toLocaleDateString('en-IN', { month: 'long', year: 'numeric' });
+    // `en-TZ` first, `en-GB` behind it -- not every browser ships Tanzanian
+    // locale data, and an unrecognised locale falls back to the reader's own.
+    const monthName = now.toLocaleDateString(['en-TZ', 'en-GB'], { month: 'long', year: 'numeric' });
 
     // An employee with their own monthly hours keeps them; everyone else is
     // priced on the month. Matches workingHoursFor() on the server.
@@ -586,7 +687,7 @@ const EmployeeFormPage = () => {
     };
   }, [form.overtime, totals.grossSalary, masters.payrollDefaults]);
 
-  /** Currency input with a rupee adornment, right-aligned like a ledger. */
+  /** Currency input with the shilling adornment, right-aligned like a ledger. */
   const moneyField = (label, path, extra = {}) =>
     field(label, path, {
       type: 'number',
@@ -775,20 +876,12 @@ const EmployeeFormPage = () => {
                   label="Eligible for overtime"
                 />
               </Grid>
-            </Grid>
-          )}
 
-          {tab === 2 && (
-            <Grid container spacing={2}>
-              <Grid size={half}>{field('PAN', 'statutory.pan', { helperText: fieldErrors['statutory.pan'] ?? 'e.g. ABCDE1234F' })}</Grid>
-              <Grid size={half}>{field('Aadhaar', 'statutory.aadhaar', { helperText: fieldErrors['statutory.aadhaar'] ?? '12 digits' })}</Grid>
-              <Grid size={half}>{field('Passport number', 'statutory.passportNumber')}</Grid>
-              <Grid size={half}>{field('Driving license', 'statutory.drivingLicense')}</Grid>
-
+              {/* ------------------------------------------ Portal access -- */}
               <Grid size={12}>
                 <Divider textAlign="left" sx={{ my: 1 }}>
                   <Typography variant="overline" color="text.secondary">
-                    Provident fund
+                    Portal access
                   </Typography>
                 </Divider>
               </Grid>
@@ -796,32 +889,133 @@ const EmployeeFormPage = () => {
               <Grid size={12}>
                 <FormControlLabel
                   control={
-                    <Switch
-                      checked={Boolean(form.statutory.pfApplicable)}
-                      onChange={setFlag('statutory.pfApplicable')}
-                    />
+                    <Switch checked={Boolean(form.portalAccess)} onChange={setPortalAccess} />
                   }
-                  label="PF applicable"
+                  label="Enable portal login"
                 />
+                <Typography variant="caption" color="text.secondary" display="block">
+                  {form.portalAccess
+                    ? 'This employee can sign in to the HRMS with the email below.'
+                    : hasAccount
+                      ? 'Saving with this off will deactivate the login account. It is never deleted — the audit trail refers to it.'
+                      : 'Off means HR data only, with no way to sign in.'}
+                </Typography>
               </Grid>
 
-              {/* Numbers are only asked for when the scheme applies -- an
-                  inapplicable field invites a value that means nothing. */}
-              {form.statutory.pfApplicable && (
+              {form.portalAccess && (
                 <>
-                  <Grid size={half}>{field('PF number', 'statutory.pfNumber')}</Grid>
                   <Grid size={half}>
-                    {field('UAN', 'statutory.uan', {
-                      helperText: fieldErrors['statutory.uan'] ?? '12 digits',
+                    {field('Login email', 'portalEmail', {
+                      required: true,
+                      type: 'email',
+                      helperText:
+                        fieldErrors.portalEmail ?? 'Defaults to the work email; editable if they sign in with another.',
                     })}
                   </Grid>
+
+                  <Grid size={half}>
+                    {selectField('Role', 'portalRole', PORTAL_ROLE_OPTIONS, {
+                      required: true,
+                      helperText:
+                        fieldErrors.portalRole ?? 'What they may see and do. Super Admin is not granted from here.',
+                    })}
+                  </Grid>
+
+                  <Grid size={half}>
+                    {field('Password', 'portalPassword', {
+                      type: 'password',
+                      autoComplete: 'new-password',
+                      helperText:
+                        fieldErrors.portalPassword ??
+                        (hasAccount
+                          ? 'Leave blank to keep the current password. Setting one signs them out everywhere.'
+                          : 'Leave blank to generate one — it is shown once when you save.'),
+                    })}
+                  </Grid>
+
+                  <Grid size={half}>
+                    {selectField('Account status', 'portalStatus', PORTAL_STATUS_OPTIONS, {
+                      helperText: fieldErrors.portalStatus ?? 'Suspending signs them out immediately.',
+                    })}
+                  </Grid>
+
+                  {/*
+                    The work email moved but the login did not. Raised rather
+                    than fixed silently: which address someone signs in with is
+                    a decision, and quietly changing a credential is not ours to
+                    make.
+                  */}
+                  {emailDrift && (
+                    <Grid size={12}>
+                      <Alert
+                        severity="warning"
+                        variant="outlined"
+                        action={
+                          <Button
+                            size="small"
+                            color="inherit"
+                            onClick={() =>
+                              setForm((previous) => ({ ...previous, portalEmail: previous.workEmail }))
+                            }
+                          >
+                            Use work email
+                          </Button>
+                        }
+                      >
+                        The work email is <strong>{form.workEmail}</strong> but the login email is{' '}
+                        <strong>{form.portalEmail}</strong>. They sign in with the login email.
+                      </Alert>
+                    </Grid>
+                  )}
+
+                  {hasAccount && (
+                    <Grid size={12}>
+                      <Alert severity="info" variant="outlined">
+                        This employee has a login account.
+                        {current?.userId?.lastLoginAt
+                          ? ` Last sign-in ${formatDate(current.userId.lastLoginAt, 'dd MMM yyyy, HH:mm')}.`
+                          : ' They have never signed in.'}
+                        {current?.userId?.isEmailVerified === false && ' Their email is not verified.'}
+                      </Alert>
+                    </Grid>
+                  )}
                 </>
               )}
+            </Grid>
+          )}
+
+          {tab === 2 && (
+            <Grid container spacing={2}>
+              <Grid size={12}>
+                <Divider textAlign="left" sx={{ mb: 1 }}>
+                  <Typography variant="overline" color="text.secondary">
+                    Identity
+                  </Typography>
+                </Divider>
+              </Grid>
+
+              <Grid size={half}>
+                {field('National ID (NIDA)', 'statutory.nationalIdNumber', {
+                  helperText: fieldErrors['statutory.nationalIdNumber'] ?? 'As printed on the NIDA card',
+                })}
+              </Grid>
+              <Grid size={half}>
+                {field('TIN', 'statutory.tinNumber', {
+                  helperText: fieldErrors['statutory.tinNumber'] ?? 'e.g. 123-456-789',
+                })}
+              </Grid>
+              <Grid size={half}>{field('Passport number', 'statutory.passportNumber')}</Grid>
+              <Grid size={half}>{field('Driving license', 'statutory.drivingLicense')}</Grid>
+              <Grid size={half}>
+                {field('Work permit number', 'statutory.workPermitNumber', {
+                  helperText: 'Expatriate employees only — leave blank for citizens',
+                })}
+              </Grid>
 
               <Grid size={12}>
                 <Divider textAlign="left" sx={{ my: 1 }}>
                   <Typography variant="overline" color="text.secondary">
-                    ESI, LWF and professional tax
+                    Statutory schemes
                   </Typography>
                 </Divider>
               </Grid>
@@ -831,35 +1025,44 @@ const EmployeeFormPage = () => {
                   <FormControlLabel
                     control={
                       <Switch
-                        checked={Boolean(form.statutory.esiApplicable)}
-                        onChange={setFlag('statutory.esiApplicable')}
+                        checked={Boolean(form.statutory.nssfApplicable)}
+                        onChange={setFlag('statutory.nssfApplicable')}
                       />
                     }
-                    label="ESI applicable"
+                    label="NSSF applicable"
                   />
                   <FormControlLabel
                     control={
                       <Switch
-                        checked={Boolean(form.statutory.lwfApplicable)}
-                        onChange={setFlag('statutory.lwfApplicable')}
+                        checked={Boolean(form.statutory.nhifApplicable)}
+                        onChange={setFlag('statutory.nhifApplicable')}
                       />
                     }
-                    label="LWF applicable"
+                    label="NHIF applicable"
                   />
                   <FormControlLabel
                     control={
                       <Switch
-                        checked={Boolean(form.statutory.professionalTaxApplicable)}
-                        onChange={setFlag('statutory.professionalTaxApplicable')}
+                        checked={Boolean(form.statutory.payeApplicable)}
+                        onChange={setFlag('statutory.payeApplicable')}
                       />
                     }
-                    label="Professional tax applicable"
+                    label="PAYE applicable"
                   />
                 </Stack>
+                <Typography variant="caption" color="text.secondary" display="block" sx={{ mt: 1 }}>
+                  SDL and WCF are levied on the employer&apos;s payroll and have no per-employee switch —
+                  they are never deducted from anybody&apos;s pay.
+                </Typography>
               </Grid>
 
-              {form.statutory.esiApplicable && (
-                <Grid size={half}>{field('ESI number', 'statutory.esiNumber')}</Grid>
+              {/* Numbers are only asked for when the scheme applies -- an
+                  inapplicable field invites a value that means nothing. */}
+              {form.statutory.nssfApplicable && (
+                <Grid size={half}>{field('NSSF number', 'statutory.nssfNumber')}</Grid>
+              )}
+              {form.statutory.nhifApplicable && (
+                <Grid size={half}>{field('NHIF number', 'statutory.nhifNumber')}</Grid>
               )}
             </Grid>
           )}
@@ -898,7 +1101,13 @@ const EmployeeFormPage = () => {
 
               {SALARY_EARNING_FIELDS.map((component) => (
                 <Grid size={quarter} key={component.key}>
-                  {moneyField(component.label, `salaryStructure.${component.key}`)}
+                  {/* `help` explains a component whose stored figure is not
+                      what its name implies -- the annual leave allowance is
+                      entered monthly. */}
+                  {moneyField(component.label, `salaryStructure.${component.key}`, {
+                    helperText:
+                      fieldErrors[`salaryStructure.${component.key}`] ?? component.help,
+                  })}
                 </Grid>
               ))}
 
@@ -946,14 +1155,15 @@ const EmployeeFormPage = () => {
 
               <Grid size={quarter}>{totalField('Monthly CTC', totals.monthlyCtc)}</Grid>
               <Grid size={quarter}>{totalField('Annual CTC', totals.annualCtc)}</Grid>
-              <Grid size={quarter}>{totalField('Bonus', totals.bonus)}</Grid>
+              <Grid size={quarter}>{totalField('Cost to company', totals.costToCompany)}</Grid>
               <Grid size={quarter}>{totalField('Total amount', totals.totalAmount, true)}</Grid>
 
               <Grid size={12}>
                 <Alert severity="info" variant="outlined">
-                  Every total recalculates as you type and is recomputed on the server when you save. Net salary is
-                  gross less employee deductions <strong>and</strong> employer PF, ESI and LWF, per payroll policy.
-                  Bonus sits outside gross and CTC, and is added only to the total amount.
+                  Every total recalculates as you type and is recomputed on the server when you save. Gross is the
+                  earnings above, undiminished; net salary is gross less the employee&apos;s NSSF, NHIF and PAYE.
+                  The employer&apos;s NSSF, SDL and WCF are a cost the company carries <strong>on top</strong> of
+                  the salary and are never deducted — they appear in cost to company instead.
                 </Alert>
               </Grid>
 
@@ -1104,12 +1314,19 @@ const EmployeeFormPage = () => {
               <Grid size={half}>{field('Account holder', 'bankDetails.accountHolderName')}</Grid>
               <Grid size={half}>{field('Account number', 'bankDetails.accountNumber')}</Grid>
               <Grid size={half}>
-                {field('IFSC', 'bankDetails.ifsc', {
-                  helperText: fieldErrors['bankDetails.ifsc'] ?? 'Required alongside an account number',
+                {field('SWIFT code', 'bankDetails.swiftCode', {
+                  helperText:
+                    fieldErrors['bankDetails.swiftCode'] ??
+                    'Required alongside an account number — e.g. CORUTZTZ',
                 })}
               </Grid>
               <Grid size={half}>{field('Bank name', 'bankDetails.bankName')}</Grid>
               <Grid size={half}>{field('Branch', 'bankDetails.branch')}</Grid>
+              <Grid size={half}>
+                {field('Branch code', 'bankDetails.branchCode', {
+                  helperText: "The bank's own branch code, where it quotes one",
+                })}
+              </Grid>
               <Grid size={half}>
                 {selectField('Account type', 'bankDetails.accountType', BANK_ACCOUNT_TYPE_OPTIONS)}
               </Grid>
@@ -1165,7 +1382,7 @@ const EmployeeFormPage = () => {
               <Grid size={{ xs: 12, md: 4 }}>{field('Address line 2', 'currentAddress.line2')}</Grid>
               <Grid size={half}>{field('City', 'currentAddress.city')}</Grid>
               <Grid size={half}>{field('State', 'currentAddress.state')}</Grid>
-              <Grid size={half}>{field('Pincode', 'currentAddress.postalCode')}</Grid>
+              <Grid size={half}>{field('Postal code', 'currentAddress.postalCode')}</Grid>
               <Grid size={half}>{field('Country', 'currentAddress.country')}</Grid>
 
               <Grid size={12}>
@@ -1209,7 +1426,7 @@ const EmployeeFormPage = () => {
                 {field('State', 'permanentAddress.state', { disabled: form.sameAsCurrentAddress })}
               </Grid>
               <Grid size={half}>
-                {field('Pincode', 'permanentAddress.postalCode', {
+                {field('Postal code', 'permanentAddress.postalCode', {
                   disabled: form.sameAsCurrentAddress,
                 })}
               </Grid>
@@ -1269,6 +1486,65 @@ const EmployeeFormPage = () => {
           </Button>
         </Stack>
       </Paper>
+
+      {/*
+        The one and only sight of a generated password.
+
+        Not dismissible by clicking away: closing this by accident loses the
+        credential for good, and the account would have to be given a new one.
+      */}
+      <Dialog open={Boolean(generatedPassword)} maxWidth="xs" fullWidth disableEscapeKeyDown>
+        <DialogTitle>Portal access created</DialogTitle>
+        <DialogContent dividers>
+          <Alert severity="warning" sx={{ mb: 2 }}>
+            This password is shown once and cannot be retrieved again. Copy it now and give it to the
+            employee.
+          </Alert>
+
+          <Typography variant="caption" color="text.secondary" display="block">
+            Login email
+          </Typography>
+          <Typography variant="body2" gutterBottom>
+            {generatedPassword?.employee?.userId?.email ?? form.portalEmail ?? form.workEmail}
+          </Typography>
+
+          <Typography variant="caption" color="text.secondary" display="block" sx={{ mt: 1 }}>
+            Temporary password
+          </Typography>
+          <Typography
+            variant="h6"
+            fontFamily="ui-monospace, monospace"
+            sx={{ userSelect: 'all', wordBreak: 'break-all' }}
+          >
+            {generatedPassword?.password}
+          </Typography>
+
+          <Typography variant="caption" color="text.secondary" display="block" sx={{ mt: 2 }}>
+            They will be asked to change it when they first sign in.
+          </Typography>
+        </DialogContent>
+        <DialogActions>
+          <Button
+            onClick={() => {
+              // Best effort: the clipboard API is unavailable over plain HTTP,
+              // which is why the text above is selectable as well.
+              navigator.clipboard?.writeText(generatedPassword.password).catch(() => {});
+            }}
+          >
+            Copy
+          </Button>
+          <Button
+            variant="contained"
+            onClick={() => {
+              const saved = generatedPassword.employee;
+              setGeneratedPassword(null);
+              navigate(PATHS.employeeDetail(getRowId(saved)));
+            }}
+          >
+            Done
+          </Button>
+        </DialogActions>
+      </Dialog>
     </Box>
   );
 };

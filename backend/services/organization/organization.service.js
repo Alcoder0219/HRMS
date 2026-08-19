@@ -6,7 +6,7 @@ import Grade from '../../models/organization/grade.model.js';
 import SalaryTemplate from '../../models/organization/salaryTemplate.model.js';
 import Employee from '../../models/employee/employee.model.js';
 import PayrollSettings from '../../models/payroll/payrollSettings.model.js';
-import { ACTIVE_EMPLOYEE_STATUSES, DEFAULT_MONTHLY_WORKING_HOURS } from '../../utils/constants.js';
+import { ACTIVE_EMPLOYEE_STATUSES, CURRENCY, DEFAULT_MONTHLY_WORKING_HOURS } from '../../utils/constants.js';
 
 /**
  * Read-only masters that other modules pick from.
@@ -27,7 +27,7 @@ export const listShifts = (tenantId) =>
   listActive(Shift, tenantId, 'name code startTime endTime isNightShift');
 
 export const listUnits = (tenantId) =>
-  listActive(Unit, tenantId, 'name code city state ptState lwfState');
+  listActive(Unit, tenantId, 'name code city state nssfEmployerCode nhifEmployerCode wcfEmployerCode');
 
 export const listGrades = (tenantId) => listActive(Grade, tenantId, 'name code level minGross maxGross');
 
@@ -35,7 +35,9 @@ export const listSalaryTemplates = (tenantId) =>
   listActive(
     SalaryTemplate,
     tenantId,
-    'name code basicPercent hraPercentOfBasic conveyanceAmount medicalAmount otherAllowanceAmount pfApplicable esiApplicable lwfApplicable professionalTaxApplicable isDefault',
+    'name code hraPercent transportationPercent communicationPercent annualLeavePercent ' +
+      'foodAllowanceAmount mediclaimAmount schoolFeesAllowanceAmount ' +
+      'nssfApplicable nhifApplicable payeApplicable isDefault',
   );
 
 /**
@@ -96,7 +98,7 @@ export const listAllMasters = async (tenantId) => {
     payrollDefaults: {
       monthlyWorkingHours: settings?.monthlyWorkingHours ?? DEFAULT_MONTHLY_WORKING_HOURS,
       overtimeMultiplier: settings?.overtimeMultiplier ?? 2,
-      currency: settings?.currency ?? 'INR',
+      currency: settings?.currency ?? CURRENCY.CODE,
     },
   };
 };

@@ -1,5 +1,5 @@
 import { SETTLEMENT_COMPONENT, SETTLEMENT_TRIGGER } from '../utils/constants.js';
-import { roundToRupee } from './statutory.helper.js';
+import { roundToCurrency } from './statutory.helper.js';
 
 /**
  * Full and final settlement calculation.
@@ -11,39 +11,75 @@ import { roundToRupee } from './statutory.helper.js';
  */
 
 export const DEFAULT_SETTLEMENT_RULES = {
-  gratuity: {
+  /**
+   * Severance pay, under the Employment and Labour Relations Act.
+   *
+   * Deliberately NOT gratuity, which this replaced. The two are different
+   * entitlements with different triggers, and carrying the Indian rule over
+   * under a new name would have paid the wrong people the wrong amounts:
+   *
+   *   - Severance is owed on TERMINATION by the employer, and on redundancy.
+   *     A resignation earns none of it, where gratuity was payable on any exit
+   *     once the service bar was met.
+   *   - The qualifying period is twelve months' continuous service, not five
+   *     years.
+   *   - The formula is seven days' basic wage for each completed year, capped
+   *     at ten years of service -- so the entitlement stops growing after a
+   *     decade rather than continuing indefinitely under a shilling ceiling.
+   *
+   * The daily wage divides a month by 30, not by the 26 the Gratuity Act used;
+   * there is no statutory working-day fiction here to reproduce.
+   */
+  severance: {
     enabled: true,
-    // Payment of Gratuity Act: five years' continuous service.
-    minimumYears: 5,
-    // 15 days' wages for every completed year, on a 26-day month.
-    daysPerYear: 15,
-    monthDays: 26,
-    // Statutory ceiling; configurable because it is revised periodically.
-    maxAmount: 2_000_000,
-    // Service beyond six months in the final year counts as a full year.
+    minimumMonths: 12,
+    daysPerYear: 7,
+    monthDays: 30,
+    // Service beyond this many completed years earns no further severance.
+    maxYears: 10,
+    // Part-years do not count towards severance, so no rounding-up rule.
     roundUpFromMonths: 6,
-    // Wages for gratuity are Basic + DA, not gross.
-    includeDaInWages: true,
-    // Death and permanent disability are payable regardless of tenure.
-    waiveMinimumOnDeath: true,
+    // Death in service and retirement are settled as if terminated.
+    payableOnTriggers: [
+      SETTLEMENT_TRIGGER.TERMINATION,
+      SETTLEMENT_TRIGGER.END_OF_CONTRACT,
+      SETTLEMENT_TRIGGER.DEATH,
+      SETTLEMENT_TRIGGER.RETIREMENT,
+    ],
   },
   notice: {
     // Per-day basis for both pay in lieu and shortfall recovery.
-    perDayBasis: 'GROSS', // 'GROSS' | 'BASIC_DA'
+    perDayBasis: 'GROSS', // 'GROSS' | 'BASIC'
     monthDays: 30,
   },
+  /**
+   * Leave encashment.
+   *
+   * Capped at 28 days: the Act entitles an employee to 28 consecutive days of
+   * paid annual leave in each leave cycle, so that is the most that can be
+   * accrued and therefore the most that can be cashed out at exit. It was 60
+   * under the Indian rules, which would have paid out more than a Tanzanian
+   * employee can ever have earned.
+   *
+   * Priced on GROSS rather than on basic, because annual leave here is paid
+   * leave at the employee's ordinary remuneration -- a leave day is worth what
+   * a working day is worth.
+   */
   leaveEncashment: {
     enabled: true,
-    perDayBasis: 'BASIC_DA',
+    perDayBasis: 'GROSS',
     monthDays: 30,
-    maxDays: 60,
+    maxDays: 28,
   },
 };
+
+/** Statutory annual leave entitlement, in days per leave cycle. */
+export const ANNUAL_LEAVE_ENTITLEMENT_DAYS = 28;
 
 const line = (code, label, amount, meta = null) => ({
   code,
   label,
-  amount: roundToRupee(amount),
+  amount: roundToCurrency(amount),
   ...(meta ? { meta } : {}),
 });
 
@@ -54,9 +90,10 @@ const line = (code, label, amount, meta = null) => ({
 /**
  * Completed years of service, with the part-year rounded per policy.
  *
- * Returns the raw figures too, because a gratuity dispute is almost always
- * about the boundary -- "four years and seven months" either is or is not five
- * years depending on a rule the employee is entitled to see.
+ * Returns the raw figures too, because a severance dispute is almost always
+ * about the boundary -- "eleven months and three weeks" either does or does not
+ * clear the twelve-month bar, depending on a rule the employee is entitled to
+ * see.
  */
 export const calculateService = (joiningDate, lastWorkingDate, { roundUpFromMonths = 6 } = {}) => {
   if (!joiningDate || !lastWorkingDate) {
@@ -88,53 +125,81 @@ export const calculateService = (joiningDate, lastWorkingDate, { roundUpFromMont
     months,
     days,
     totalDays,
-    // The figure gratuity multiplies by.
+    /**
+     * Service with the part-year rounded up, for rules that grant credit for
+     * most of a final year.
+     *
+     * Severance deliberately does NOT use this -- it counts whole years only,
+     * and reads `years` instead. Kept because the notice and encashment rules a
+     * tenant may configure are free to round, and because a settlement sheet
+     * should show both figures when the two differ.
+     */
     completedYears: months >= roundUpFromMonths ? years + 1 : years,
   };
 };
 
 /* -------------------------------------------------------------------------- */
-/*                                  Gratuity                                  */
+/*                                Severance pay                               */
 /* -------------------------------------------------------------------------- */
 
 /**
- * Gratuity: (Basic + DA) x 15/26 x completed years.
+ * Severance: basic x 7/30 x completed years, capped at ten years of service.
  *
- * The 26 is not a mistake -- the Act treats a month as 26 working days, so the
- * daily wage is deliberately higher than a calendar-day rate. Using 30 here is
- * a common and expensive error.
+ * Two gates rather than one, and the trigger gate comes first. An employee who
+ * resigns is owed no severance however long they served, so a rule that
+ * checked only the service period would pay out on every voluntary exit. That
+ * is the substantive difference from the gratuity calculation this replaces,
+ * which was payable on any exit once the five-year bar was cleared.
+ *
+ * WHOLE years only. The Act speaks of each completed year of continuous
+ * service, so eleven months of a final year adds nothing -- which is why
+ * `service.years` is used here and not the rounded-up `completedYears` the
+ * gratuity rule needed.
+ *
+ * The base is basic wage, not gross: allowances are reimbursements of a cost of
+ * working, and they stop when the work does.
  */
-export const calculateGratuity = ({ basic, da = 0, service, trigger, rules = DEFAULT_SETTLEMENT_RULES }) => {
-  const config = rules.gratuity ?? DEFAULT_SETTLEMENT_RULES.gratuity;
+export const calculateSeverance = ({ basic, service, trigger, rules = DEFAULT_SETTLEMENT_RULES }) => {
+  const config = rules.severance ?? DEFAULT_SETTLEMENT_RULES.severance;
 
   const result = {
     eligible: false,
     amount: 0,
-    completedYears: service.completedYears,
+    years: service.years,
+    countedYears: 0,
     wages: 0,
     reason: null,
   };
 
   if (!config.enabled) {
-    result.reason = 'Gratuity is disabled in settlement rules';
+    result.reason = 'Severance is disabled in settlement rules';
     return result;
   }
 
-  const waived = config.waiveMinimumOnDeath && trigger === SETTLEMENT_TRIGGER.DEATH;
+  const payableTriggers = config.payableOnTriggers ?? DEFAULT_SETTLEMENT_RULES.severance.payableOnTriggers;
 
-  if (!waived && service.completedYears < config.minimumYears) {
-    result.reason = `Requires ${config.minimumYears} years of service; completed ${service.years}y ${service.months}m`;
+  if (trigger && !payableTriggers.includes(trigger)) {
+    result.reason = `Severance is not payable on ${String(trigger).toLowerCase().replace(/_/g, ' ')}`;
     return result;
   }
 
-  const wages = Number(basic || 0) + (config.includeDaInWages ? Number(da || 0) : 0);
-  const raw = (wages * config.daysPerYear * service.completedYears) / config.monthDays;
+  const servedMonths = service.years * 12 + service.months;
+  if (servedMonths < config.minimumMonths) {
+    result.reason = `Requires ${config.minimumMonths} months of continuous service; completed ${service.years}y ${service.months}m`;
+    return result;
+  }
 
-  result.eligible = true;
-  result.wages = roundToRupee(wages);
-  result.amount = roundToRupee(Math.min(raw, config.maxAmount));
-  result.cappedAt = raw > config.maxAmount ? config.maxAmount : null;
-  result.reason = waived ? 'Minimum service waived (death in service)' : null;
+  // Service beyond the ceiling earns nothing further; it is a cap on the
+  // YEARS counted, not a cap on the shillings paid.
+  const countedYears = Math.min(service.years, config.maxYears ?? service.years);
+  const wages = Math.max(0, Number(basic || 0));
+  const amount = (wages * config.daysPerYear * countedYears) / config.monthDays;
+
+  result.eligible = countedYears > 0;
+  result.wages = roundToCurrency(wages);
+  result.countedYears = countedYears;
+  result.amount = roundToCurrency(amount);
+  result.cappedAt = service.years > countedYears ? config.maxYears : null;
 
   return result;
 };
@@ -156,13 +221,13 @@ export const calculateNotice = ({
   servedDays = 0,
   waivedDays = 0,
   monthlyGross,
-  basicDa,
+  basic,
   trigger,
   employerWaived = false,
   rules = DEFAULT_SETTLEMENT_RULES,
 }) => {
   const config = rules.notice ?? DEFAULT_SETTLEMENT_RULES.notice;
-  const base = config.perDayBasis === 'BASIC_DA' ? Number(basicDa || 0) : Number(monthlyGross || 0);
+  const base = config.perDayBasis === 'BASIC' ? Number(basic || 0) : Number(monthlyGross || 0);
   const perDay = base / (config.monthDays || 30);
 
   const shortfall = Math.max(0, Number(requiredDays) - Number(servedDays) - Number(waivedDays));
@@ -175,8 +240,8 @@ export const calculateNotice = ({
     return {
       direction: 'PAYABLE',
       days: shortfall,
-      perDay: roundToRupee(perDay),
-      amount: roundToRupee(perDay * shortfall),
+      perDay: roundToCurrency(perDay),
+      amount: roundToCurrency(perDay * shortfall),
       reason: 'Pay in lieu of notice (employer-initiated exit)',
     };
   }
@@ -185,7 +250,7 @@ export const calculateNotice = ({
     return {
       direction: 'NONE',
       days: 0,
-      perDay: roundToRupee(perDay),
+      perDay: roundToCurrency(perDay),
       amount: 0,
       reason: employerWaived ? 'Notice period waived by the employer' : 'Full notice served',
     };
@@ -194,8 +259,8 @@ export const calculateNotice = ({
   return {
     direction: 'RECOVERABLE',
     days: shortfall,
-    perDay: roundToRupee(perDay),
-    amount: roundToRupee(perDay * shortfall),
+    perDay: roundToCurrency(perDay),
+    amount: roundToCurrency(perDay * shortfall),
     reason: `${shortfall} day(s) of notice not served`,
   };
 };
@@ -204,9 +269,18 @@ export const calculateNotice = ({
 /*                              Leave encashment                              */
 /* -------------------------------------------------------------------------- */
 
+/**
+ * Accrued annual leave, paid out at exit.
+ *
+ * Capped at the statutory 28-day cycle entitlement -- an employee cannot have
+ * accrued more than one cycle's worth, so a larger figure arriving here is a
+ * leave-balance error rather than a larger payout. The cap is reported so the
+ * sheet can say it was applied instead of silently paying less than was asked
+ * for.
+ */
 export const calculateLeaveEncashment = ({
   encashableDays = 0,
-  basicDa,
+  basic,
   monthlyGross,
   rules = DEFAULT_SETTLEMENT_RULES,
 }) => {
@@ -216,14 +290,14 @@ export const calculateLeaveEncashment = ({
     return { days: 0, perDay: 0, amount: 0 };
   }
 
-  const base = config.perDayBasis === 'GROSS' ? Number(monthlyGross || 0) : Number(basicDa || 0);
+  const base = config.perDayBasis === 'BASIC' ? Number(basic || 0) : Number(monthlyGross || 0);
   const perDay = base / (config.monthDays || 30);
   const days = Math.min(Number(encashableDays), config.maxDays ?? Number(encashableDays));
 
   return {
     days,
-    perDay: roundToRupee(perDay),
-    amount: roundToRupee(perDay * days),
+    perDay: roundToCurrency(perDay),
+    amount: roundToCurrency(perDay * days),
     cappedAt: encashableDays > (config.maxDays ?? Infinity) ? config.maxDays : null,
   };
 };
@@ -236,7 +310,7 @@ export const calculateLeaveEncashment = ({
  * Assembles the full settlement sheet.
  *
  * @param {object} input
- * @param {object} input.structure   { basic, da, hra, specialAllowance, monthlyGross }
+ * @param {object} input.structure   Basic, the allowances, and `monthlyGross`
  * @param {object} input.service     From calculateService
  * @param {string} input.trigger
  * @param {object} input.pendingSalary { days, perDay, amount } - unpaid days to LWD
@@ -245,7 +319,7 @@ export const calculateLeaveEncashment = ({
  * @param {Array}  input.loans       [{ loanId, loanNumber, outstanding }]
  * @param {Array}  input.advances    [{ advanceId, reference, outstanding }]
  * @param {Array}  input.assets      [{ assetId, assetCode, name, recoveryAmount }]
- * @param {object} input.extras      { bonus, incentive, arrears, reimbursement, otherEarnings[], otherDeductions[], tds }
+ * @param {object} input.extras      { bonus, incentive, arrears, reimbursement, otherEarnings[], otherDeductions[], paye }
  */
 export const buildSettlementSheet = ({
   structure,
@@ -261,10 +335,20 @@ export const buildSettlementSheet = ({
   rules = DEFAULT_SETTLEMENT_RULES,
 }) => {
   const basic = Number(structure.basic || 0);
-  const da = Number(structure.da || 0);
-  const basicDa = basic + da;
-  const monthlyGross =
-    Number(structure.monthlyGross ?? basic + da + Number(structure.hra || 0) + Number(structure.specialAllowance || 0));
+  // The caller supplies the gross; the fallback sums whatever named allowances
+  // are on the structure, so a partially-populated one still prices.
+  const monthlyGross = Number(
+    structure.monthlyGross ??
+      basic +
+        Number(structure.hraAllowance || 0) +
+        Number(structure.foodAllowance || 0) +
+        Number(structure.transportationAllowance || 0) +
+        Number(structure.communicationAllowance || 0) +
+        Number(structure.mediclaim || 0) +
+        Number(structure.schoolFeesAllowance || 0) +
+        Number(structure.annualLeaveAllowance || 0) +
+        Number(structure.performanceIncentive || 0),
+  );
 
   /* --------------------------------------------------------- earnings -- */
   const earnings = [];
@@ -277,14 +361,14 @@ export const buildSettlementSheet = ({
     earnings.push(
       line(SETTLEMENT_COMPONENT.PENDING_SALARY, 'Pending salary', pendingAmount, {
         days: pendingDays,
-        perDay: roundToRupee(pendingPerDay),
+        perDay: roundToCurrency(pendingPerDay),
       }),
     );
   }
 
   const encashment = calculateLeaveEncashment({
     encashableDays: leave.encashableDays ?? 0,
-    basicDa,
+    basic,
     monthlyGross,
     rules,
   });
@@ -295,15 +379,15 @@ export const buildSettlementSheet = ({
     );
   }
 
-  const gratuity = calculateGratuity({ basic, da, service, trigger, rules });
-  if (gratuity.amount > 0) {
-    earnings.push(line(SETTLEMENT_COMPONENT.GRATUITY, 'Gratuity', gratuity.amount, gratuity));
+  const severance = calculateSeverance({ basic, service, trigger, rules });
+  if (severance.amount > 0) {
+    earnings.push(line(SETTLEMENT_COMPONENT.SEVERANCE_PAY, 'Severance pay', severance.amount, severance));
   }
 
   const noticeResult = calculateNotice({
     ...notice,
     monthlyGross,
-    basicDa,
+    basic,
     trigger,
     rules,
   });
@@ -345,7 +429,7 @@ export const buildSettlementSheet = ({
         breakup: loans.map((loan) => ({
           loanId: loan.loanId,
           loanNumber: loan.loanNumber,
-          amount: roundToRupee(loan.outstanding),
+          amount: roundToCurrency(loan.outstanding),
         })),
       }),
     );
@@ -358,7 +442,7 @@ export const buildSettlementSheet = ({
         breakup: advances.map((advance) => ({
           advanceId: advance.advanceId,
           reference: advance.reference,
-          amount: roundToRupee(advance.outstanding),
+          amount: roundToCurrency(advance.outstanding),
         })),
       }),
     );
@@ -372,7 +456,7 @@ export const buildSettlementSheet = ({
           assetId: asset.assetId,
           assetCode: asset.assetCode,
           name: asset.name,
-          amount: roundToRupee(asset.recoveryAmount),
+          amount: roundToCurrency(asset.recoveryAmount),
         })),
       }),
     );
@@ -380,16 +464,18 @@ export const buildSettlementSheet = ({
 
   const excessDays = Number(leave.excessDays || 0);
   if (excessDays > 0) {
-    const perDay = basicDa / 30;
+    // Recovered at the same daily rate leave is paid at, so taking a day and
+    // cashing a day are worth the same amount rather than one being cheaper.
+    const perDay = monthlyGross / 30;
     deductions.push(
       line(SETTLEMENT_COMPONENT.EXCESS_LEAVE, 'Excess leave taken', perDay * excessDays, {
         days: excessDays,
-        perDay: roundToRupee(perDay),
+        perDay: roundToCurrency(perDay),
       }),
     );
   }
 
-  if (extras.tds > 0) deductions.push(line(SETTLEMENT_COMPONENT.TDS, 'Income tax (TDS)', extras.tds));
+  if (extras.paye > 0) deductions.push(line(SETTLEMENT_COMPONENT.PAYE, 'PAYE', extras.paye));
 
   (extras.otherDeductions ?? []).forEach((entry) => {
     if (entry.amount > 0) {
@@ -398,9 +484,9 @@ export const buildSettlementSheet = ({
   });
 
   /* ------------------------------------------------------------ totals -- */
-  const totalEarnings = roundToRupee(earnings.reduce((sum, entry) => sum + entry.amount, 0));
-  const totalDeductions = roundToRupee(deductions.reduce((sum, entry) => sum + entry.amount, 0));
-  const net = roundToRupee(totalEarnings - totalDeductions);
+  const totalEarnings = roundToCurrency(earnings.reduce((sum, entry) => sum + entry.amount, 0));
+  const totalDeductions = roundToCurrency(deductions.reduce((sum, entry) => sum + entry.amount, 0));
+  const net = roundToCurrency(totalEarnings - totalDeductions);
 
   return {
     earnings,
@@ -416,19 +502,20 @@ export const buildSettlementSheet = ({
 
     breakdown: {
       service,
-      gratuity,
+      severance,
       notice: noticeResult,
       leaveEncashment: encashment,
-      monthlyGross: roundToRupee(monthlyGross),
-      basicDa: roundToRupee(basicDa),
+      monthlyGross: roundToCurrency(monthlyGross),
+      basic: roundToCurrency(basic),
     },
   };
 };
 
 export default {
   DEFAULT_SETTLEMENT_RULES,
+  ANNUAL_LEAVE_ENTITLEMENT_DAYS,
   calculateService,
-  calculateGratuity,
+  calculateSeverance,
   calculateNotice,
   calculateLeaveEncashment,
   buildSettlementSheet,

@@ -41,7 +41,7 @@ const initialState = {
     // Company defaults the overtime section calculates against.
     // No monthly-hours default: the overtime divisor is the payroll month's own
   // length × 8 hrs, computed per month rather than read from a setting.
-  payrollDefaults: { overtimeMultiplier: 2, currency: 'INR' },
+  payrollDefaults: { overtimeMultiplier: 2, currency: 'TZS' },
   },
 
   current: null,

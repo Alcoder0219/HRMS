@@ -208,6 +208,78 @@ router.patch(
   controller.setMaintenance,
 );
 
+/* ------------------------------------------------------ biometric devices -- */
+
+/**
+ * Attendance terminals, configured alongside the rest of the tenant settings.
+ *
+ * Bound to TENANT rather than to ATTENDANCE, because this is device
+ * administration and not attendance data: adding a terminal is the same class
+ * of act as configuring the mail server, and the people who do one do the other.
+ *
+ * The split between READ and UPDATE is deliberate. Listing devices shows an
+ * administrator what is configured; testing, syncing and mapping all reach out
+ * to hardware or write attendance rows, so they demand the write grant --
+ * `sync` in particular creates attendance for real people.
+ */
+
+router.get(
+  '/biometric/devices',
+  requirePermission(RESOURCES.TENANT, ACTIONS.READ),
+  controller.listBiometricDevices,
+);
+
+router.post(
+  '/biometric/devices',
+  requirePermission(RESOURCES.TENANT, ACTIONS.UPDATE),
+  validate({ body: schemas.createBiometricDeviceSchema }),
+  controller.addBiometricDevice,
+);
+
+router.put(
+  '/biometric/devices/:deviceId',
+  requirePermission(RESOURCES.TENANT, ACTIONS.UPDATE),
+  validate({ params: schemas.deviceIdParamSchema, body: schemas.updateBiometricDeviceSchema }),
+  controller.updateBiometricDevice,
+);
+
+router.delete(
+  '/biometric/devices/:deviceId',
+  requirePermission(RESOURCES.TENANT, ACTIONS.DELETE),
+  validate({ params: schemas.deviceIdParamSchema }),
+  controller.removeBiometricDevice,
+);
+
+router.post(
+  '/biometric/devices/:deviceId/test',
+  requirePermission(RESOURCES.TENANT, ACTIONS.UPDATE),
+  validate({ params: schemas.deviceIdParamSchema }),
+  controller.testBiometricDevice,
+);
+
+router.post(
+  '/biometric/devices/:deviceId/sync',
+  requirePermission(RESOURCES.TENANT, ACTIONS.UPDATE),
+  validate({ params: schemas.deviceIdParamSchema }),
+  controller.syncBiometricDevice,
+);
+
+router.get(
+  '/biometric/devices/:deviceId/users',
+  // Reads the device, not the database: it opens a socket to hardware, which
+  // is a write-shaped act however read-shaped the verb looks.
+  requirePermission(RESOURCES.TENANT, ACTIONS.UPDATE),
+  validate({ params: schemas.deviceIdParamSchema }),
+  controller.fetchDeviceUsers,
+);
+
+router.post(
+  '/biometric/devices/:deviceId/map',
+  requirePermission(RESOURCES.TENANT, ACTIONS.UPDATE),
+  validate({ params: schemas.deviceIdParamSchema, body: schemas.mapDeviceUsersSchema }),
+  controller.mapDeviceUsers,
+);
+
 /* -------------------------------------------------------- backup, restore -- */
 
 router.get('/backup/preview', requirePermission(RESOURCES.TENANT, ACTIONS.EXPORT), controller.backupPreview);

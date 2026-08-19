@@ -6,6 +6,7 @@ import userService from '../../services/admin/user.service.js';
 import auditService from '../../services/admin/audit.service.js';
 import settingsService from '../../services/admin/settings.service.js';
 import backupService from '../../services/admin/backup.service.js';
+import biometricDeviceService from '../../services/admin/biometricDevice.service.js';
 
 import { buildWorkbook } from '../../helpers/excel.helper.js';
 import { buildTablePdf } from '../../helpers/pdf.helper.js';
@@ -211,6 +212,73 @@ export const setMaintenance = asyncHandler(async (req, res) =>
 );
 
 /* -------------------------------------------------------------------------- */
+/*                             Biometric devices                              */
+/* -------------------------------------------------------------------------- */
+
+export const listBiometricDevices = asyncHandler(async (req, res) =>
+  ApiResponse.ok(res, await biometricDeviceService.listDevices(req), 'Biometric devices'),
+);
+
+export const addBiometricDevice = asyncHandler(async (req, res) =>
+  ApiResponse.created(res, await biometricDeviceService.addDevice(req.body, req), 'Device added'),
+);
+
+export const updateBiometricDevice = asyncHandler(async (req, res) =>
+  ApiResponse.ok(
+    res,
+    await biometricDeviceService.updateDevice(req.params.deviceId, req.body, req),
+    'Device updated',
+  ),
+);
+
+export const removeBiometricDevice = asyncHandler(async (req, res) =>
+  ApiResponse.ok(res, await biometricDeviceService.removeDevice(req.params.deviceId, req), 'Device removed'),
+);
+
+/**
+ * Reachability check.
+ *
+ * A device that cannot be reached is a 200 carrying `connected: false`, not an
+ * error status. "Your terminal is switched off" is the answer to the question
+ * the button asked, and a 5xx would render it as a failure of the HRMS.
+ */
+export const testBiometricDevice = asyncHandler(async (req, res) => {
+  const result = await biometricDeviceService.testDevice(req.params.deviceId, req);
+
+  return ApiResponse.ok(
+    res,
+    result,
+    result.connected ? 'Device responded' : 'Device could not be reached',
+  );
+});
+
+export const syncBiometricDevice = asyncHandler(async (req, res) => {
+  const result = await biometricDeviceService.syncDevice(req.params.deviceId, req);
+
+  return ApiResponse.ok(
+    res,
+    result,
+    result.success
+      ? `${result.daysUpdated} day(s) updated from ${result.punchesSynced} punch(es)`
+      : 'The device could not be synced',
+  );
+});
+
+export const fetchDeviceUsers = asyncHandler(async (req, res) => {
+  const result = await biometricDeviceService.deviceUsers(req.params.deviceId, req);
+
+  return ApiResponse.ok(res, result, `${result.users.length} enrolment(s) on the device`);
+});
+
+export const mapDeviceUsers = asyncHandler(async (req, res) =>
+  ApiResponse.ok(
+    res,
+    await biometricDeviceService.mapUsers(req.params.deviceId, req.body.mappings, req),
+    'Mappings saved',
+  ),
+);
+
+/* -------------------------------------------------------------------------- */
 /*                             Backup and restore                             */
 /* -------------------------------------------------------------------------- */
 
@@ -274,6 +342,15 @@ export default {
   testEmail,
   updateNotifications,
   setMaintenance,
+
+  listBiometricDevices,
+  addBiometricDevice,
+  updateBiometricDevice,
+  removeBiometricDevice,
+  testBiometricDevice,
+  syncBiometricDevice,
+  fetchDeviceUsers,
+  mapDeviceUsers,
 
   backupPreview,
   downloadBackup,

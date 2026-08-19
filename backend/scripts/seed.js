@@ -50,48 +50,51 @@ const SHIFTS = [
 ];
 
 const UNITS = [
-  { code: 'HO', name: 'Head Office', city: 'Pune', state: 'Maharashtra', ptState: 'Maharashtra', lwfState: 'Maharashtra' },
-  { code: 'PLANT1', name: 'Plant 1', city: 'Chakan', state: 'Maharashtra', ptState: 'Maharashtra', lwfState: 'Maharashtra' },
-  { code: 'BLR', name: 'Bengaluru Office', city: 'Bengaluru', state: 'Karnataka', ptState: 'Karnataka', lwfState: 'Karnataka' },
+  { code: 'HO', name: 'Head Office', city: 'Dar es Salaam', state: 'Dar es Salaam' },
+  { code: 'PLANT1', name: 'Plant 1', city: 'Kibaha', state: 'Pwani' },
+  { code: 'ARU', name: 'Arusha Office', city: 'Arusha', state: 'Arusha' },
 ];
 
+// Monthly gross bands, in TSH.
 const GRADES = [
-  { code: 'G1', name: 'Grade 1 - Entry', level: 1, minGross: 15000, maxGross: 30000 },
-  { code: 'G2', name: 'Grade 2 - Junior', level: 2, minGross: 30000, maxGross: 55000 },
-  { code: 'G3', name: 'Grade 3 - Mid', level: 3, minGross: 55000, maxGross: 90000 },
-  { code: 'G4', name: 'Grade 4 - Senior', level: 4, minGross: 90000, maxGross: 150000 },
-  { code: 'G5', name: 'Grade 5 - Lead', level: 5, minGross: 150000, maxGross: 300000 },
+  { code: 'G1', name: 'Grade 1 - Entry', level: 1, minGross: 300000, maxGross: 700000 },
+  { code: 'G2', name: 'Grade 2 - Junior', level: 2, minGross: 700000, maxGross: 1_200_000 },
+  { code: 'G3', name: 'Grade 3 - Mid', level: 3, minGross: 1_200_000, maxGross: 2_500_000 },
+  { code: 'G4', name: 'Grade 4 - Senior', level: 4, minGross: 2_500_000, maxGross: 5_000_000 },
+  { code: 'G5', name: 'Grade 5 - Lead', level: 5, minGross: 5_000_000, maxGross: 10_000_000 },
 ];
 
+// Every percentage is of BASIC; basic itself is solved for from the CTC.
 const SALARY_TEMPLATES = [
   {
     code: 'STD',
     name: 'Standard Staff',
-    description: 'Basic 40% of gross, HRA 50% of basic',
-    basicPercent: 40,
-    hraPercentOfBasic: 50,
-    conveyanceAmount: 1600,
-    medicalAmount: 1250,
+    description: 'Transport 10% and communication 5% of basic, one month annual leave',
+    transportationPercent: 10,
+    communicationPercent: 5,
+    annualLeavePercent: 100,
     isDefault: true,
   },
   {
-    code: 'WORKMAN',
-    name: 'Workman',
-    description: 'Higher basic for statutory coverage',
-    basicPercent: 60,
-    hraPercentOfBasic: 40,
-    conveyanceAmount: 1600,
-    lwfApplicable: true,
+    code: 'EXPAT',
+    name: 'Expatriate',
+    description: 'Housing, schooling and mediclaim on top of the standard allowances',
+    hraPercent: 40,
+    transportationPercent: 10,
+    communicationPercent: 5,
+    annualLeavePercent: 100,
+    mediclaimAmount: 250_000,
+    schoolFeesAllowanceAmount: 500_000,
   },
   {
     code: 'CONTRACT',
     name: 'Contract / Consultant',
-    description: 'No statutory contributions',
-    basicPercent: 100,
-    hraPercentOfBasic: 0,
-    pfApplicable: false,
-    esiApplicable: false,
-    professionalTaxApplicable: false,
+    description: 'Basic only, outside NSSF and NHIF',
+    transportationPercent: 0,
+    communicationPercent: 0,
+    annualLeavePercent: 0,
+    nssfApplicable: false,
+    nhifApplicable: false,
   },
 ];
 

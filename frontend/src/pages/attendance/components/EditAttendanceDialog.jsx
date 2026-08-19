@@ -201,7 +201,7 @@ const EditAttendanceDialog = ({ open, employee, year, month, onClose, onSaved })
           return {
             dayNumber,
             dateIso: date.toISOString(),
-            weekday: date.toLocaleDateString('en-IN', { weekday: 'short' }),
+            weekday: date.toLocaleDateString(['en-TZ', 'en-GB'], { weekday: 'short' }),
             status: record?.status ?? '',
             checkIn: toTimeInput(record?.checkInAt),
             checkOut: toTimeInput(record?.checkOutAt),

@@ -104,14 +104,20 @@ const applyGroups = async (groups, { source, req }) => {
 /* -------------------------------------------------------------------------- */
 
 /**
- * Device push endpoint.
+ * Device push endpoint, and the one path every biometric punch takes.
  *
  * Deliberately tolerant of unknown employee codes and duplicate timestamps:
  * a turnstile pushes what it read, and rejecting an entire batch because one
  * badge is unrecognised would lose a day of real attendance for everyone else.
  * Unknown codes are reported back so the device roster can be reconciled.
+ *
+ * `auditEntityId` names what the audit entry points at. It defaults to the
+ * calling user, which is right for a push made through the API, but a scheduled
+ * device sync has no user behind it -- and `entityId` is required on an audit
+ * log, so without this the entry for every automatic sync would fail
+ * validation and be dropped. Those callers pass the device instead.
  */
-export const ingestBiometric = async ({ deviceId, punches = [] }, req) => {
+export const ingestBiometric = async ({ deviceId, punches = [], auditEntityId = null }, req) => {
   if (!punches.length) throw ApiError.badRequest('No punches were supplied');
 
   const tenantId = req.user.tenantId ?? null;
@@ -170,7 +176,7 @@ export const ingestBiometric = async ({ deviceId, punches = [] }, req) => {
   await recordAudit({
     req,
     entity: 'Attendance',
-    entityId: employeeRepository.toObjectId(req.user.id),
+    entityId: auditEntityId ?? employeeRepository.toObjectId(req.user.id),
     action: AUDIT_ACTIONS.IMPORT,
     metadata: {
       source: 'BIOMETRIC',

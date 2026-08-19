@@ -37,6 +37,7 @@ import {
 } from '@redux/slices/employeeSlice.js';
 import employeeService from '@services/modules/employee.service.js';
 import { formatDate, formatDateTime, formatCurrency, humanize, emptyDash } from '@utils/format.js';
+import { ROLE_LABELS } from '@utils/roles.js';
 import { employeeIdentifiers } from '@utils/dataGrid.js';
 import { PATHS } from '@routes/paths.js';
 
@@ -312,20 +313,72 @@ const EmployeeDetailPage = () => {
       {tab === 1 && (
         <>
           <Section title="Statutory">
-            <Detail label="PF number" value={employee.statutory?.pfNumber} />
-            <Detail label="ESI number" value={employee.statutory?.esiNumber} />
-            <Detail label="UAN" value={employee.statutory?.uan} />
-            <Detail label="PAN" value={employee.statutory?.pan} />
-            <Detail label="Aadhaar" value={employee.statutory?.aadhaar} />
+            <Detail label="NSSF number" value={employee.statutory?.nssfNumber} />
+            <Detail label="NHIF number" value={employee.statutory?.nhifNumber} />
+            <Detail label="TIN" value={employee.statutory?.tinNumber} />
+            <Detail label="National ID (NIDA)" value={employee.statutory?.nationalIdNumber} />
             <Detail label="Passport" value={employee.statutory?.passportNumber} />
             <Detail label="Passport expiry" value={formatDate(employee.statutory?.passportExpiry)} />
+            <Detail label="Work permit" value={employee.statutory?.workPermitNumber} />
+            <Detail label="Work permit expiry" value={formatDate(employee.statutory?.workPermitExpiry)} />
             <Detail label="Driving license" value={employee.statutory?.drivingLicense} />
+          </Section>
+
+          {/*
+            Portal access, on the Statutory tab beside the other identity
+            records. It is a property of the person, not of their pay, and this
+            is the tab a reader already comes to for "who is this and what are
+            they registered for".
+          */}
+          <Section title="Portal access">
+            {employee.userId ? (
+              <>
+                <Detail label="Login email" value={employee.userId.email} />
+                <Detail
+                  label="Role"
+                  value={ROLE_LABELS[employee.userId.role] ?? humanize(employee.userId.role)}
+                />
+                <Detail label="Account status" value={humanize(employee.userId.status)} />
+                <Detail
+                  label="Last sign-in"
+                  value={
+                    employee.userId.lastLoginAt
+                      ? formatDate(employee.userId.lastLoginAt, 'dd MMM yyyy, HH:mm')
+                      : 'Never signed in'
+                  }
+                />
+                <Detail
+                  label="Email verified"
+                  value={employee.userId.isEmailVerified ? 'Yes' : 'No'}
+                />
+              </>
+            ) : (
+              <Detail
+                label="Portal access"
+                value="No login account"
+                span={{ xs: 12 }}
+              />
+            )}
+
+            {can(RESOURCES.EMPLOYEE, ACTIONS.UPDATE) && (
+              <Grid size={12}>
+                <Button
+                  size="small"
+                  startIcon={<EditIcon />}
+                  // The toggle lives on the Employment tab of the edit form.
+                  onClick={() => navigate(PATHS.employeeEdit(id))}
+                >
+                  Manage access
+                </Button>
+              </Grid>
+            )}
           </Section>
 
           <Section title="Bank details">
             <Detail label="Account holder" value={employee.bankDetails?.accountHolderName} />
             <Detail label="Account number" value={employee.bankDetails?.accountNumber} />
-            <Detail label="IFSC" value={employee.bankDetails?.ifsc} />
+            <Detail label="SWIFT code" value={employee.bankDetails?.swiftCode} />
+            <Detail label="Branch code" value={employee.bankDetails?.branchCode} />
             <Detail label="Bank" value={employee.bankDetails?.bankName} />
             <Detail label="Branch" value={employee.bankDetails?.branch} />
             <Detail label="Account type" value={humanize(employee.bankDetails?.accountType)} />

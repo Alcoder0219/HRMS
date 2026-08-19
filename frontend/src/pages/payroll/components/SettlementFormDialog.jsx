@@ -46,7 +46,7 @@ const EMPTY = {
 /**
  * Opens a full and final settlement.
  *
- * Nothing here computes money. Gratuity, notice recovery and leave encashment
+ * Nothing here computes money. Severance, notice recovery and leave encashment
  * are all derived server-side from the employee's structure and service, and
  * the sheet is recalculated whenever these inputs change -- so this form only
  * collects the facts of the exit that the system cannot know on its own.
@@ -249,7 +249,7 @@ const SettlementFormDialog = ({ open, onClose, onSaved }) => {
           </Divider>
         </Grid>
 
-        {days('Encashable days', 'encashableDays', 'Balance to pay out')}
+        {days('Encashable days', 'encashableDays', 'Balance to pay out — capped at the statutory 28-day cycle')}
         {days('Excess days taken', 'excessDays', 'Recovered')}
 
         <Grid size={12}>

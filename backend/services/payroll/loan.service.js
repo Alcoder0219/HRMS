@@ -6,7 +6,8 @@ import Loan from '../../models/payroll/loan.model.js';
 import Employee from '../../models/employee/employee.model.js';
 import payrollRepository from '../../repositories/payroll/payroll.repository.js';
 import employeeRepository from '../../repositories/employee/employee.repository.js';
-import { roundToRupee } from '../../helpers/statutory.helper.js';
+import { roundToCurrency } from '../../helpers/statutory.helper.js';
+import { structureGross } from '../../models/payroll/salaryStructure.model.js';
 import { recordAudit } from '../../helpers/audit.helper.js';
 import { buildScopeFilter } from '../../helpers/permission.helper.js';
 
@@ -30,7 +31,7 @@ export const calculateEmi = ({ principal, interestRate = 0, tenureMonths }) => {
   const total = Number(principal) * (1 + (Number(interestRate) || 0) / 100);
   const emi = Math.ceil(total / tenureMonths);
 
-  return { totalPayable: roundToRupee(total), emi };
+  return { totalPayable: roundToCurrency(total), emi };
 };
 
 /**
@@ -49,8 +50,8 @@ const buildSchedule = ({ totalPayable, emi, tenureMonths, startYear, startMonth 
     const dueYear = startYear + Math.floor(monthOffset / 12);
     const dueMonth = (monthOffset % 12) + 1;
 
-    const amount = index === tenureMonths - 1 ? roundToRupee(remaining) : Math.min(emi, remaining);
-    remaining = roundToRupee(remaining - amount);
+    const amount = index === tenureMonths - 1 ? roundToCurrency(remaining) : Math.min(emi, remaining);
+    remaining = roundToCurrency(remaining - amount);
 
     instalments.push({ sequence: index + 1, dueYear, dueMonth, amount, status: 'PENDING' });
   }
@@ -88,11 +89,10 @@ export const createLoan = async (payload, req) => {
 
   // A guard rail, not a policy engine: an EMI above half of gross leaves
   // nothing to live on and will simply fail to recover month after month.
-  const monthlyGross =
-    structure.basic + structure.hra + structure.da + structure.specialAllowance;
+  const monthlyGross = structureGross(structure);
   if (emi > monthlyGross * 0.5) {
     throw ApiError.badRequest(
-      `The EMI of ${emi} exceeds half of monthly gross (${roundToRupee(monthlyGross)}). Extend the tenure or reduce the principal.`,
+      `The EMI of ${emi} exceeds half of monthly gross (${roundToCurrency(monthlyGross)}). Extend the tenure or reduce the principal.`,
     );
   }
 

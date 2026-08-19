@@ -34,8 +34,14 @@ const ENTITY = 'Employee';
 /** The sections the Documents tab shows, in order, and how each behaves. */
 export const DOCUMENT_SECTIONS = [
   { type: DOCUMENT_TYPES.PHOTO, label: 'Employee Photo', multiple: false, accept: 'image' },
-  { type: DOCUMENT_TYPES.PAN_COPY, label: 'PAN Card', multiple: false, accept: 'any' },
-  { type: DOCUMENT_TYPES.AADHAAR_COPY, label: 'Aadhaar Card', multiple: false, accept: 'any' },
+  { type: DOCUMENT_TYPES.NATIONAL_ID_COPY, label: 'National ID (NIDA)', multiple: false, accept: 'any' },
+  { type: DOCUMENT_TYPES.TIN_COPY, label: 'TIN Certificate', multiple: false, accept: 'any' },
+  { type: DOCUMENT_TYPES.NSSF_CARD_COPY, label: 'NSSF Card', multiple: false, accept: 'any' },
+  { type: DOCUMENT_TYPES.NHIF_CARD_COPY, label: 'NHIF Card', multiple: false, accept: 'any' },
+  { type: DOCUMENT_TYPES.BIRTH_CERTIFICATE, label: 'Birth Certificate', multiple: false, accept: 'any' },
+  // Expatriates only, but shown to everyone: an empty section is a clearer
+  // answer than a section that appears once somebody is flagged as an expat.
+  { type: DOCUMENT_TYPES.WORK_PERMIT, label: 'Work Permit', multiple: false, accept: 'any' },
   { type: DOCUMENT_TYPES.DRIVING_LICENSE_COPY, label: 'Driving License', multiple: false, accept: 'any' },
   { type: DOCUMENT_TYPES.PASSPORT_COPY, label: 'Passport', multiple: false, accept: 'any' },
   { type: DOCUMENT_TYPES.RESUME, label: 'Resume', multiple: false, accept: 'any' },

@@ -210,7 +210,7 @@ router.post(
 
 router.get(
   '/reports/statutory',
-  // Names, PAN, UAN and contribution amounts for the whole organisation.
+  // Names, TIN, membership numbers and contribution amounts for the whole organisation.
   orgWidePayroll,
   validate(schemas.periodQuerySchema),
   controller.statutoryReport,

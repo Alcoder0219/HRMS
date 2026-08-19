@@ -16,14 +16,14 @@ import { DOCUMENT_TYPES } from '../utils/constants.js';
 /**
  * The one upload middleware every employee-document route uses.
  *
- * All nine sections of the Documents tab -- photo, the five single-file
- * identity documents, and the three multi-file categories -- go through this.
- * The only thing that varies is the document type, which arrives in the route
+ * Every section of the Documents tab -- the photo, the single-file identity
+ * documents, and the multi-file categories -- goes through this. The only
+ * thing that varies is the document type, which arrives in the route
  * parameter, so there is no per-section upload code to keep in step.
  *
  * The destination is computed per request from the employee and the type, so
- * Multer writes straight into `attachments/EMP00001/PAN/` rather than into a
- * staging directory that something else then has to move files out of.
+ * Multer writes straight into `attachments/EMP00001/NationalID/` rather than
+ * into a staging directory that something else then has to move files out of.
  */
 
 const IMAGE_MIMES = ['image/jpeg', 'image/png'];
@@ -127,7 +127,7 @@ const uploader = multer({
   },
 });
 
-/** Single-file sections: photo, PAN, Aadhaar, driving licence, passport, resume. */
+/** Single-file sections: photo, the identity documents, and the resume. */
 export const uploadSingle = uploader.single('file');
 
 /** Multi-file sections: education, experience, other. */

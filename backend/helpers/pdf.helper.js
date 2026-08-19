@@ -1,4 +1,5 @@
 import PDFDocument from 'pdfkit';
+import { CURRENCY } from '../utils/constants.js';
 
 /**
  * Payslip PDF rendering.
@@ -20,24 +21,52 @@ const COLORS = {
   band: '#f4f6f8',
 };
 
-const money = (value, currency = 'INR') => {
+/**
+ * The date and number locale.
+ *
+ * `en-TZ` is not present in every Node ICU build, and an unknown locale makes
+ * `Intl` fall back to the runtime default -- which on a server in another
+ * region formats dates the wrong way round. `en-GB` is the tested fallback:
+ * Tanzania writes dates day-first and groups digits in thousands, which is
+ * exactly what it produces.
+ */
+const LOCALES = [CURRENCY.LOCALE, 'en-GB'];
+
+/**
+ * An amount, always with its symbol spaced away from the digits.
+ *
+ * `TSH 1,250,000.00`, not `TSH1,250,000.00` -- an alphabetic symbol run
+ * together with a number is read as one token and misparsed by eye.
+ */
+const money = (value, currency = CURRENCY.SYMBOL) => {
   const amount = Number(value || 0);
-  const formatted = new Intl.NumberFormat('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(
-    amount,
-  );
-  return currency === 'INR' ? `Rs. ${formatted}` : `${currency} ${formatted}`;
+  const formatted = new Intl.NumberFormat(LOCALES, {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  }).format(amount);
+
+  // Settings store the ISO code; the payslip shows the local symbol.
+  const label = currency === CURRENCY.CODE ? CURRENCY.SYMBOL : currency;
+  return `${label} ${formatted}`;
 };
 
 const formatDate = (value) =>
-  value ? new Date(value).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' }) : '-';
+  value
+    ? new Date(value).toLocaleDateString(LOCALES, { day: '2-digit', month: 'short', year: 'numeric' })
+    : '-';
 
 /**
  * Converts a number to words for the statutory "amount in words" line.
- * Indian numbering (lakh, crore), which `Intl` cannot produce.
+ *
+ * Short-scale grouping -- thousand, million, billion -- which is how amounts
+ * are written in Tanzania. `Intl` cannot produce words in any scale, so the
+ * grouping is done by hand either way; what changed from the Indian version is
+ * the group sizes (three digits throughout, rather than a lakh and crore break)
+ * and the currency name.
  */
 export const amountInWords = (value) => {
   const number = Math.floor(Math.abs(Number(value) || 0));
-  if (number === 0) return 'Zero Rupees Only';
+  if (number === 0) return 'Zero Shillings Only';
 
   const ones = [
     '', 'One', 'Two', 'Three', 'Four', 'Five', 'Six', 'Seven', 'Eight', 'Nine', 'Ten',
@@ -53,18 +82,29 @@ export const amountInWords = (value) => {
       ? `${ones[Math.floor(n / 100)]} Hundred${n % 100 ? ` ${twoDigits(n % 100)}` : ''}`
       : twoDigits(n);
 
+  // Largest group first. Trillion is the ceiling: a payslip beyond that is a
+  // data-entry error, not a figure to render politely.
+  const GROUPS = [
+    { divisor: 1_000_000_000_000, name: 'Trillion' },
+    { divisor: 1_000_000_000, name: 'Billion' },
+    { divisor: 1_000_000, name: 'Million' },
+    { divisor: 1_000, name: 'Thousand' },
+  ];
+
   const parts = [];
-  const crore = Math.floor(number / 10_000_000);
-  const lakh = Math.floor((number % 10_000_000) / 100_000);
-  const thousand = Math.floor((number % 100_000) / 1000);
-  const rest = number % 1000;
+  let remainder = number;
 
-  if (crore) parts.push(`${threeDigits(crore)} Crore`);
-  if (lakh) parts.push(`${threeDigits(lakh)} Lakh`);
-  if (thousand) parts.push(`${threeDigits(thousand)} Thousand`);
-  if (rest) parts.push(threeDigits(rest));
+  GROUPS.forEach(({ divisor, name }) => {
+    const count = Math.floor(remainder / divisor);
+    if (count) {
+      parts.push(`${threeDigits(count)} ${name}`);
+      remainder %= divisor;
+    }
+  });
 
-  return `${parts.join(' ')} Rupees Only`;
+  if (remainder) parts.push(threeDigits(remainder));
+
+  return `${parts.join(' ')} Shillings Only`;
 };
 
 const drawDivider = (doc, y) => {
@@ -114,10 +154,10 @@ export const buildPayslipPdf = (payslip, company = {}) =>
       y += 34;
       labelValue(doc, 40, y, 'Designation', employee.designation);
       labelValue(doc, 210, y, 'Department', employee.department);
-      labelValue(doc, 380, y, 'PAN', employee.pan);
+      labelValue(doc, 380, y, 'TIN', employee.tinNumber);
 
       y += 34;
-      labelValue(doc, 40, y, 'UAN', employee.uan);
+      labelValue(doc, 40, y, 'NSSF No.', employee.nssfNumber);
       labelValue(doc, 210, y, 'Bank', employee.bankName);
       labelValue(doc, 380, y, 'Account', employee.accountNumberMasked);
 
@@ -203,7 +243,7 @@ export const buildPayslipPdf = (payslip, company = {}) =>
           `Year to date  ·  Gross ${money(payslip.ytd.gross, company.currency)}  ·  Deductions ${money(
             payslip.ytd.deductions,
             company.currency,
-          )}  ·  Net ${money(payslip.ytd.net, company.currency)}  ·  TDS ${money(payslip.ytd.tds, company.currency)}`,
+          )}  ·  Net ${money(payslip.ytd.net, company.currency)}  ·  PAYE ${money(payslip.ytd.paye, company.currency)}`,
           40,
           y,
           { width: 515 },
@@ -229,7 +269,7 @@ export const buildPayslipPdf = (payslip, company = {}) =>
  *
  * Longer and more explanatory than a payslip on purpose: this is the document
  * an ex-employee reads without anyone to ask, and every derived figure --
- * service span, gratuity formula, notice days -- is shown with its working
+ * service span, severance formula, notice days -- is shown with its working
  * rather than as a bare total.
  */
 export const buildSettlementPdf = (settlement, company = {}) =>
@@ -268,7 +308,7 @@ export const buildSettlementPdf = (settlement, company = {}) =>
       y += 34;
       labelValue(doc, 40, y, 'Designation', employee.designation);
       labelValue(doc, 210, y, 'Department', employee.department);
-      labelValue(doc, 380, y, 'PAN', employee.pan);
+      labelValue(doc, 380, y, 'TIN', employee.tinNumber);
 
       y += 34;
       labelValue(doc, 40, y, 'Date of Joining', formatDate(settlement.joiningDate));
@@ -289,11 +329,15 @@ export const buildSettlementPdf = (settlement, company = {}) =>
       doc.rect(40, y, 515, 40).fill(COLORS.band);
       doc.fillColor(COLORS.text).fontSize(8);
 
-      const gratuity = settlement.gratuity ?? {};
+      const severance = settlement.severance ?? {};
       const notice = settlement.notice ?? {};
 
       doc.text(
-        `Gratuity: ${gratuity.eligible ? `${gratuity.completedYears} completed year(s) × 15/26 × ${money(gratuity.wages, company.currency)}` : (gratuity.reason ?? 'Not eligible')}`,
+        `Severance: ${
+          severance.eligible
+            ? `${severance.countedYears} completed year(s) × 7/30 × ${money(severance.wages, company.currency)}`
+            : (severance.reason ?? 'Not eligible')
+        }`,
         52,
         y + 8,
         { width: 490 },
@@ -491,7 +535,7 @@ export const buildTablePdf = ({ title, subtitle, columns, rows, company = {} }) 
         .fontSize(7)
         .fillColor(COLORS.muted)
         .text(
-          `${rows.length} row(s) · generated ${new Date().toLocaleString('en-IN')}`,
+          `${rows.length} row(s) · generated ${new Date().toLocaleString(LOCALES)}`,
           left,
           doc.page.height - 40,
         );

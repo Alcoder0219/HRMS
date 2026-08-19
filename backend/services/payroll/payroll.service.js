@@ -3,6 +3,7 @@ import ApiError from '../../utils/ApiError.js';
 import {
   ACTIVE_EMPLOYEE_STATUSES,
   AUDIT_ACTIONS,
+  CURRENCY,
   PAYROLL_STATUS,
   PAYROLL_STATUS_TRANSITIONS,
   PAYSLIP_STATUS,
@@ -17,7 +18,8 @@ import Attendance from '../../models/attendance/attendance.model.js';
 import payrollRepository from '../../repositories/payroll/payroll.repository.js';
 import { calculatePayslip } from '../../helpers/salaryCalculator.helper.js';
 import { deriveOvertimeRate, deriveSalaryTotals } from '../../models/employee/employee.model.js';
-import { DEFAULT_STATUTORY, roundToRupee } from '../../helpers/statutory.helper.js';
+import { structureGross } from '../../models/payroll/salaryStructure.model.js';
+import { DEFAULT_STATUTORY, roundToCurrency } from '../../helpers/statutory.helper.js';
 import { buildBankTransferFile } from '../../helpers/bankFile.helper.js';
 import { buildPayslipPdf } from '../../helpers/pdf.helper.js';
 import { recordAudit } from '../../helpers/audit.helper.js';
@@ -39,19 +41,22 @@ export const RUN_SORTABLE_FIELDS = ['year', 'month', 'status', 'totalNet', 'crea
  */
 export const PAYSLIP_SORTABLE_FIELDS = ['period', 'netPayable', 'grossEarnings', 'month', 'status', 'createdAt'];
 
+// `en-TZ` is absent from some Node ICU builds; `en-GB` produces the same
+// "August 2026" and is present everywhere.
 const periodLabel = (year, month) =>
-  new Date(year, month - 1).toLocaleString('en-IN', { month: 'long', year: 'numeric' });
+  new Date(year, month - 1).toLocaleString([CURRENCY.LOCALE, 'en-GB'], { month: 'long', year: 'numeric' });
 
 const daysInMonth = (year, month) => new Date(year, month, 0).getDate();
 
-/** Financial-year start preceding a given month, for YTD and TDS projection. */
-const financialYearStart = (year, month, startMonth = 4) =>
+/**
+ * Tax-year start preceding a given month, for the YTD block on the payslip.
+ *
+ * Tanzania's tax year is the calendar year, so this normally resolves to
+ * January -- but it stays configurable because a tenant may report on its own
+ * financial year.
+ */
+const financialYearStart = (year, month, startMonth = 1) =>
   month >= startMonth ? { year, month: startMonth } : { year: year - 1, month: startMonth };
-
-const monthsRemainingInYear = (year, month, startMonth = 4) => {
-  const elapsed = month >= startMonth ? month - startMonth : 12 - startMonth + month;
-  return Math.max(1, 12 - elapsed);
-};
 
 const maskAccount = (value) =>
   !value ? null : `${'*'.repeat(Math.max(0, String(value).length - 4))}${String(value).slice(-4)}`;
@@ -230,18 +235,13 @@ export const processRun = async (
    * The overtime rate divides gross by the month's hours, so it has to be the
    * unprorated figure -- pricing an hour off a salary already reduced for
    * absence would dock the same absence twice. Summed from the structure's own
-   * components, exactly as the payslip's earnings are, so the two agree.
+   * components, through the same helper the structure's `grossMonthly` virtual
+   * uses, so the two cannot disagree.
    */
-  const monthlyGrossOf = (structure) =>
-    (Number(structure.basic) || 0) +
-    (Number(structure.hra) || 0) +
-    (Number(structure.da) || 0) +
-    (Number(structure.specialAllowance) || 0) +
-    (structure.otherAllowances ?? []).reduce((sum, entry) => sum + (Number(entry.amount) || 0), 0);
+  const monthlyGrossOf = structureGross;
 
   /* --- price each employee ---------------------------------------------- */
-  const fyStart = financialYearStart(year, month, settings.financialYearStartMonth ?? 4);
-  const monthsRemaining = monthsRemainingInYear(year, month, settings.financialYearStartMonth ?? 4);
+  const fyStart = financialYearStart(year, month, settings.financialYearStartMonth ?? 1);
 
   const exclusions = [];
   const totals = {
@@ -250,10 +250,12 @@ export const processRun = async (
     totalDeductions: 0,
     totalNet: 0,
     totalEmployerContribution: 0,
-    totalPf: 0,
-    totalEsi: 0,
-    totalPt: 0,
-    totalTds: 0,
+    totalNssfEmployee: 0,
+    totalNssfEmployer: 0,
+    totalNhif: 0,
+    totalSdl: 0,
+    totalWcf: 0,
+    totalPaye: 0,
     totalLoanRecovery: 0,
   };
 
@@ -321,33 +323,26 @@ export const processRun = async (
       statutory: settings,
 
       /**
-       * Statutory eligibility comes from the Employee Master, read fresh for
+       * Statutory enrolment comes from the Employee Master, read fresh for
        * this run, and from nowhere else.
        *
-       * It used to be read off the projected payroll structure, whose flags
-       * default to true and which the Employee Master sync never wrote. The
-       * effect was that every employee looked eligible for everything: an
-       * employee with PF switched off in their record still had PF deducted,
-       * because payroll was consulting a row that had never been told.
+       * It must not be read off the projected payroll structure, whose flags
+       * default to true and which the Employee Master sync never writes: every
+       * employee would look enrolled in everything, and someone held outside
+       * NSSF in their own record would still have it deducted.
        *
        * Compared with `=== true` deliberately. A missing flag on an older
        * record must read as disabled, not as enabled -- deducting from
        * somebody because a field was absent is the failure that matters here,
-       * and `!employee.statutory?.pfApplicable` would invert exactly that.
+       * and `!employee.statutory?.nssfApplicable` would invert exactly that.
        */
       flags: {
-        pfApplicable: employee.statutory?.pfApplicable === true,
-        esiApplicable: employee.statutory?.esiApplicable === true,
-        lwfApplicable: employee.statutory?.lwfApplicable === true,
-        ptApplicable: employee.statutory?.professionalTaxApplicable === true,
-        // TDS has no per-employee switch on the master record; it keeps the
-        // payroll structure's flag until one exists.
-        tdsApplicable: structure.tdsApplicable,
+        nssfApplicable: employee.statutory?.nssfApplicable === true,
+        nhifApplicable: employee.statutory?.nhifApplicable === true,
+        payeApplicable: employee.statutory?.payeApplicable === true,
       },
-      ytd: { grossPaid: ytd.gross, tdsPaid: ytd.tds, monthsRemaining },
-      month,
       overtimeMultiplier: structure.overtimeMultiplier ?? settings.overtimeMultiplier ?? 2,
-      tdsOverride: structure.tdsOverride,
+      payeOverride: structure.payeOverride,
       /**
        * The employee's own overtime rules decide eligibility and the rate.
        *
@@ -417,20 +412,24 @@ export const processRun = async (
         designation: employee.designationId?.name ?? null,
         department: employee.departmentId?.name ?? null,
         joiningDate: employee.joiningDate,
-        pan: employee.statutory?.pan ?? null,
-        uan: employee.statutory?.uan ?? null,
-        pfNumber: employee.statutory?.pfNumber ?? null,
-        esiNumber: employee.statutory?.esiNumber ?? null,
+        tinNumber: employee.statutory?.tinNumber ?? null,
+        nssfNumber: employee.statutory?.nssfNumber ?? null,
+        nhifNumber: employee.statutory?.nhifNumber ?? null,
         bankName: employee.bankDetails?.bankName ?? null,
         accountNumberMasked: maskAccount(employee.bankDetails?.accountNumber),
-        ifsc: employee.bankDetails?.ifsc ?? null,
+        swiftCode: employee.bankDetails?.swiftCode ?? null,
       },
       structureId: structure._id,
       structureSnapshot: {
         basic: structure.basic,
-        hra: structure.hra,
-        da: structure.da,
-        specialAllowance: structure.specialAllowance,
+        hraAllowance: structure.hraAllowance,
+        foodAllowance: structure.foodAllowance,
+        transportationAllowance: structure.transportationAllowance,
+        communicationAllowance: structure.communicationAllowance,
+        mediclaim: structure.mediclaim,
+        schoolFeesAllowance: structure.schoolFeesAllowance,
+        annualLeaveAllowance: structure.annualLeaveAllowance,
+        performanceIncentive: structure.performanceIncentive,
         otherAllowances: structure.otherAllowances,
         annualCtc: structure.annualCtc,
         effectiveFrom: structure.effectiveFrom,
@@ -453,11 +452,11 @@ export const processRun = async (
       statutoryDetail: result.statutoryDetail,
       recoveries: result.recoveries,
       ytd: {
-        gross: roundToRupee(ytd.gross + result.grossEarnings),
-        deductions: roundToRupee(ytd.deductions + result.totalDeductions),
-        net: roundToRupee(ytd.net + result.netPayable),
-        pf: roundToRupee(ytd.pf + (result.statutoryDetail.pf.employee ?? 0)),
-        tds: roundToRupee(ytd.tds + (result.statutoryDetail.tds.monthly ?? 0)),
+        gross: roundToCurrency(ytd.gross + result.grossEarnings),
+        deductions: roundToCurrency(ytd.deductions + result.totalDeductions),
+        net: roundToCurrency(ytd.net + result.netPayable),
+        nssf: roundToCurrency(ytd.nssf + (result.statutoryDetail.nssf.employee ?? 0)),
+        paye: roundToCurrency(ytd.paye + (result.statutoryDetail.paye.monthly ?? 0)),
       },
       status: PAYSLIP_STATUS.DRAFT,
       generatedBy: req.user.id,
@@ -468,16 +467,18 @@ export const processRun = async (
     totals.totalDeductions += result.totalDeductions;
     totals.totalNet += result.netPayable;
     totals.totalEmployerContribution += result.employerContributionTotal;
-    totals.totalPf += result.statutoryDetail.pf.employee ?? 0;
-    totals.totalEsi += result.statutoryDetail.esi.employee ?? 0;
-    totals.totalPt += result.statutoryDetail.professionalTax ?? 0;
-    totals.totalTds += result.statutoryDetail.tds.monthly ?? 0;
+    totals.totalNssfEmployee += result.statutoryDetail.nssf.employee ?? 0;
+    totals.totalNssfEmployer += result.statutoryDetail.nssf.employer ?? 0;
+    totals.totalNhif += result.statutoryDetail.nhif ?? 0;
+    totals.totalSdl += result.statutoryDetail.sdl ?? 0;
+    totals.totalWcf += result.statutoryDetail.wcf ?? 0;
+    totals.totalPaye += result.statutoryDetail.paye.monthly ?? 0;
     totals.totalLoanRecovery += (result.recoveries.loans ?? []).reduce((sum, entry) => sum + entry.amount, 0);
   }
 
   const updated = await payrollRepository.updateRun(run._id, {
     $set: {
-      ...Object.fromEntries(Object.entries(totals).map(([key, value]) => [key, roundToRupee(value)])),
+      ...Object.fromEntries(Object.entries(totals).map(([key, value]) => [key, roundToCurrency(value)])),
       exclusions,
     },
   });
@@ -491,7 +492,7 @@ export const processRun = async (
     metadata: {
       processed: totals.employeeCount,
       excluded: exclusions.length,
-      totalNet: roundToRupee(totals.totalNet),
+      totalNet: roundToCurrency(totals.totalNet),
     },
   });
 
@@ -499,7 +500,7 @@ export const processRun = async (
     period: run.period,
     employees: totals.employeeCount,
     excluded: exclusions.length,
-    net: roundToRupee(totals.totalNet),
+    net: roundToCurrency(totals.totalNet),
   });
 
   return updated;
@@ -629,7 +630,7 @@ export const approveRun = async (runId, req) => {
     changes: [{ field: 'status', from: previousStatus, to: PAYROLL_STATUS.APPROVED }],
     metadata: {
       payslips: payslips.length,
-      loanRecovered: roundToRupee(recovered),
+      loanRecovered: roundToCurrency(recovered),
       // An approval that skipped maker-checker is exactly what an auditor asks
       // about, so it is recorded rather than left to be inferred from two ids.
       selfApproved: selfApproving,
@@ -806,7 +807,7 @@ export const generatePayslipPdf = async (payslipId, req) => {
 
   const buffer = await buildPayslipPdf(payslip.toObject ? payslip.toObject() : payslip, {
     name: settings?.bank?.companyName ?? 'HRMS',
-    currency: settings?.currency ?? 'INR',
+    currency: settings?.currency ?? CURRENCY.CODE,
   });
 
   return {
@@ -848,7 +849,8 @@ export const generateBankFile = async (runId, { format = null } = {}, req) => {
       fullName: payslip.employeeSnapshot?.fullName,
       bankName: employee?.bankDetails?.bankName ?? null,
       accountNumber: employee?.bankDetails?.accountNumber ?? null,
-      ifsc: employee?.bankDetails?.ifsc ?? null,
+      swiftCode: employee?.bankDetails?.swiftCode ?? null,
+      branchCode: employee?.bankDetails?.branchCode ?? null,
       netPayable: payslip.netPayable,
     };
   });

@@ -1,7 +1,6 @@
 import logger from '../../config/logger.js';
-import SalaryStructure from '../../models/payroll/salaryStructure.model.js';
+import SalaryStructure, { STRUCTURE_EARNING_FIELDS } from '../../models/payroll/salaryStructure.model.js';
 import { resolveMultiplier } from '../../models/employee/employee.model.js';
-import { COMPONENT_CODE } from '../../utils/constants.js';
 
 /**
  * Projects an employee's salary onto the effective-dated row payroll reads.
@@ -47,35 +46,21 @@ const atUtcMidnight = (value) => {
 };
 
 /**
- * The employee's six earning components mapped onto the payroll structure's
- * four plus a list.
+ * The employee's earning components, mapped onto the payroll structure.
  *
- * Conveyance, medical and other have no dedicated column on the payroll side,
- * so they become `otherAllowances` entries. That is what keeps the two grosses
- * identical: the structure's `grossMonthly` virtual sums basic, hra, da,
- * special and every allowance in the list, which is exactly the employee's
- * gross once these three are carried across. Dropping them would have
- * under-priced every payslip by their total.
+ * One-to-one, because both sides now carry the same nine named columns. That
+ * is what keeps the two grosses identical -- the structure's `grossMonthly`
+ * virtual sums exactly these fields plus the free-form allowance list, which is
+ * exactly the Employee Master's gross. Under the Indian model three of the six
+ * components had no column on the payroll side and had to be carried across as
+ * `otherAllowances` entries matched by label, which the salary register then
+ * had to unpick with regular expressions.
+ *
+ * `otherAllowances` stays empty here: nothing on the Employee Master needs it,
+ * and a structure created directly in the payroll module keeps whatever it has.
  */
-const componentsOf = (salary) => {
-  const otherAllowances = [
-    { label: 'Conveyance Allowance', amount: amount(salary.conveyanceAllowance) },
-    { label: 'Medical Allowance', amount: amount(salary.medicalAllowance) },
-    { label: 'Other Allowance', amount: amount(salary.otherAllowance) },
-  ]
-    .filter((entry) => entry.amount > 0)
-    .map((entry) => ({ ...entry, code: COMPONENT_CODE.OTHER_ALLOWANCE, prorate: true, taxable: true }));
-
-  return {
-    basic: amount(salary.basic),
-    hra: amount(salary.hra),
-    // The Employee Master has no dearness allowance field. Left at zero rather
-    // than invented, and it is not part of its gross either.
-    da: 0,
-    specialAllowance: amount(salary.specialAllowance),
-    otherAllowances,
-  };
-};
+const componentsOf = (salary) =>
+  Object.fromEntries(STRUCTURE_EARNING_FIELDS.map((field) => [field, amount(salary[field])]));
 
 /**
  * Whether this employee has enough of a salary to project at all.
@@ -127,18 +112,17 @@ export const syncSalaryStructure = async (employee, req = null) => {
      *
      * That is the payroll module's existing invariant -- `createStructure`
      * refuses a structure whose components disagree with its CTC by more than
-     * a rupee -- and it is also the Employee Master's definition: the six
-     * earning components sum to the cost to company, from which the employer's
-     * own PF, ESI and LWF are removed to state gross. The two modules agree on
-     * this figure, so a structure projected from an employee needs no
-     * reconciliation.
+     * a shilling -- and it is also the Employee Master's definition: the
+     * earning components sum to gross, and gross is what the structure quotes
+     * as its monthly figure. The two modules agree, so a structure projected
+     * from an employee needs no reconciliation.
+     *
+     * The employer's NSSF, SDL and WCF are deliberately outside it. They are a
+     * cost the company carries on top of the salary rather than part of what
+     * the components add up to.
      */
     const monthlyCtc = Math.round(
-      components.basic +
-        components.hra +
-        components.da +
-        components.specialAllowance +
-        components.otherAllowances.reduce((sum, entry) => sum + entry.amount, 0),
+      Object.values(components).reduce((sum, value) => sum + value, 0),
     );
 
     const existing = await findExisting(
@@ -183,8 +167,10 @@ export const syncSalaryStructure = async (employee, req = null) => {
     let structure;
 
     if (existing) {
-      // Statutory applicability is a payroll decision, not an Employee Master
-      // one, so whatever finance set on the row stays set.
+      // Statutory enrolment is a payroll decision, not an Employee Master one,
+      // so whatever finance set on the row stays set. The projection carries no
+      // NSSF, NHIF or PAYE flag for exactly that reason -- payroll reads
+      // enrolment from the Employee Master directly when it prices.
       Object.assign(existing, projection);
       structure = await existing.save();
     } else {

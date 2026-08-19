@@ -7,6 +7,7 @@ import MedalIcon from '@mui/icons-material/MilitaryTechOutlined';
 import ScheduleIcon from '@mui/icons-material/ScheduleOutlined';
 import EventNoteIcon from '@mui/icons-material/EventNoteOutlined';
 import PeopleIcon from '@mui/icons-material/PeopleAltOutlined';
+import GroupsIcon from '@mui/icons-material/GroupsOutlined';
 import DescriptionIcon from '@mui/icons-material/DescriptionOutlined';
 import DevicesIcon from '@mui/icons-material/DevicesOutlined';
 import SwapHorizIcon from '@mui/icons-material/SwapHorizOutlined';
@@ -42,7 +43,6 @@ import AccountBalanceIcon from '@mui/icons-material/AccountBalanceOutlined';
 import NotificationsIcon from '@mui/icons-material/NotificationsOutlined';
 import BackupIcon from '@mui/icons-material/BackupOutlined';
 import AdminIcon from '@mui/icons-material/AdminPanelSettingsOutlined';
-import GroupsIcon from '@mui/icons-material/GroupsOutlined';
 import VpnKeyIcon from '@mui/icons-material/VpnKeyOutlined';
 import HistoryIcon from '@mui/icons-material/HistoryOutlined';
 import SettingsIcon from '@mui/icons-material/SettingsOutlined';
@@ -236,7 +236,7 @@ export const NAV_GROUPS = [
       live({ label: 'Asset Report', to: PATHS.assetReports, icon: DevicesIcon, resource: RESOURCES.REPORT, action: ACTIONS.READ }),
       live({ label: 'Loan Report', to: PATHS.loanReports, icon: AccountBalanceIcon, resource: RESOURCES.REPORT, action: ACTIONS.READ }),
       live({ label: 'Settlement Report', to: PATHS.settlementReports, icon: LogoutIcon, resource: RESOURCES.REPORT, action: ACTIONS.READ }),
-      // The PF/ESI register, which is a filing rather than an analysis.
+      // The NSSF/NHIF register, which is a filing rather than an analysis.
       live({ label: 'Statutory & Cost', to: PATHS.payrollStatutoryReports, icon: ReceiptIcon, resource: RESOURCES.PAYROLL, action: ACTIONS.DASHBOARD }),
     ],
   },

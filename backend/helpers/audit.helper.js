@@ -35,8 +35,8 @@ const normalize = (value) => {
 
 /**
  * Field-level diff between two plain objects, walking nested documents so a
- * change to `bankDetails.ifsc` is reported at that path rather than as a whole
- * replaced sub-document.
+ * change to `bankDetails.swiftCode` is reported at that path rather than as a
+ * whole replaced sub-document.
  *
  * Arrays are compared as a unit -- knowing that the emergency-contact list
  * changed is enough; a per-element diff would be noise.
@@ -74,7 +74,7 @@ export const diffObjects = (before = {}, after = {}, prefix = '') => {
     // copied into a second, longer-lived table.
     //
     // Matched by prefix in both directions as a backstop: `statutory` is
-    // redacted because `statutory.aadhaar` is, and so is anything nested below
+    // redacted because `statutory.nationalIdNumber` is, and so is anything below
     // a redacted path. Belt and braces against a future shape change quietly
     // reopening the leak this check exists to close.
     const redacted = AUDIT_REDACTED_FIELDS.some(

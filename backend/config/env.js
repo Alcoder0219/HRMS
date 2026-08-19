@@ -193,8 +193,8 @@ export const env = {
    *
    * Deliberately not under `upload.dir`. That directory is served by
    * `express.static` with no authentication, which is acceptable for avatars
-   * and unacceptable for the identity documents kept here -- a PAN or passport
-   * scan must not be readable by anyone who learns its URL.
+   * and unacceptable for the identity documents kept here -- a national ID or
+   * passport scan must not be readable by anyone who learns its URL.
    *
    * `resolve` rather than `join`, here and for uploads and logs below, so an
    * ABSOLUTE path in the environment is taken as given instead of being glued

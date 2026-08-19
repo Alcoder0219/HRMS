@@ -176,10 +176,14 @@ const PayrollRunDetailPage = () => {
     },
 
     { key: 'basic', label: 'Basic Salary', align: 'right', render: money('basic') },
-    { key: 'hra', label: 'HRA', align: 'right', render: money('hra') },
-    { key: 'conveyanceAllowance', label: 'Conveyance', align: 'right', render: money('conveyanceAllowance') },
-    { key: 'medicalAllowance', label: 'Medical', align: 'right', render: money('medicalAllowance') },
-    { key: 'specialAllowance', label: 'Special', align: 'right', render: money('specialAllowance') },
+    { key: 'hraAllowance', label: 'HRA', align: 'right', render: money('hraAllowance') },
+    { key: 'foodAllowance', label: 'Food', align: 'right', render: money('foodAllowance') },
+    { key: 'transportationAllowance', label: 'Transportation', align: 'right', render: money('transportationAllowance') },
+    { key: 'communicationAllowance', label: 'Communication', align: 'right', render: money('communicationAllowance') },
+    { key: 'mediclaim', label: 'Mediclaim', align: 'right', render: money('mediclaim') },
+    { key: 'schoolFeesAllowance', label: 'School Fees', align: 'right', render: money('schoolFeesAllowance') },
+    { key: 'annualLeaveAllowance', label: 'Annual Leave', align: 'right', render: money('annualLeaveAllowance') },
+    { key: 'performanceIncentive', label: 'Performance Incentive', align: 'right', render: money('performanceIncentive') },
     { key: 'otherAllowance', label: 'Other Allowance', align: 'right', render: money('otherAllowance') },
     {
       key: 'grossSalary',
@@ -188,15 +192,14 @@ const PayrollRunDetailPage = () => {
       render: (row) => <strong>{formatCurrency(row.grossSalary ?? 0)}</strong>,
     },
 
-    { key: 'pf', label: 'Employee PF', align: 'right', render: money('pf') },
-    { key: 'employerPf', label: 'Employer PF', align: 'right', render: money('employerPf') },
-    // ESI is an employee-only deduction here, so there is no Employer ESI
-    // column to show beside it.
-    { key: 'esi', label: 'Employee ESI', align: 'right', render: money('esi') },
-    { key: 'lwf', label: 'Employee LWF', align: 'right', render: money('lwf') },
-    { key: 'employerLwf', label: 'Employer LWF', align: 'right', render: money('employerLwf') },
-    { key: 'pt', label: 'Professional Tax', align: 'right', render: money('pt') },
-    { key: 'tds', label: 'TDS', align: 'right', render: money('tds') },
+    { key: 'nssfEmployee', label: 'NSSF - Employee', align: 'right', render: money('nssfEmployee') },
+    { key: 'nssfEmployer', label: 'NSSF - Employer', align: 'right', render: money('nssfEmployer') },
+    { key: 'nhif', label: 'NHIF', align: 'right', render: money('nhif') },
+    { key: 'paye', label: 'PAYE', align: 'right', render: money('paye') },
+    // SDL and WCF are levied on the employer only, so neither has an employee
+    // column beside it to compare against.
+    { key: 'sdl', label: 'SDL (Employer)', align: 'right', render: money('sdl') },
+    { key: 'wcf', label: 'WCF (Employer)', align: 'right', render: money('wcf') },
     { key: 'otherDeductions', label: 'Other Deductions', align: 'right', render: money('otherDeductions') },
     {
       key: 'totalDeductions',
@@ -204,7 +207,7 @@ const PayrollRunDetailPage = () => {
       align: 'right',
       render: (row) => <strong>{formatCurrency(row.totalDeductions ?? 0)}</strong>,
     },
-    // No aggregate Employer Contribution column: the employer's PF and LWF
+    // No aggregate Employer Contribution column: the employer's NSSF, SDL and WCF
     // already have columns of their own, and Total Deductions includes them.
 
     { key: 'netSalary', label: 'Net Salary', align: 'right', render: money('netSalary') },
@@ -319,7 +322,7 @@ const PayrollRunDetailPage = () => {
               <StatCard
                 label="Employee deductions"
                 value={formatCurrency(totals.totalDeductions ?? run.totalDeductions)}
-                caption={`PF ${formatCurrency(run.totalPf)} · ESI ${formatCurrency(run.totalEsi)}`}
+                caption={`NSSF ${formatCurrency(run.totalNssfEmployee)} · PAYE ${formatCurrency(run.totalPaye)}`}
                 icon={SavingsIcon}
                 color="warning"
               />
@@ -328,7 +331,7 @@ const PayrollRunDetailPage = () => {
               <StatCard
                 label="Employer contribution"
                 value={formatCurrency(totals.totalEmployerContribution ?? run.totalEmployerContribution)}
-                caption="Company cost, never deducted"
+                caption="NSSF, SDL and WCF — never deducted"
                 icon={BusinessIcon}
                 color="secondary"
               />

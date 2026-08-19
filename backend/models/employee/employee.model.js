@@ -31,7 +31,7 @@ const addressSchema = new Schema(
     line2: trimmed(200),
     city: trimmed(80),
     state: trimmed(80),
-    country: { type: String, trim: true, maxlength: 80, default: 'India' },
+    country: { type: String, trim: true, maxlength: 80, default: 'Tanzania' },
     postalCode: { type: String, trim: true, maxlength: 12, default: null },
     landmark: trimmed(120),
   },
@@ -44,7 +44,14 @@ const bankDetailsSchema = new Schema(
     accountNumber: trimmed(30),
     bankName: trimmed(120),
     branch: trimmed(120),
-    ifsc: { type: String, trim: true, uppercase: true, maxlength: 11, default: null },
+    /**
+     * SWIFT/BIC, which is how a Tanzanian bank is identified on a transfer
+     * instruction. Eight or eleven characters -- the eleven-character form
+     * names the branch, the eight-character form the institution.
+     */
+    swiftCode: { type: String, trim: true, uppercase: true, maxlength: 11, default: null },
+    /** The bank's own branch code, quoted alongside SWIFT on bulk uploads. */
+    branchCode: { type: String, trim: true, uppercase: true, maxlength: 10, default: null },
     accountType: { type: String, enum: [...Object.values(BANK_ACCOUNT_TYPES), null], default: null },
   },
   { _id: false },
@@ -84,35 +91,42 @@ const documentSchema = new Schema(
 
 const statutorySchema = new Schema(
   {
-    pfApplicable: { type: Boolean, default: false },
-    pfNumber: { type: String, trim: true, uppercase: true, maxlength: 30, default: null },
-    esiApplicable: { type: Boolean, default: false },
-    esiNumber: { type: String, trim: true, maxlength: 20, default: null },
-    // Universal Account Number - 12 digits, portable across employers.
-    uan: { type: String, trim: true, maxlength: 12, default: null },
-    pan: {
-      type: String,
-      trim: true,
-      uppercase: true,
-      maxlength: 10,
-      default: null,
-      match: [/^[A-Z]{5}\d{4}[A-Z]$/, 'Invalid PAN format'],
-    },
-    aadhaar: { type: String, trim: true, maxlength: 12, default: null },
+    /**
+     * Enrolment in each Tanzanian scheme, per employee.
+     *
+     * All three default to TRUE, unlike the Indian schemes they replace. NSSF,
+     * NHIF and PAYE apply to essentially every employed person here, so the
+     * exception is the employee who is outside one of them -- a short-term
+     * consultant, an expatriate covered by a home-country scheme -- and the
+     * default should describe the ordinary case rather than the exception.
+     */
+    nssfApplicable: { type: Boolean, default: true },
+    nssfNumber: { type: String, trim: true, uppercase: true, maxlength: 20, default: null },
+    nhifApplicable: { type: Boolean, default: true },
+    nhifNumber: { type: String, trim: true, uppercase: true, maxlength: 20, default: null },
+
+    /** Taxpayer Identification Number, issued by the TRA. Required for PAYE. */
+    tinNumber: { type: String, trim: true, uppercase: true, maxlength: 20, default: null },
+    payeApplicable: { type: Boolean, default: true },
+
+    /** NIDA national identity number. */
+    nationalIdNumber: { type: String, trim: true, uppercase: true, maxlength: 25, default: null },
+    nationalIdExpiry: { type: Date, default: null },
+
+    /**
+     * Work permit, for an expatriate employee.
+     *
+     * Optional and null for a citizen. The expiry drives the same
+     * expiring-documents report as the passport, which is the point of holding
+     * it here rather than as a loose document with no date beside it.
+     */
+    workPermitNumber: { type: String, trim: true, uppercase: true, maxlength: 30, default: null },
+    workPermitExpiry: { type: Date, default: null },
+
     passportNumber: { type: String, trim: true, uppercase: true, maxlength: 20, default: null },
     passportExpiry: { type: Date, default: null },
     drivingLicense: { type: String, trim: true, uppercase: true, maxlength: 25, default: null },
     drivingLicenseExpiry: { type: Date, default: null },
-
-    /**
-     * Labour Welfare Fund and Professional Tax applicability.
-     *
-     * Both are state levies with their own eligibility rules, so they are
-     * per-employee switches rather than a company-wide setting -- a contractor
-     * and a workman at the same site are not treated alike.
-     */
-    lwfApplicable: { type: Boolean, default: false },
-    professionalTaxApplicable: { type: Boolean, default: true },
   },
   { _id: false },
 );
@@ -132,23 +146,33 @@ const salaryStructureSchema = new Schema(
     structureId: { type: Schema.Types.ObjectId, ref: 'SalaryStructure', default: null },
 
     /* ------------------------------------------ monthly components ----- */
-    // Added alongside the existing fields rather than replacing them, so
-    // records created before this extension remain valid and readable.
     basic: money(),
-    hra: money(),
-    conveyanceAllowance: money(),
-    specialAllowance: money(),
-    medicalAllowance: money(),
-    otherAllowance: money(),
+    hraAllowance: money(),
+    foodAllowance: money(),
+    transportationAllowance: money(),
+    communicationAllowance: money(),
+    mediclaim: money(),
+    schoolFeesAllowance: money(),
+    /**
+     * The annual leave allowance, held as its MONTHLY equivalent.
+     *
+     * The entitlement is stated per annum -- conventionally one month's basic
+     * -- but every other figure on this sub-document is a month's worth, and a
+     * single annual amount sitting among eleven monthly ones is how a year's
+     * allowance ends up being paid twelve times. Stored divided; the screens
+     * that quote the annual figure multiply it back.
+     */
+    annualLeaveAllowance: money(),
+    performanceIncentive: money(),
 
     /* ------------------------------------------------- contributions --- */
-    pfEmployee: money(),
-    pfEmployer: money(),
-    esiEmployee: money(),
-    esiEmployer: money(),
-    lwfEmployee: money(),
-    lwfEmployer: money(),
-    professionalTax: money(),
+    nssfEmployee: money(),
+    nssfEmployer: money(),
+    nhif: money(),
+    // Employer only. Never deducted from the employee, in any circumstance.
+    sdl: money(),
+    wcf: money(),
+    paye: money(),
 
     /**
      * Derived totals, recomputed server-side on every save.
@@ -448,63 +472,65 @@ const component = (value) => {
   return Number.isFinite(parsed) ? parsed : 0;
 };
 
+/** The earning components, in the order the payslip states them. */
+export const EARNING_COMPONENTS = [
+  'basic',
+  'hraAllowance',
+  'foodAllowance',
+  'transportationAllowance',
+  'communicationAllowance',
+  'mediclaim',
+  'schoolFeesAllowance',
+  'annualLeaveAllowance',
+  'performanceIncentive',
+];
+
+/** What comes out of the employee's own pay. */
+export const EMPLOYEE_DEDUCTION_COMPONENTS = ['nssfEmployee', 'nhif', 'paye'];
+
+/** What the company pays on top. Never deducted from anybody. */
+export const EMPLOYER_CONTRIBUTION_COMPONENTS = ['nssfEmployer', 'sdl', 'wcf'];
+
 /**
  * Recomputes every salary total from the components.
  *
- * The formulas follow the company's stated payroll policy:
+ * The formulas follow Tanzanian payroll practice:
  *
- *   Monthly CTC      = basic + HRA + conveyance + medical + other + special
- *   Employer contrib = PF(er) + ESI(er) + LWF(er)
- *   Gross            = Monthly CTC − employer contributions
- *   Employee ded.    = PF(ee) + ESI(ee) + LWF(ee) + professional tax
+ *   Monthly CTC      = basic + every allowance
+ *   Gross            = Monthly CTC
+ *   Employer contrib = NSSF(er) + SDL + WCF
+ *   Employee ded.    = NSSF(ee) + NHIF + PAYE
  *   Net              = Gross − employee deductions
+ *   Cost to company  = Net + employee deductions + employer contributions
  *   Annual CTC       = Monthly CTC × 12
  *   Total amount     = Net + bonus
  *
- * The six earning components sum to the COST TO COMPANY, not to gross. The
- * employer's own PF, ESI and LWF are already inside that figure, so they are
- * removed before gross is stated -- an employer contribution is a cost the
- * company carries, never something the employee earns, and reporting it as
- * part of gross overstates earnings on every payslip, Form 16 and loan letter
- * the figure reaches.
- *
- * Take-home does not move: the previous formulas reached the same net by
- * subtracting the employer contribution from a gross that had it included.
- * What changes is where the subtraction happens, and therefore what "gross"
- * and "monthly CTC" mean -- which is the part that was wrong.
+ * GROSS IS THE EARNINGS, undiminished. The employer's NSSF, SDL and WCF are a
+ * cost the company carries on top of the salary, not something the employee
+ * earns and then loses, so they are not subtracted here -- they are reported
+ * separately and added back for the true cost to company. This is the one
+ * substantive change from the Indian formulas, which netted the employer's
+ * share out of gross because the six earning components there were defined to
+ * sum to CTC rather than to earnings.
  *
  * Bonus is deliberately outside gross and outside CTC: it is a separate
  * payable, added only at the final total.
  *
  * Only `grossSalary`, `totalDeductions` and `netSalary` exist on the schema and
  * are persisted. The rest are returned for display and are recomputed wherever
- * they are needed, so no collection or field had to change.
+ * they are needed.
  */
 export const deriveSalaryTotals = (salary = {}) => {
-  const monthlyCtc = round(
-    component(salary.basic) +
-      component(salary.hra) +
-      component(salary.conveyanceAllowance) +
-      component(salary.medicalAllowance) +
-      component(salary.otherAllowance) +
-      component(salary.specialAllowance),
-  );
+  const sum = (keys) => round(keys.reduce((total, key) => total + component(salary[key]), 0));
 
-  const employerContribution = round(
-    component(salary.pfEmployer) + component(salary.esiEmployer) + component(salary.lwfEmployer),
-  );
+  const monthlyCtc = sum(EARNING_COMPONENTS);
+  const employerContribution = sum(EMPLOYER_CONTRIBUTION_COMPONENTS);
+  const totalDeductions = sum(EMPLOYEE_DEDUCTION_COMPONENTS);
 
-  const totalDeductions = round(
-    component(salary.pfEmployee) +
-      component(salary.esiEmployee) +
-      component(salary.lwfEmployee) +
-      component(salary.professionalTax),
-  );
-
-  // Floored at zero throughout: contributions or deductions that exceed the
-  // cost to company are a data-entry error, and a negative salary is not a
-  // meaningful figure to store or show.
-  const grossSalary = Math.max(0, round(monthlyCtc - employerContribution));
+  // Floored at zero throughout: deductions that exceed the earnings are a
+  // data-entry error, and a negative salary is not a meaningful figure to
+  // store or show.
+  const grossSalary = monthlyCtc;
   const netSalary = Math.max(0, round(grossSalary - totalDeductions));
 
   const bonus = Math.max(0, round(component(salary.bonus)));
@@ -519,6 +545,9 @@ export const deriveSalaryTotals = (salary = {}) => {
     employerContribution,
     monthlyCtc,
     annualCtc: round(monthlyCtc * 12),
+    // What the month actually costs: take-home, plus what was withheld from
+    // it, plus what the company paid alongside it.
+    costToCompany: Math.max(0, round(netSalary + totalDeductions + employerContribution)),
     bonus,
     totalAmount: Math.max(0, round(netSalary + bonus)),
   };

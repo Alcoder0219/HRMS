@@ -1,13 +1,12 @@
 import { COMPONENT_CODE, COMPONENT_TYPE } from '../utils/constants.js';
 import {
-  calculatePf,
-  calculateEsi,
-  calculateEmployeeEsi,
-  calculateLwf,
-  calculateProfessionalTax,
-  calculateMonthlyTds,
+  calculateNssf,
+  calculateNhif,
+  calculateSdl,
+  calculateWcf,
+  calculatePaye,
   DEFAULT_STATUTORY,
-  roundToRupee,
+  roundToCurrency,
 } from './statutory.helper.js';
 
 /**
@@ -26,74 +25,98 @@ import {
  *   5. recoveries (loans, advances)
  *   6. net
  *
- * PF is computed on Basic+DA, ESI on gross, PT on gross, TDS on annual
- * projection. Using one base for all of them is the classic payroll bug.
+ * Under Tanzanian rules NSSF, SDL and WCF are all rates on GROSS; NHIF is a
+ * flat amount looked up by band; PAYE is a progressive monthly slab on gross
+ * less the employee's own NSSF. Using one base for all of them, or annualising
+ * PAYE, is how this goes wrong.
  */
 
 const LABELS = {
-  [COMPONENT_CODE.BASIC]: 'Basic',
+  [COMPONENT_CODE.BASIC]: 'Basic Salary',
   [COMPONENT_CODE.HRA]: 'House Rent Allowance',
-  [COMPONENT_CODE.DA]: 'Dearness Allowance',
-  [COMPONENT_CODE.SPECIAL_ALLOWANCE]: 'Special Allowance',
+  [COMPONENT_CODE.FOOD_ALLOWANCE]: 'Food Allowance',
+  [COMPONENT_CODE.TRANSPORTATION_ALLOWANCE]: 'Transportation Allowance',
+  [COMPONENT_CODE.COMMUNICATION_ALLOWANCE]: 'Communication Allowance',
+  [COMPONENT_CODE.MEDICLAIM]: 'Mediclaim',
+  [COMPONENT_CODE.SCHOOL_FEES_ALLOWANCE]: 'School Fees Allowance',
+  [COMPONENT_CODE.ANNUAL_LEAVE_ALLOWANCE]: 'Annual Leave Allowance',
+  [COMPONENT_CODE.PERFORMANCE_INCENTIVE]: 'Performance Linked Incentive',
   [COMPONENT_CODE.OTHER_ALLOWANCE]: 'Other Allowance',
   [COMPONENT_CODE.OVERTIME]: 'Overtime',
   [COMPONENT_CODE.BONUS]: 'Bonus',
   [COMPONENT_CODE.INCENTIVE]: 'Incentive',
   [COMPONENT_CODE.ARREARS]: 'Arrears',
-  [COMPONENT_CODE.PF]: 'Provident Fund',
-  [COMPONENT_CODE.ESI]: 'ESI',
-  [COMPONENT_CODE.PT]: 'Professional Tax',
-  [COMPONENT_CODE.TDS]: 'Income Tax (TDS)',
+  [COMPONENT_CODE.NSSF_EMPLOYEE]: 'NSSF - Employee',
+  [COMPONENT_CODE.NHIF]: 'NHIF',
+  [COMPONENT_CODE.PAYE]: 'PAYE',
   [COMPONENT_CODE.LOAN_EMI]: 'Loan EMI',
   [COMPONENT_CODE.ADVANCE_RECOVERY]: 'Advance Recovery',
   [COMPONENT_CODE.OTHER_DEDUCTION]: 'Other Deduction',
-  [COMPONENT_CODE.EMPLOYER_PF]: 'Employer PF',
-  [COMPONENT_CODE.EMPLOYER_EPS]: 'Employer Pension (EPS)',
-  [COMPONENT_CODE.EMPLOYER_ESI]: 'Employer ESI',
-  [COMPONENT_CODE.LWF]: 'Labour Welfare Fund',
-  [COMPONENT_CODE.EMPLOYER_LWF]: 'Employer Labour Welfare Fund',
+  [COMPONENT_CODE.NSSF_EMPLOYER]: 'NSSF - Employer',
+  [COMPONENT_CODE.SDL]: 'Skills Development Levy',
+  [COMPONENT_CODE.WCF]: 'Workers Compensation Fund',
 };
+
+/**
+ * The structure field each fixed earning code is read from.
+ *
+ * One list drives the component lines, the proration and the unprorated
+ * comparison figure, so an allowance cannot be added to the model and then
+ * silently omitted from a payslip.
+ */
+export const FIXED_EARNINGS = [
+  { code: COMPONENT_CODE.BASIC, field: 'basic' },
+  { code: COMPONENT_CODE.HRA, field: 'hraAllowance' },
+  { code: COMPONENT_CODE.FOOD_ALLOWANCE, field: 'foodAllowance' },
+  { code: COMPONENT_CODE.TRANSPORTATION_ALLOWANCE, field: 'transportationAllowance' },
+  { code: COMPONENT_CODE.COMMUNICATION_ALLOWANCE, field: 'communicationAllowance' },
+  { code: COMPONENT_CODE.MEDICLAIM, field: 'mediclaim' },
+  { code: COMPONENT_CODE.SCHOOL_FEES_ALLOWANCE, field: 'schoolFeesAllowance' },
+  { code: COMPONENT_CODE.ANNUAL_LEAVE_ALLOWANCE, field: 'annualLeaveAllowance' },
+  { code: COMPONENT_CODE.PERFORMANCE_INCENTIVE, field: 'performanceIncentive' },
+];
 
 /**
  * The contractual monthly components, as against variable pay.
  *
- * These sum to the month's cost to company; overtime, bonus, incentive and
- * arrears are earned on top of it and are never part of the salary structure's
- * own figures. Separating them is what lets gross be taken from the Employee
- * Master while still adding whatever was actually earned this month.
+ * These sum to the month's gross; overtime, bonus, incentive and arrears are
+ * earned on top of it and are never part of the salary structure's own figures.
+ * Separating them is what lets gross be taken from the Employee Master while
+ * still adding whatever was actually earned this month.
+ *
+ * `OTHER_ALLOWANCE` is in the set because the structure's free-form allowance
+ * list is contractual pay too -- it is a named allowance without a dedicated
+ * column, not a one-off.
  */
 const FIXED_EARNING_CODES = new Set([
-  COMPONENT_CODE.BASIC,
-  COMPONENT_CODE.HRA,
-  COMPONENT_CODE.DA,
-  COMPONENT_CODE.SPECIAL_ALLOWANCE,
+  ...FIXED_EARNINGS.map((entry) => entry.code),
   COMPONENT_CODE.OTHER_ALLOWANCE,
 ]);
 
 const line = (code, amount, extra = {}) => ({
   code,
   label: LABELS[code] ?? code,
-  amount: roundToRupee(amount),
+  amount: roundToCurrency(amount),
   ...extra,
 });
 
 /**
  * THE gross salary calculation. Every caller uses this one.
  *
- *   gross = basic + hra + da + conveyance + medical + special + other
+ *   gross = basic + every allowance on the structure
  *
  * Gross is an earnings figure and is nothing but the sum of what was earned.
  * Nothing is subtracted from it -- not the employee's deductions, and not the
- * employer's own PF, ESI or LWF, which are a cost to the company rather than
+ * employer's NSSF, SDL or WCF, which are a cost to the company rather than
  * something the employee earned and then lost.
  *
  * It sums the component lines themselves rather than scaling a stored total,
  * which is what keeps the register honest: the lines shown to the user ARE the
  * addends, so the column total can never disagree with the figure beside it.
- * Deriving the same number two ways is how the two drifted apart before -- one
- * path scaled a stored gross by the payable-day ratio while the other summed
- * the individually-scaled components, and the difference was reported as an
- * unexplained rupee gap.
+ * Deriving the same number two ways is how the two drift apart -- one path
+ * scaling a stored gross by the payable-day ratio while the other sums the
+ * individually-scaled components, and the difference gets reported as an
+ * unexplained shilling gap.
  *
  * Rounding therefore needs no reconciliation step. Each line is rounded once
  * when it is built, and this adds the rounded values, so the identity
@@ -105,10 +128,10 @@ const line = (code, amount, extra = {}) => ({
  * columns; callers that want the full month's earnings add it themselves.
  *
  * @param {Array} earnings Component lines, variable pay included or not.
- * @returns {number} The fixed gross, rounded to the rupee.
+ * @returns {number} The fixed gross, rounded to the shilling.
  */
 export const calculateGrossSalary = (earnings = []) =>
-  roundToRupee(
+  roundToCurrency(
     (earnings ?? [])
       .filter((entry) => FIXED_EARNING_CODES.has(entry?.code))
       .reduce((sum, entry) => sum + (Number(entry?.amount) || 0), 0),
@@ -174,7 +197,7 @@ export const overtimeAmount = ({
    * Master shows. The derivation below remains for records configured before
    * the overtime section existed.
    */
-  if (ratePerHour > 0) return roundToRupee((minutes / 60) * ratePerHour);
+  if (ratePerHour > 0) return roundToCurrency((minutes / 60) * ratePerHour);
 
   if (!basic) return 0;
 
@@ -182,29 +205,27 @@ export const overtimeAmount = ({
   if (!monthlyHours) return 0;
 
   const hourlyRate = Number(basic) / monthlyHours;
-  return roundToRupee((minutes / 60) * hourlyRate * multiplier);
+  return roundToCurrency((minutes / 60) * hourlyRate * multiplier);
 };
 
 /**
  * Calculates one payslip.
  *
  * @param {object} input
- * @param {object} input.structure   { basic, hra, da, specialAllowance, otherAllowances[] }
+ * @param {object} input.structure   Basic plus the Tanzanian allowances, and `otherAllowances[]`
  * @param {object} input.attendance  { payableDays, totalDays, lopDays, overtimeMinutes }
  * @param {object} input.variable    { bonus, incentive, arrears, otherEarnings[], otherDeductions[] }
  * @param {Array}  input.loans       [{ loanId, emi, outstanding }]
  * @param {Array}  input.advances    [{ advanceId, recoveryAmount, outstanding }]
  * @param {object} input.statutory   Settings; falls back to DEFAULT_STATUTORY
  * @param {object} input.flags
- *   Statutory eligibility, from the Employee Master and opt-in:
- *   { pfApplicable, esiApplicable, lwfApplicable, ptApplicable, tdsApplicable }.
- *   Each is enabled only by an explicit `true`.
- * @param {object} input.ytd         { grossPaid, tdsPaid, monthsRemaining }
- * @param {number} input.month       1-12, for the February PT top-up
+ *   Statutory eligibility, from the Employee Master:
+ *   { nssfApplicable, nhifApplicable, payeApplicable }. Each is enabled only by
+ *   an explicit `true`.
+ * @param {number} input.payeOverride A figure finance has determined outside the slabs
  * @param {object} input.salarySnapshot
- *   The employee's own salary structure, when one is on file. Present, it is
- *   AUTHORITATIVE: gross, the statutory employee deductions and the employer
- *   contribution are taken from it rather than re-derived here. See below.
+ *   The employee's own salary structure, when one is on file. Present, it
+ *   decides whether the company contributes at all -- see `employerContributes`.
  */
 export const calculatePayslip = ({
   structure,
@@ -214,10 +235,8 @@ export const calculatePayslip = ({
   advances = [],
   statutory = DEFAULT_STATUTORY,
   flags = {},
-  ytd = {},
-  month = 1,
   overtimeMultiplier = 2,
-  tdsOverride = null,
+  payeOverride = null,
   overtimeConfig = null,
   salarySnapshot = null,
 }) => {
@@ -225,19 +244,9 @@ export const calculatePayslip = ({
   const totalDays = Number(attendance.totalDays) || 30;
 
   /* ---------------------------------------------------- fixed earnings -- */
-  const prorate = (value) => roundToRupee((Number(value) || 0) * factor);
+  const prorate = (value) => roundToCurrency((Number(value) || 0) * factor);
 
-  const basic = prorate(structure.basic);
-  const hra = prorate(structure.hra);
-  const da = prorate(structure.da);
-  const special = prorate(structure.specialAllowance);
-
-  const earnings = [
-    line(COMPONENT_CODE.BASIC, basic),
-    line(COMPONENT_CODE.HRA, hra),
-    line(COMPONENT_CODE.DA, da),
-    line(COMPONENT_CODE.SPECIAL_ALLOWANCE, special),
-  ];
+  const earnings = FIXED_EARNINGS.map(({ code, field }) => line(code, prorate(structure[field])));
 
   (structure.otherAllowances ?? []).forEach((allowance) => {
     earnings.push({
@@ -246,7 +255,7 @@ export const calculatePayslip = ({
       // A fixed allowance is subject to loss of pay; a reimbursement is not,
       // and says so on the component.
       amount: allowance.prorate === false
-        ? roundToRupee(allowance.amount)
+        ? roundToCurrency(allowance.amount)
         : prorate(allowance.amount),
     });
   });
@@ -273,7 +282,13 @@ export const calculatePayslip = ({
 
   // Variable pay is never prorated: a bonus is an award for a period, not a
   // rate per day, and arrears are already the exact amount owed.
-  if (overtime > 0) earnings.push(line(COMPONENT_CODE.OVERTIME, overtime, { hours: Number(((attendance.overtimeMinutes ?? 0) / 60).toFixed(2)) }));
+  if (overtime > 0) {
+    earnings.push(
+      line(COMPONENT_CODE.OVERTIME, overtime, {
+        hours: Number(((attendance.overtimeMinutes ?? 0) / 60).toFixed(2)),
+      }),
+    );
+  }
   if (variable.bonus > 0) earnings.push(line(COMPONENT_CODE.BONUS, variable.bonus));
   if (variable.incentive > 0) earnings.push(line(COMPONENT_CODE.INCENTIVE, variable.incentive));
   if (variable.arrears > 0) earnings.push(line(COMPONENT_CODE.ARREARS, variable.arrears));
@@ -281,9 +296,12 @@ export const calculatePayslip = ({
   (variable.otherEarnings ?? []).forEach((entry) => {
     if (entry.amount > 0) {
       earnings.push({
-        code: entry.code ?? COMPONENT_CODE.OTHER_ALLOWANCE,
+        // Deliberately not OTHER_ALLOWANCE by default: a one-off payment is not
+        // contractual pay, and defaulting it into the fixed set would pull it
+        // into gross and therefore into every statutory base.
+        code: entry.code ?? COMPONENT_CODE.INCENTIVE,
         label: entry.label ?? 'Other Earning',
-        amount: roundToRupee(entry.amount),
+        amount: roundToCurrency(entry.amount),
       });
     }
   });
@@ -292,39 +310,36 @@ export const calculatePayslip = ({
   // variable pay so each can be reported for what it is.
   const fixedTotal = calculateGrossSalary(earnings);
 
-  const variableTotal = roundToRupee(
+  const variableTotal = roundToCurrency(
     earnings
       .filter((entry) => !FIXED_EARNING_CODES.has(entry.code))
       .reduce((sum, entry) => sum + entry.amount, 0),
   );
 
   /**
-   * The employee's stored salary structure decides the statutory figures --
-   * with the exception of provident fund, which is calculated. See below.
+   * Gross is the sum of the earned components, plus whatever variable pay was
+   * earned on top.
    *
-   * Payroll used to re-derive every deduction from the statutory engine, and
-   * the results disagreed with the Employee Master: the engine's own PT rather
-   * than the amount configured for the person. ESI, LWF and professional tax
-   * are therefore taken from the structure verbatim, scaled only by the
-   * loss-of-pay factor.
+   * It is deliberately NOT `snapshot.grossSalary * factor`. That would be a
+   * second, independent derivation of the same quantity, and on any prorated
+   * month the two disagree: scaling a stored gross rounds once at the end,
+   * while the component lines are each rounded as they are built.
    *
-   * Wage-linked amounts scale with loss of pay; the flat monthly levies do
-   * not. Professional tax and labour welfare fund are fixed statutory charges
-   * for the month rather than a rate per day, and are due in full whenever any
-   * salary is paid at all.
+   * The employer's NSSF, SDL and WCF are not deducted here. They are the
+   * company's cost, reported on the employer side and added back for CTC; the
+   * employee earned the components, so the components are the gross.
    */
+  const fixedGross = fixedTotal;
+  const gross = roundToCurrency(fixedGross + variableTotal);
+
   const snapshot = salarySnapshot ?? null;
-  const scaled = (value) => roundToRupee((Number(value) || 0) * factor);
-  const flat = (value) => (factor > 0 ? roundToRupee(Number(value) || 0) : 0);
 
   /**
    * Statutory eligibility is opt-in, and strictly so.
    *
    * Only an explicit `true` enables a deduction. Absent, null and false all
    * mean no, because the caller is stating who this person IS enrolled in, and
-   * a missing answer is not consent to deduct from somebody's salary. The
-   * looser `!== false` this replaced turned every unset flag into an
-   * enrolment.
+   * a missing answer is not consent to deduct from somebody's salary.
    */
   const eligible = (flag) => flag === true;
 
@@ -337,164 +352,86 @@ export const calculatePayslip = ({
    * there means no contribution -- so the AMOUNT is read as a switch, while the
    * rate that computes it is left alone.
    *
-   * Without this the employer side was derived purely from the statutory flag:
-   * an employee with `pfEmployer: 0` on file still had 12% of basic attributed
-   * to the company, because nothing ever consulted the figure the Employee
-   * Master held.
-   *
    * `Number(x) || 0` collapses 0, "0", "", null, undefined and any unparseable
    * value to zero, so none of them can enable a contribution and none can
-   * produce NaN.
+   * produce NaN. With no snapshot on file at all the contribution applies, as
+   * it must for a payroll-only structure.
    */
-  const employerContributes = (configured) => (Number(configured) || 0) > 0;
+  const employerContributes = (configured) => !snapshot || (Number(configured) || 0) > 0;
 
   /**
-   * PF is calculated, not copied.
+   * NSSF, on the month's GROSS -- both sides, calculated rather than copied.
    *
-   * Every other statutory figure below still comes from the salary structure,
-   * but provident fund is a rate on a wage, and the wage is the basic actually
-   * being paid this month. Scaling the structure's configured amount by the
-   * loss-of-pay factor gave a different answer: on eight payable days of
-   * thirty-one it produced 1,800 x 8/31 = 465, where 12% of the 6,968 of basic
-   * actually paid is 836. It also carried whatever employer figure happened to
-   * be stored, which is how the employer's share could differ from the
-   * employee's.
-   *
-   * `basic` and `da` here are already prorated, so the cap is applied to the
-   * month's real contribution rather than to a full month's.
+   * `gross` here is already prorated and already includes whatever variable
+   * pay was earned, so the contribution follows the salary in both directions
+   * without needing a proration rule of its own. Copying a configured amount
+   * from the structure and scaling it by the loss-of-pay factor would give a
+   * different answer, and would carry whatever employer figure happened to be
+   * stored -- which is how the two sides drift apart.
    */
-  const calculatedPf = calculatePf({
-    basic,
-    da,
+  const calculatedNssf = calculateNssf({
+    gross,
     settings: statutory,
-    employeeApplicable: eligible(flags.pfApplicable),
+    employeeApplicable: eligible(flags.nssfApplicable),
   });
 
-  /**
-   * The employee's side is untouched; the employer's applies only where the
-   * Employee Master carries a figure for it. The formula and its cap are
-   * exactly as calculated above -- this only decides whether it is applied.
-   */
-  const pf = {
-    ...calculatedPf,
-    employer: employerContributes(snapshot?.pfEmployer) ? calculatedPf.employer : 0,
+  const nssf = {
+    ...calculatedNssf,
+    employer: employerContributes(snapshot?.nssfEmployer) ? calculatedNssf.employer : 0,
   };
 
   /**
-   * ESI. The employee's side is calculated; the employer's is not touched.
+   * NHIF: a flat monthly amount for the band the gross falls in.
    *
-   * The employee used to be whatever amount sat on the salary structure,
-   * scaled by loss of pay -- so an employee with ESI switched on but no figure
-   * entered contributed nothing, and one with a stale figure contributed that.
-   * It is now a rate on basic with its own cap, from the statutory helper.
-   *
-   * The base is `basic`, the PAYABLE basic -- already reduced for loss of pay
-   * -- and not `structure.basic`, the full month's. Someone who was paid for
-   * five days of August contributes on the 2,706 they actually earned, not on
-   * the 16,780 they would have earned in a whole month. ESI therefore follows
-   * the salary down without needing a proration rule of its own, and a month
-   * with no pay yields nothing because the payable basic is nothing.
-   *
-   * There is no employer side. ESI is an employee-only deduction in this
-   * system, so the employer contributes nothing regardless of what the salary
-   * structure carries in `esiEmployer` -- that field no longer reaches
-   * payroll at all.
+   * Not scaled by loss of pay -- it is a fixed monthly charge rather than a
+   * rate per day, and is due in full whenever any salary is paid at all. A
+   * month with no pay yields nothing because the band lookup on a zero gross
+   * returns nothing.
    */
-  const esiEmployee = calculateEmployeeEsi({ basic, settings: statutory });
-
-  const esi = !eligible(flags.esiApplicable)
-    ? { employee: 0, employer: 0, applicable: false }
-    : snapshot
-      ? {
-          employee: esiEmployee,
-          employer: 0,
-          applicable: true,
-          fromSalaryStructure: true,
-        }
-      : {
-          ...calculateEsi({
-            gross: fixedTotal + variableTotal,
-            // The payable basic here too, so both paths contribute alike.
-            basic,
-            settings: statutory,
-            employeeApplicable: true,
-            forceApplicable: flags.esiForced ?? null,
-          }),
-        };
+  const nhif = calculateNhif({
+    gross,
+    settings: statutory,
+    employeeApplicable: eligible(flags.nhifApplicable),
+  });
 
   /**
-   * Labour welfare fund, calculated rather than copied.
+   * SDL and WCF: employer-only levies on the same gross.
    *
-   * `fixedTotal` is this month's gross -- the earned components, before
-   * overtime and bonus, which is the figure the register prints as Gross
-   * Salary. It is already prorated, so LWF follows the salary down without
-   * needing a proration rule of its own, and a month with no pay yields
-   * nothing because the gross itself is nothing.
-   *
-   * Variable pay is deliberately outside the base: a one-off bonus should not
-   * move a welfare-fund contribution.
+   * Neither has an employee half in any circumstance, so neither is ever
+   * consulted when net pay is computed. They exist on the payslip only so the
+   * cost of the person for the month is complete and the monthly returns can
+   * be prepared from stored slips.
    */
-  const lwf = eligible(flags.lwfApplicable)
-    ? calculateLwf({ gross: fixedTotal, settings: statutory })
-    : { employee: 0, employer: 0 };
-
-  const lwfEmployee = lwf.employee;
-  // As with PF: the employee's side stands, the employer's applies only where
-  // the Employee Master carries a figure for it. The doubling is unchanged.
-  const lwfEmployer = employerContributes(snapshot?.lwfEmployer) ? lwf.employer : 0;
-
-  // Provident fund and labour welfare fund only. ESI has no employer side.
-  const employerContributionTotalFromStructure = snapshot
-    ? roundToRupee(pf.employer + lwfEmployer)
-    : null;
+  const sdl = employerContributes(snapshot?.sdl) ? calculateSdl({ gross, settings: statutory }) : 0;
+  const wcf = employerContributes(snapshot?.wcf) ? calculateWcf({ gross, settings: statutory }) : 0;
 
   /**
-   * Gross is the sum of the earned components, plus whatever variable pay was
-   * earned on top.
+   * PAYE, on gross less the employee's own NSSF.
    *
-   * It is deliberately NOT `snapshot.grossSalary * factor`. That was a second,
-   * independent derivation of the same quantity, and on any prorated month the
-   * two disagreed: scaling a stored gross rounds once at the end, while the
-   * component lines are each rounded as they are built, and the stored gross
-   * had the employer's contribution already netted out of it. For eight payable
-   * days of thirty-one that produced a gross 482 rupees below the components
-   * printed directly above it on the same register.
+   * The employee's social security contribution is a deductible expense, so it
+   * comes off before the slabs are applied. The employer's does not -- it was
+   * never the employee's income.
    *
-   * The employer's PF, ESI and LWF are not deducted here. They are the
-   * company's cost, reported on the employer side and added back for CTC; the
-   * employee earned the components, so the components are the gross.
+   * Monthly and final. There is no annual projection and no year-end catch-up:
+   * Tanzanian PAYE is assessed on the month, so a projection would invent a
+   * liability that the tax authority never assesses.
    */
-  const fixedGross = fixedTotal;
-  const gross = roundToRupee(fixedGross + variableTotal);
+  const monthlyTaxable = Math.max(0, roundToCurrency(gross - nssf.employee));
 
-  const pt = !eligible(flags.ptApplicable)
-    ? 0
-    : snapshot
-      ? flat(snapshot.professionalTax)
-      : calculateProfessionalTax({ gross, month, settings: statutory });
-
-  // TDS base excludes the employee's own PF, which is an eligible deduction.
-  const monthlyTaxable = Math.max(0, gross - pf.employee);
-
-  const tds =
-    flags.tdsApplicable === false
-      ? { monthly: 0 }
-      : calculateMonthlyTds({
-          monthlyTaxable,
-          paidSoFar: ytd.grossPaid ?? 0,
-          tdsPaidSoFar: ytd.tdsPaid ?? 0,
-          monthsRemaining: ytd.monthsRemaining ?? 12,
-          settings: statutory,
-          manualOverride: tdsOverride,
-        });
+  const paye = calculatePaye({
+    monthlyTaxable,
+    settings: statutory,
+    employeeApplicable: eligible(flags.payeApplicable),
+    manualOverride: payeOverride,
+  });
 
   /* ------------------------------------------------------ deductions ---- */
   const deductions = [];
-  if (pf.employee > 0) deductions.push(line(COMPONENT_CODE.PF, pf.employee, { wages: pf.wages }));
-  if (esi.employee > 0) deductions.push(line(COMPONENT_CODE.ESI, esi.employee));
-  if (lwfEmployee > 0) deductions.push(line(COMPONENT_CODE.LWF, lwfEmployee));
-  if (pt > 0) deductions.push(line(COMPONENT_CODE.PT, pt));
-  if (tds.monthly > 0) deductions.push(line(COMPONENT_CODE.TDS, tds.monthly));
+  if (nssf.employee > 0) {
+    deductions.push(line(COMPONENT_CODE.NSSF_EMPLOYEE, nssf.employee, { wages: nssf.wages }));
+  }
+  if (nhif > 0) deductions.push(line(COMPONENT_CODE.NHIF, nhif));
+  if (paye.monthly > 0) deductions.push(line(COMPONENT_CODE.PAYE, paye.monthly, { taxable: monthlyTaxable }));
 
   /* ------------------------------------------------------ recoveries ---- */
   // Never recover more than is outstanding: the final instalment of a loan is
@@ -503,10 +440,10 @@ export const calculatePayslip = ({
   const loanBreakup = [];
 
   loans.forEach((loan) => {
-    const due = Math.min(roundToRupee(loan.emi), roundToRupee(loan.outstanding ?? loan.emi));
+    const due = Math.min(roundToCurrency(loan.emi), roundToCurrency(loan.outstanding ?? loan.emi));
     if (due > 0) {
       loanTotal += due;
-      loanBreakup.push({ loanId: loan.loanId, amount: due, closing: roundToRupee((loan.outstanding ?? 0) - due) });
+      loanBreakup.push({ loanId: loan.loanId, amount: due, closing: roundToCurrency((loan.outstanding ?? 0) - due) });
     }
   });
 
@@ -515,15 +452,15 @@ export const calculatePayslip = ({
 
   advances.forEach((advance) => {
     const due = Math.min(
-      roundToRupee(advance.recoveryAmount),
-      roundToRupee(advance.outstanding ?? advance.recoveryAmount),
+      roundToCurrency(advance.recoveryAmount),
+      roundToCurrency(advance.outstanding ?? advance.recoveryAmount),
     );
     if (due > 0) {
       advanceTotal += due;
       advanceBreakup.push({
         advanceId: advance.advanceId,
         amount: due,
-        closing: roundToRupee((advance.outstanding ?? 0) - due),
+        closing: roundToCurrency((advance.outstanding ?? 0) - due),
       });
     }
   });
@@ -538,43 +475,41 @@ export const calculatePayslip = ({
       deductions.push({
         code: entry.code ?? COMPONENT_CODE.OTHER_DEDUCTION,
         label: entry.label ?? 'Other Deduction',
-        amount: roundToRupee(entry.amount),
+        amount: roundToCurrency(entry.amount),
       });
     }
   });
 
-  const totalDeductions = roundToRupee(deductions.reduce((sum, entry) => sum + entry.amount, 0));
+  const totalDeductions = roundToCurrency(deductions.reduce((sum, entry) => sum + entry.amount, 0));
 
   /* ----------------------------------------------- employer side -------- */
   /**
-   * Reported for CTC and statutory returns; never subtracted from take-home.
-   *
-   * No employer ESI line is written, in any circumstance. The company does not
-   * contribute to ESI here, so there is nothing to report -- and an absent
-   * line rather than a zero one keeps it out of every downstream total that
-   * sums this array.
+   * Reported for cost to company and the statutory returns; never subtracted
+   * from take-home. A contribution that is zero writes no line at all rather
+   * than a zero one, so it stays out of every downstream total that sums this
+   * array.
    */
   const employerContributions = [];
-  if (pf.employer > 0) employerContributions.push(line(COMPONENT_CODE.EMPLOYER_PF, pf.employer));
-  if (pf.pension > 0) employerContributions.push(line(COMPONENT_CODE.EMPLOYER_EPS, pf.pension));
-  if (lwfEmployer > 0) employerContributions.push(line(COMPONENT_CODE.EMPLOYER_LWF, lwfEmployer));
+  if (nssf.employer > 0) employerContributions.push(line(COMPONENT_CODE.NSSF_EMPLOYER, nssf.employer));
+  if (sdl > 0) employerContributions.push(line(COMPONENT_CODE.SDL, sdl));
+  if (wcf > 0) employerContributions.push(line(COMPONENT_CODE.WCF, wcf));
 
-  const employerTotal =
-    employerContributionTotalFromStructure ??
-    roundToRupee(employerContributions.reduce((sum, entry) => sum + entry.amount, 0));
+  const employerTotal = roundToCurrency(
+    employerContributions.reduce((sum, entry) => sum + entry.amount, 0),
+  );
 
   /* ------------------------------------------------------------ net ----- */
   // Floored at zero: deductions exceeding gross is a real situation (a long
   // unpaid absence with an active loan), but a negative payslip is not a
   // payment instruction. The excess is reported so it can be carried forward.
   const rawNet = gross - totalDeductions;
-  const netPayable = Math.max(0, roundToRupee(rawNet));
+  const netPayable = Math.max(0, roundToCurrency(rawNet));
 
   return {
     lopFactor: Number(factor.toFixed(4)),
     payableDays: Number(attendance.payableDays ?? totalDays),
     totalDays,
-    lopDays: roundToRupee(attendance.lopDays ?? Math.max(0, totalDays - (attendance.payableDays ?? totalDays))),
+    lopDays: roundToCurrency(attendance.lopDays ?? Math.max(0, totalDays - (attendance.payableDays ?? totalDays))),
 
     earnings,
     deductions,
@@ -585,9 +520,11 @@ export const calculatePayslip = ({
     employerContributionTotal: employerTotal,
     netPayable,
     // Non-zero when deductions could not be fully recovered this month.
-    unrecovered: rawNet < 0 ? roundToRupee(Math.abs(rawNet)) : 0,
+    unrecovered: rawNet < 0 ? roundToCurrency(Math.abs(rawNet)) : 0,
 
-    ctcForMonth: roundToRupee(gross + employerTotal),
+    // Cost to company for the month: what the employee is paid plus what the
+    // company pays alongside it.
+    ctcForMonth: roundToCurrency(gross + employerTotal),
 
     /**
      * Whether the fixed figures came from the Employee Master, and whether any
@@ -607,19 +544,17 @@ export const calculatePayslip = ({
      * exists to prevent, just on the comparison figure instead of the paid one.
      */
     salaryStructureGross: calculateGrossSalary([
-      line(COMPONENT_CODE.BASIC, structure.basic),
-      line(COMPONENT_CODE.HRA, structure.hra),
-      line(COMPONENT_CODE.DA, structure.da),
-      line(COMPONENT_CODE.SPECIAL_ALLOWANCE, structure.specialAllowance),
+      ...FIXED_EARNINGS.map(({ code, field }) => line(code, structure[field])),
       ...(structure.otherAllowances ?? []).map((allowance) =>
         line(allowance.code ?? COMPONENT_CODE.OTHER_ALLOWANCE, allowance.amount)),
     ]),
 
     statutoryDetail: {
-      pf: { ...pf },
-      esi: { ...esi },
-      professionalTax: pt,
-      tds: { ...tds },
+      nssf: { ...nssf },
+      nhif,
+      sdl,
+      wcf,
+      paye: { ...paye },
       taxableIncome: monthlyTaxable,
     },
 
@@ -631,17 +566,77 @@ export const calculatePayslip = ({
  * Derives a monthly structure from an annual CTC using a conventional split.
  *
  * A convenience for onboarding, not a rule -- the returned figures are a
- * starting point an HR user is expected to adjust. Special allowance is the
- * balancing figure so the components always sum exactly to the monthly CTC.
+ * starting point an HR user is expected to adjust.
+ *
+ * Basic is the ANCHOR and the allowances sit on top of it, which is the
+ * Tanzanian convention and the opposite of the Indian split this replaces.
+ * There, special allowance was the balancing figure that absorbed whatever the
+ * named components left over; here the named allowances are stated as their own
+ * percentages of basic and basic is solved for, so that the components still
+ * total the monthly CTC exactly and no residual component has to exist to
+ * make the arithmetic close.
+ *
+ * The annual leave allowance is one month's basic by convention, held -- like
+ * the field it fills -- as its monthly twelfth.
  */
-export const deriveStructureFromCtc = (annualCtc, { basicPercent = 40, hraPercent = 50, daPercent = 0 } = {}) => {
-  const monthly = roundToRupee(Number(annualCtc || 0) / 12);
-  const basic = roundToRupee((monthly * basicPercent) / 100);
-  const da = roundToRupee((basic * daPercent) / 100);
-  const hra = roundToRupee((basic * hraPercent) / 100);
-  const specialAllowance = Math.max(0, roundToRupee(monthly - basic - da - hra));
+export const deriveStructureFromCtc = (
+  annualCtc,
+  {
+    hraPercent = 0,
+    transportationPercent = 10,
+    communicationPercent = 5,
+    annualLeavePercent = 100,
+    foodAllowanceAmount = 0,
+    mediclaimAmount = 0,
+    schoolFeesAllowanceAmount = 0,
+  } = {},
+) => {
+  const monthly = roundToCurrency(Number(annualCtc || 0) / 12);
 
-  return { basic, da, hra, specialAllowance, monthlyCtc: monthly, annualCtc: Number(annualCtc) || 0 };
+  // Fixed shilling allowances come off the top; what remains is shared between
+  // basic and the allowances expressed against it.
+  const fixed =
+    (Number(foodAllowanceAmount) || 0) +
+    (Number(mediclaimAmount) || 0) +
+    (Number(schoolFeesAllowanceAmount) || 0);
+
+  const remaining = Math.max(0, monthly - fixed);
+
+  /**
+   * basic x (1 + every percentage of basic) = remaining
+   *
+   * Solved rather than guessed at, so the components add up to the monthly CTC
+   * by construction instead of needing a residual component to absorb the
+   * difference.
+   */
+  const multiplier =
+    1 +
+    (Number(hraPercent) || 0) / 100 +
+    (Number(transportationPercent) || 0) / 100 +
+    (Number(communicationPercent) || 0) / 100 +
+    // Per annum, so its monthly share is a twelfth.
+    (Number(annualLeavePercent) || 0) / 100 / 12;
+
+  const basic = roundToCurrency(remaining / (multiplier || 1));
+
+  const hraAllowance = roundToCurrency((basic * (Number(hraPercent) || 0)) / 100);
+  const transportationAllowance = roundToCurrency((basic * (Number(transportationPercent) || 0)) / 100);
+  const communicationAllowance = roundToCurrency((basic * (Number(communicationPercent) || 0)) / 100);
+  const annualLeaveAllowance = roundToCurrency((basic * (Number(annualLeavePercent) || 0)) / 100 / 12);
+
+  return {
+    basic,
+    hraAllowance,
+    foodAllowance: roundToCurrency(foodAllowanceAmount),
+    transportationAllowance,
+    communicationAllowance,
+    mediclaim: roundToCurrency(mediclaimAmount),
+    schoolFeesAllowance: roundToCurrency(schoolFeesAllowanceAmount),
+    annualLeaveAllowance,
+    performanceIncentive: 0,
+    monthlyCtc: monthly,
+    annualCtc: Number(annualCtc) || 0,
+  };
 };
 
 export default {
@@ -650,5 +645,6 @@ export default {
   deriveStructureFromCtc,
   lopFactor,
   overtimeAmount,
+  FIXED_EARNINGS,
   COMPONENT_TYPE,
 };

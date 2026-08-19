@@ -38,10 +38,15 @@ const payrollRunSchema = new Schema(
     totalDeductions: { type: Number, default: 0 },
     totalNet: { type: Number, default: 0 },
     totalEmployerContribution: { type: Number, default: 0 },
-    totalPf: { type: Number, default: 0 },
-    totalEsi: { type: Number, default: 0 },
-    totalPt: { type: Number, default: 0 },
-    totalTds: { type: Number, default: 0 },
+    // One total per statutory line, both sides. The employer's NSSF, SDL and
+    // WCF are kept apart from the employee's contributions because they are
+    // remitted on separate returns and must never be read as deductions.
+    totalNssfEmployee: { type: Number, default: 0 },
+    totalNssfEmployer: { type: Number, default: 0 },
+    totalNhif: { type: Number, default: 0 },
+    totalSdl: { type: Number, default: 0 },
+    totalWcf: { type: Number, default: 0 },
+    totalPaye: { type: Number, default: 0 },
     totalLoanRecovery: { type: Number, default: 0 },
 
     /* -------------------------------------------------------- workflow -- */

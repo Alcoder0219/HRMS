@@ -1,4 +1,5 @@
 import bcrypt from 'bcrypt';
+import { randomInt } from 'node:crypto';
 import env from '../config/env.js';
 
 /**
@@ -48,4 +49,52 @@ export const checkPasswordStrength = (password = '') => {
   }
 
   return failures;
+};
+
+/**
+ * A random password that satisfies the policy above by construction.
+ *
+ * Used when an administrator enables portal access without choosing one. It is
+ * shown to them once and never stored in the clear, so the account still has to
+ * change it at first sign-in.
+ *
+ * One character is drawn from each required class before the remainder is
+ * filled, then the whole thing is shuffled -- a purely random draw from the
+ * combined alphabet satisfies the complexity rules only by luck, and would
+ * occasionally produce a password its own validator rejects.
+ *
+ * `randomInt` rather than `Math.random`: this is a credential, and a
+ * per-process seed that can repeat between workers started in the same tick is
+ * not an acceptable source for one.
+ *
+ * The ambiguous glyphs are left out on purpose. This password gets read aloud
+ * or copied off a screen, and O/0 and l/1 are where that goes wrong.
+ */
+const PASSWORD_ALPHABET = {
+  lower: 'abcdefghijkmnopqrstuvwxyz',
+  upper: 'ABCDEFGHJKLMNPQRSTUVWXYZ',
+  digit: '23456789',
+  symbol: '!@#$%^&*?',
+};
+
+export const generatePassword = (length = 14) => {
+  const classes = Object.values(PASSWORD_ALPHABET);
+  const all = classes.join('');
+
+  const pick = (alphabet) => alphabet[randomInt(0, alphabet.length)];
+
+  const characters = [
+    ...classes.map(pick),
+    ...Array.from({ length: Math.max(0, length - classes.length) }, () => pick(all)),
+  ];
+
+  // Fisher-Yates: without a shuffle the first four characters would always be
+  // lower, upper, digit, symbol in that order, which is a pattern worth not
+  // publishing.
+  for (let index = characters.length - 1; index > 0; index -= 1) {
+    const swap = randomInt(0, index + 1);
+    [characters[index], characters[swap]] = [characters[swap], characters[index]];
+  }
+
+  return characters.join('');
 };

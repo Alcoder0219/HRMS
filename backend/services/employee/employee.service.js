@@ -19,6 +19,9 @@ import auditLogRepository from '../../repositories/audit/auditLog.repository.js'
 import { deriveSalaryTotals, deriveOvertimeRate } from '../../models/employee/employee.model.js';
 // The Employee Master is the source of truth; payroll reads a projection of it.
 import { syncSalaryStructure } from './salaryStructureSync.service.js';
+// Portal access is a login account, managed from this form but owned elsewhere.
+import { applyPortalAccess, revokePortalAccess, PORTAL_FIELDS } from './portalAccess.service.js';
+import User from '../../models/auth/user.model.js';
 // Stored attendance carries overtime derived from these settings; see below.
 import { syncOvertimeAfterEmployeeChange } from '../attendance/overtimeRecompute.service.js';
 import { recordAudit, diffObjects } from '../../helpers/audit.helper.js';
@@ -74,7 +77,7 @@ const maskTail = (value, visible = 4) => {
  * National identity and bank numbers are masked unless the caller can edit the
  * record or is the record.
  *
- * Read access to a directory is not read access to someone's Aadhaar. A
+ * Read access to a directory is not read access to someone's national ID. A
  * manager legitimately needs `employee:read` to see their team, and that must
  * not hand them the whole team's identity documents.
  */
@@ -90,9 +93,12 @@ export const maskSensitive = (employee, requester) => {
     statutory: employee.statutory
       ? {
           ...employee.statutory,
-          aadhaar: maskTail(employee.statutory.aadhaar),
-          pan: maskTail(employee.statutory.pan),
+          nationalIdNumber: maskTail(employee.statutory.nationalIdNumber),
+          tinNumber: maskTail(employee.statutory.tinNumber),
+          nssfNumber: maskTail(employee.statutory.nssfNumber),
+          nhifNumber: maskTail(employee.statutory.nhifNumber),
           passportNumber: maskTail(employee.statutory.passportNumber),
+          workPermitNumber: maskTail(employee.statutory.workPermitNumber),
           drivingLicense: maskTail(employee.statutory.drivingLicense),
         }
       : employee.statutory,
@@ -336,8 +342,30 @@ const createWithUniqueIdentifiers = async (attributes, { tenantId, suppliedCode,
   }
 };
 
+/**
+ * Splits the form's payload into the employee record and the login account.
+ *
+ * The portal fields are not on the Employee schema and must never reach a
+ * `$set` -- Mongoose would drop them silently, which is the same outcome but
+ * arrived at by accident rather than on purpose.
+ */
+const splitPortalFields = (payload) => {
+  const attributes = { ...payload };
+  const portal = {};
+
+  PORTAL_FIELDS.forEach((field) => {
+    if (attributes[field] !== undefined) portal[field] = attributes[field];
+    delete attributes[field];
+  });
+
+  return { attributes, portal };
+};
+
 export const createEmployee = async (payload, req) => {
   const tenantId = req.user.tenantId ?? null;
+  const { attributes: employeeAttributes, portal } = splitPortalFields(payload);
+
+  payload = employeeAttributes;
 
   await assertUniqueIdentifiers(tenantId, payload);
   assertDatesAreCoherent(payload);
@@ -378,6 +406,20 @@ export const createEmployee = async (payload, req) => {
   // without anyone re-entering the same figures on the Payroll screen.
   await syncSalaryStructure(employee, req);
 
+  /**
+   * The login account, when the form asked for one.
+   *
+   * Deliberately NOT rolled back if it fails: the employee is saved and
+   * audited by this point, and losing a correct HR record because an email
+   * address collided would be the worse outcome. The failure surfaces as an
+   * error the administrator can act on, and the toggle can be set again.
+   */
+  const access = await applyPortalAccess(employee, portal, req);
+
+  if (access.userId) {
+    await employeeRepository.updateById(employee._id, { $set: { userId: access.userId } });
+  }
+
   await recordAudit({
     req,
     entity: ENTITY,
@@ -391,9 +433,21 @@ export const createEmployee = async (payload, req) => {
     id: String(employee._id),
     employeeCode: employee.employeeCode,
     employeeId: employee.employeeId,
+    portalAccess: Boolean(access.userId),
   });
 
-  return getEmployee(employee._id, req);
+  const created = await getEmployee(employee._id, req);
+
+  /**
+   * The generated password, returned exactly once.
+   *
+   * It is never stored in the clear and cannot be read back, so this is the
+   * only moment the administrator can be given it. Attached to the response
+   * rather than logged, for the obvious reason.
+   */
+  return access.generatedPassword
+    ? { ...created, portalGeneratedPassword: access.generatedPassword }
+    : created;
 };
 
 /* -------------------------------------------------------------------------- */
@@ -477,7 +531,9 @@ export const updateEmployee = async (id, payload, req) => {
   if (!existing) throw ApiError.notFound('Employee not found');
   assertSameTenant(existing, req);
 
-  const update = { ...payload };
+  const { attributes, portal } = splitPortalFields(payload);
+
+  const update = { ...attributes };
   IMMUTABLE_FIELDS.forEach((field) => delete update[field]);
 
   await assertUniqueIdentifiers(req.user.tenantId ?? null, update, id);
@@ -563,6 +619,21 @@ export const updateEmployee = async (id, payload, req) => {
   await syncOvertimeAfterEmployeeChange(before, updated);
 
   /**
+   * The login account, reconciled against what the form asked for.
+   *
+   * Run against the UPDATED employee, not `before`: the account's email
+   * defaults to the work email and its department mirrors the employee's, so
+   * both have to be the post-edit values or the account is left describing the
+   * record as it used to be.
+   */
+  const access = await applyPortalAccess(updated, portal, req);
+
+  if (access.userId && String(updated.userId ?? '') !== String(access.userId)) {
+    await employeeRepository.updateById(id, { $set: { userId: access.userId } });
+    updated.userId = access.userId;
+  }
+
+  /**
    * `depopulate` matters here.
    *
    * The repository returns the updated document with its references populated,
@@ -585,7 +656,9 @@ export const updateEmployee = async (id, payload, req) => {
     });
   }
 
-  return maskSensitive(updated.toObject({ virtuals: true }), req.user);
+  // Re-read so the response carries the populated user, which the form needs to
+  // render the portal section it just saved.
+  return getEmployee(id, req);
 };
 
 /* -------------------------------------------------------------------------- */
@@ -704,6 +777,19 @@ export const deleteEmployee = async (id, reason, req, { purgeAttachments = false
 
   const deleted = await employeeRepository.softDelete(id, { deletedBy: req.user.id, reason });
 
+  /**
+   * A deleted employee must not still be able to sign in.
+   *
+   * Deactivated rather than deleted, and the link from the employee is left
+   * intact: restoring the employee should find the same account rather than
+   * mint a second one, and the audit trail refers to it either way. A Super
+   * Admin is exempt -- `revokePortalAccess` refuses, and says so in the log.
+   */
+  const account = employee.userId ? await User.findById(employee.userId) : null;
+  const revoked = await revokePortalAccess(account, employee, req, {
+    reason: reason ?? 'Employee deleted',
+  });
+
   let attachmentsRemoved = false;
 
   if (purgeAttachments) {
@@ -726,10 +812,16 @@ export const deleteEmployee = async (id, reason, req, { purgeAttachments = false
       purgeAttachments,
       attachmentsRemoved,
       documentsDiscarded: purgeAttachments ? documentCount : 0,
+      portalAccessRevoked: revoked.revoked === true,
     },
   });
 
-  return { id: String(deleted._id), deletedAt: deleted.deletedAt, attachmentsRemoved };
+  return {
+    id: String(deleted._id),
+    deletedAt: deleted.deletedAt,
+    attachmentsRemoved,
+    portalAccessRevoked: revoked.revoked === true,
+  };
 };
 
 export const restoreEmployee = async (id, req) => {

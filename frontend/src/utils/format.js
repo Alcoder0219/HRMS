@@ -26,8 +26,8 @@ export const formatRelative = (value) => {
 };
 
 /**
- * An amount in the currency the user has chosen in the topbar, including its
- * digit grouping -- 1,80,00,000 under the rupee, 18,000,000 under the dollar.
+ * An amount in the currency the user has chosen in the topbar, symbol and
+ * digit grouping included -- TSH 18,000,000.
  *
  * The currency is read at call time rather than captured, because every call
  * site here is a grid formatter or a render expression that runs afresh. Pass
@@ -37,8 +37,19 @@ export const formatRelative = (value) => {
 export const formatCurrency = (value, currency) =>
   formatCurrencyIn(value, currency ?? getActiveCurrency());
 
+/**
+ * A plain grouped number, with no currency symbol.
+ *
+ * `en-TZ` first with `en-GB` behind it, for the same reason as in
+ * `utils/currency.js`: not every browser ships Tanzanian locale data, and an
+ * unrecognised locale falls back to the reader's own rather than failing.
+ */
+const NUMBER_LOCALES = ['en-TZ', 'en-GB'];
+
 export const formatNumber = (value) =>
-  value === null || value === undefined ? '—' : new Intl.NumberFormat('en-IN').format(Number(value));
+  value === null || value === undefined
+    ? '—'
+    : new Intl.NumberFormat(NUMBER_LOCALES).format(Number(value));
 
 /** Turns SCREAMING_SNAKE enums into readable labels. */
 export const humanize = (value) =>

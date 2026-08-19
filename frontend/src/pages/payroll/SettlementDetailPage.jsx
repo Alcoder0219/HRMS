@@ -419,7 +419,7 @@ const SettlementDetailPage = () => {
             hold: 'Nothing moves until the hold is released. A reason is required.',
             release: 'The settlement returns to the HR queue so the sheet is re-checked.',
             cancel: 'The settlement is closed without payment. A reason is required.',
-            recalculate: 'Gratuity, notice and encashment are recomputed from the current inputs.',
+            recalculate: 'Severance, notice and encashment are recomputed from the current inputs.',
           }[pending] ?? ''
         }
         confirmLabel={['cancel', 'hold'].includes(pending) ? 'Confirm' : 'Continue'}

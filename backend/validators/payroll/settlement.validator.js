@@ -42,7 +42,7 @@ const extrasInput = Joi.object({
   incentive: money(),
   arrears: money(),
   reimbursement: money(),
-  tds: money(),
+  paye: money(),
   otherEarnings: Joi.array()
     .items(Joi.object({ label: Joi.string().trim().max(60).required(), amount: money().required() }))
     .max(10),
@@ -52,25 +52,26 @@ const extrasInput = Joi.object({
 });
 
 const rulesInput = Joi.object({
-  gratuity: Joi.object({
+  severance: Joi.object({
     enabled: Joi.boolean(),
-    minimumYears: Joi.number().min(0).max(20),
+    minimumMonths: Joi.number().min(0).max(120),
     daysPerYear: Joi.number().min(1).max(30),
     monthDays: Joi.number().min(20).max(31),
-    maxAmount: money(100_000_000),
+    maxYears: Joi.number().min(1).max(50),
     roundUpFromMonths: Joi.number().min(0).max(12),
-    includeDaInWages: Joi.boolean(),
-    waiveMinimumOnDeath: Joi.boolean(),
+    payableOnTriggers: Joi.array().items(Joi.string().valid(...Object.values(SETTLEMENT_TRIGGER))).max(6),
   }),
   notice: Joi.object({
-    perDayBasis: Joi.string().valid('GROSS', 'BASIC_DA'),
+    perDayBasis: Joi.string().valid('GROSS', 'BASIC'),
     monthDays: Joi.number().min(20).max(31),
   }),
   leaveEncashment: Joi.object({
     enabled: Joi.boolean(),
-    perDayBasis: Joi.string().valid('GROSS', 'BASIC_DA'),
+    perDayBasis: Joi.string().valid('GROSS', 'BASIC'),
     monthDays: Joi.number().min(20).max(31),
-    maxDays: days(365),
+    // The statutory cycle entitlement is 28 days; a tenant may configure less
+    // but not a figure an employee could never have accrued.
+    maxDays: days(28),
   }),
 });
 

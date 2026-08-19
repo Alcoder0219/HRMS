@@ -141,9 +141,10 @@ export const companySchema = Joi.object({
   legalName: Joi.string().trim().max(200).allow('', null),
   registrationNumber: Joi.string().trim().max(60).allow('', null),
   taxNumber: Joi.string().trim().max(30).allow('', null),
-  pan: Joi.string().trim().max(10).allow('', null),
-  pfCode: Joi.string().trim().max(30).allow('', null),
-  esiCode: Joi.string().trim().max(30).allow('', null),
+  tinNumber: Joi.string().trim().max(20).allow('', null),
+  nssfCode: Joi.string().trim().max(30).allow('', null),
+  nhifCode: Joi.string().trim().max(30).allow('', null),
+  wcfCode: Joi.string().trim().max(30).allow('', null),
   email: emailAddress().max(120).allow('', null),
   phone: Joi.string().trim().max(20).allow('', null),
   website: Joi.string().trim().max(150).allow('', null),
@@ -205,6 +206,98 @@ export const maintenanceSchema = Joi.object({
   message: Joi.string().trim().max(300).allow('', null),
 });
 
+/* ----------------------------------------------------- biometric devices -- */
+
+/**
+ * An IPv4 address or a hostname.
+ *
+ * Joi's `.ip()` would reject `zk-gate-1.local`, and terminals are routinely
+ * reached by name on an office network. Both forms are accepted and neither is
+ * resolved here -- the device either answers when it is polled or it does not,
+ * and that is a better test than a regex.
+ */
+const deviceHost = Joi.alternatives()
+  .try(
+    Joi.string().ip({ version: ['ipv4', 'ipv6'] }),
+    Joi.string()
+      .trim()
+      .hostname()
+      .max(45),
+  )
+  .messages({ 'alternatives.match': 'Enter an IP address or a hostname' });
+
+const deviceBody = {
+  name: Joi.string().trim().min(2).max(100),
+  ipAddress: deviceHost,
+  port: Joi.number().integer().min(1).max(65535),
+  protocol: Joi.string().valid('ZK_UDP', 'ZK_TCP', 'ZK_WEB', 'GENERIC_API', 'WDMS_API'),
+  serialNumber: Joi.string().trim().max(60).allow('', null),
+
+  /* ------------------------------------------------- WDMS credentials -- */
+  username: Joi.string().trim().max(150).allow('', null),
+  // The masked placeholder is accepted and means "leave it as it is", so a
+  // save from a loaded form does not have to resend the secret.
+  password: Joi.string().max(200).allow('', null),
+  wdmsTerminalSerial: Joi.string().trim().max(60).allow('', null),
+
+  isActive: Joi.boolean(),
+  autoSync: Joi.boolean(),
+  // A minute is the floor because the scheduler ticks every minute; anything
+  // shorter would not run more often, it would only look as though it should.
+  syncIntervalMinutes: Joi.number().integer().min(1).max(1440),
+};
+
+/**
+ * A WDMS server is useless without credentials, so it will not be saved
+ * without them.
+ *
+ * Caught here rather than at the first sync: a device that looks configured and
+ * fails silently every five minutes is exactly the failure this whole feature
+ * is meant to make visible.
+ */
+export const createBiometricDeviceSchema = Joi.object(deviceBody)
+  .fork(['name', 'ipAddress', 'port'], (schema) => schema.required())
+  .when(Joi.object({ protocol: Joi.valid('WDMS_API') }).unknown(), {
+    then: Joi.object({
+      username: Joi.string().trim().min(1).max(150).required().messages({
+        'any.required': 'A WDMS server needs a username',
+      }),
+      password: Joi.string().min(1).max(200).required().messages({
+        'any.required': 'A WDMS server needs a password',
+      }),
+    }),
+  });
+
+export const updateBiometricDeviceSchema = Joi.object(deviceBody)
+  .min(1)
+  .messages({ 'object.min': 'Nothing to update' });
+
+export const deviceIdParamSchema = Joi.object({
+  deviceId: objectId.required().messages({
+    'string.hex': 'Must be a valid device identifier',
+    'string.length': 'Must be a valid device identifier',
+  }),
+});
+
+/**
+ * The whole mapping table, replaced in one write.
+ *
+ * An empty array is allowed and means "this device maps to nobody", which is a
+ * legitimate thing to save -- it is how an administrator clears a table.
+ */
+export const mapDeviceUsersSchema = Joi.object({
+  mappings: Joi.array()
+    .items(
+      Joi.object({
+        deviceUserId: Joi.string().trim().max(30).required(),
+        employeeCode: Joi.string().trim().uppercase().max(20).required(),
+        deviceUserName: Joi.string().trim().max(120).allow('', null),
+      }),
+    )
+    .max(5000)
+    .required(),
+});
+
 /* --------------------------------------------------------------- restore -- */
 
 /**
@@ -245,4 +338,9 @@ export default {
   notificationSchema,
   maintenanceSchema,
   restoreSchema,
+
+  createBiometricDeviceSchema,
+  updateBiometricDeviceSchema,
+  deviceIdParamSchema,
+  mapDeviceUsersSchema,
 };

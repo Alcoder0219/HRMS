@@ -12,8 +12,17 @@ import {
   OVERTIME_CALCULATION_METHOD,
   OVERTIME_MULTIPLIERS,
   PREMIUM_MULTIPLIERS,
+  ROLES,
+  ACCOUNT_STATUS,
 } from '../../utils/constants.js';
+import { checkPasswordStrength } from '../../helpers/password.helper.js';
 import { SORTABLE_FIELDS } from '../../services/employee/employee.service.js';
+// One definition of what an earning and a deduction are, shared with the model
+// and the totals derivation, so the cross-field check cannot fall behind.
+import {
+  EARNING_COMPONENTS as EARNING_KEYS,
+  EMPLOYEE_DEDUCTION_COMPONENTS as DEDUCTION_KEYS,
+} from '../../models/employee/employee.model.js';
 
 const objectId = Joi.string().hex().length(24).messages({
   'string.hex': 'Must be a valid identifier',
@@ -54,34 +63,36 @@ const addressSchema = Joi.object({
 });
 
 const statutorySchema = Joi.object({
-  pfApplicable: Joi.boolean(),
-  pfNumber: Joi.string().trim().max(30).allow(null, ''),
-  esiApplicable: Joi.boolean(),
-  esiNumber: Joi.string().trim().max(20).allow(null, ''),
-  uan: Joi.string()
+  nssfApplicable: Joi.boolean(),
+  nssfNumber: Joi.string().trim().uppercase().max(20).allow(null, ''),
+  nhifApplicable: Joi.boolean(),
+  nhifNumber: Joi.string().trim().uppercase().max(20).allow(null, ''),
+
+  /**
+   * TIN, as the TRA issues it: nine digits, conventionally written in
+   * 3-3-3 groups. Both forms are accepted, and the separators are not
+   * stripped here -- the model stores what was entered, and a validator that
+   * silently rewrites an identifier makes the stored value harder to match
+   * against a paper certificate.
+   */
+  tinNumber: Joi.string()
     .trim()
-    .pattern(/^\d{12}$/)
+    .pattern(/^\d{3}-?\d{3}-?\d{3}$/)
     .allow(null, '')
-    .messages({ 'string.pattern.base': 'UAN must be 12 digits' }),
-  pan: Joi.string()
-    .trim()
-    .uppercase()
-    .pattern(/^[A-Z]{5}\d{4}[A-Z]$/)
-    .allow(null, '')
-    .messages({ 'string.pattern.base': 'PAN must look like ABCDE1234F' }),
-  aadhaar: Joi.string()
-    .trim()
-    .pattern(/^\d{12}$/)
-    .allow(null, '')
-    .messages({ 'string.pattern.base': 'Aadhaar must be 12 digits' }),
+    .messages({ 'string.pattern.base': 'TIN must be 9 digits, e.g. 123-456-789' }),
+  payeApplicable: Joi.boolean(),
+
+  // NIDA numbers are 20 digits, usually written in dash-separated groups.
+  nationalIdNumber: Joi.string().trim().max(25).allow(null, ''),
+  nationalIdExpiry: Joi.date().allow(null, ''),
+
+  workPermitNumber: Joi.string().trim().max(30).allow(null, ''),
+  workPermitExpiry: Joi.date().allow(null, ''),
+
   passportNumber: Joi.string().trim().max(20).allow(null, ''),
   passportExpiry: Joi.date().allow(null, ''),
   drivingLicense: Joi.string().trim().max(25).allow(null, ''),
   drivingLicenseExpiry: Joi.date().allow(null, ''),
-
-  // State levies, per employee. Optional, so existing payloads are unaffected.
-  lwfApplicable: Joi.boolean(),
-  professionalTaxApplicable: Joi.boolean(),
 });
 
 const money = (max = 10_000_000) => Joi.number().min(0).max(max).precision(2);
@@ -95,18 +106,25 @@ const bankDetailsSchema = Joi.object({
     .messages({ 'string.pattern.base': 'Account number must be 6-20 digits' }),
   bankName: Joi.string().trim().max(120).allow(null, ''),
   branch: Joi.string().trim().max(120).allow(null, ''),
-  ifsc: Joi.string()
+  /**
+   * SWIFT/BIC: four letters for the bank, two for the country, two for the
+   * location, and an optional three-character branch suffix. `XXX` in that
+   * suffix means the head office, which is why the pattern allows X as a
+   * character rather than only alphanumerics that identify a branch.
+   */
+  swiftCode: Joi.string()
     .trim()
     .uppercase()
-    .pattern(/^[A-Z]{4}0[A-Z0-9]{6}$/)
+    .pattern(/^[A-Z]{4}[A-Z]{2}[A-Z0-9]{2}([A-Z0-9]{3})?$/)
     .allow(null, '')
-    .messages({ 'string.pattern.base': 'IFSC must look like HDFC0001234' }),
+    .messages({ 'string.pattern.base': 'SWIFT code must look like CORUTZTZ or CORUTZTZXXX' }),
+  branchCode: Joi.string().trim().uppercase().max(10).allow(null, ''),
   accountType: Joi.string().valid(...Object.values(BANK_ACCOUNT_TYPES)).allow(null, ''),
 })
-  // An account number without an IFSC cannot be paid into, and an IFSC without
-  // an account number is meaningless. Requiring them together stops a
-  // half-filled bank record reaching payroll.
-  .and('accountNumber', 'ifsc');
+  // An account number without a SWIFT code cannot be paid into, and a SWIFT
+  // code without an account number is meaningless. Requiring them together
+  // stops a half-filled bank record reaching payroll.
+  .and('accountNumber', 'swiftCode');
 
 const emergencyContactSchema = Joi.object({
   name: Joi.string().trim().min(2).max(120).required(),
@@ -127,20 +145,24 @@ const salaryStructureSchema = Joi.object({
 
   /* ------------------------------------------- monthly components ------ */
   basic: money(),
-  hra: money(),
-  conveyanceAllowance: money(),
-  specialAllowance: money(),
-  medicalAllowance: money(),
-  otherAllowance: money(),
+  hraAllowance: money(),
+  foodAllowance: money(),
+  transportationAllowance: money(),
+  communicationAllowance: money(),
+  mediclaim: money(),
+  schoolFeesAllowance: money(),
+  // Per annum by entitlement, supplied as its monthly equivalent.
+  annualLeaveAllowance: money(),
+  performanceIncentive: money(),
 
   /* ---------------------------------------------- contributions -------- */
-  pfEmployee: money(),
-  pfEmployer: money(),
-  esiEmployee: money(),
-  esiEmployer: money(),
-  lwfEmployee: money(),
-  lwfEmployer: money(),
-  professionalTax: money(100_000),
+  nssfEmployee: money(),
+  nssfEmployer: money(),
+  nhif: money(1_000_000),
+  // Employer only. Accepted so the record round-trips, never deducted.
+  sdl: money(),
+  wcf: money(),
+  paye: money(),
 
   /**
    * Derived totals are accepted but never trusted -- the server recomputes
@@ -151,22 +173,11 @@ const salaryStructureSchema = Joi.object({
   totalDeductions: money(),
   netSalary: money(),
 })
-  // A component above the gross it belongs to is a data-entry slip worth
-  // catching at the edge rather than after it reaches payroll.
+  // A deduction total above the gross it comes out of is a data-entry slip
+  // worth catching at the edge rather than after it reaches payroll.
   .custom((value, helpers) => {
-    const gross =
-      (value.basic ?? 0) +
-      (value.hra ?? 0) +
-      (value.conveyanceAllowance ?? 0) +
-      (value.specialAllowance ?? 0) +
-      (value.medicalAllowance ?? 0) +
-      (value.otherAllowance ?? 0);
-
-    const employeeDeductions =
-      (value.pfEmployee ?? 0) +
-      (value.esiEmployee ?? 0) +
-      (value.lwfEmployee ?? 0) +
-      (value.professionalTax ?? 0);
+    const gross = EARNING_KEYS.reduce((sum, key) => sum + (value[key] ?? 0), 0);
+    const employeeDeductions = DEDUCTION_KEYS.reduce((sum, key) => sum + (value[key] ?? 0), 0);
 
     if (gross > 0 && employeeDeductions > gross) return helpers.error('salary.deductions');
     return value;
@@ -308,6 +319,45 @@ const employeeBody = {
 
   remarks: Joi.string().trim().max(1000).allow(null, ''),
   notes: Joi.string().trim().max(4000).allow(null, ''),
+
+  /* ------------------------------------------------------ portal access -- */
+  /**
+   * The login account, managed from the Employee form.
+   *
+   * These are not Employee fields -- the service splits them off and hands them
+   * to the portal-access service, which owns the User record. They are declared
+   * here because `stripUnknown` is on, and an undeclared field would be dropped
+   * before the service ever saw it.
+   */
+  portalAccess: Joi.boolean(),
+  portalEmail: email,
+  /**
+   * SUPER_ADMIN is absent on purpose, and this is the enforcing copy.
+   *
+   * It is a platform account that may have no employee at all, and granting it
+   * from an HR form would be a route to the whole system. The role dropdown
+   * omits it too, but a dropdown is a courtesy and this is the rule.
+   */
+  portalRole: Joi.string().valid(
+    ...Object.values(ROLES).filter((role) => role !== ROLES.SUPER_ADMIN),
+  ),
+  /**
+   * Blank means "generate one" on create and "leave it alone" on update, so an
+   * empty string is accepted rather than rejected as too short.
+   */
+  portalPassword: Joi.string()
+    .allow('', null)
+    .custom((value, helpers) => {
+      if (!value) return value;
+
+      const failures = checkPasswordStrength(value);
+      return failures.length ? helpers.message(failures.join('. ')) : value;
+    }),
+  portalStatus: Joi.string().valid(
+    ACCOUNT_STATUS.ACTIVE,
+    ACCOUNT_STATUS.SUSPENDED,
+    ACCOUNT_STATUS.DEACTIVATED,
+  ),
 };
 
 const employeeObject = Joi.object(employeeBody);

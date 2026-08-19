@@ -6,9 +6,13 @@ const { Schema, model } = mongoose;
  * Unit / plant / site master.
  *
  * A tenant with more than one location needs statutory registrations per site
- * -- PF and ESI establishment codes are issued to the establishment, not the
+ * -- NSSF and NHIF employer codes are issued to the establishment, not the
  * company -- so they live here rather than only on tenant settings. The
  * employee's unit is what decides which registration their filings go under.
+ *
+ * There is no per-region levy field here. Tanzanian statutory contributions are
+ * national, unlike the Indian professional tax and labour welfare fund this
+ * replaced, which were levied state by state and had to follow the site.
  */
 const unitSchema = new Schema(
   {
@@ -22,12 +26,9 @@ const unitSchema = new Schema(
     state: { type: String, trim: true, maxlength: 80, default: null },
     address: { type: String, trim: true, maxlength: 300, default: null },
 
-    pfEstablishmentCode: { type: String, trim: true, uppercase: true, maxlength: 40, default: null },
-    esiEstablishmentCode: { type: String, trim: true, maxlength: 40, default: null },
-    // Professional tax and labour welfare fund are levied by state, so the
-    // rate that applies follows the unit rather than the employee.
-    ptState: { type: String, trim: true, maxlength: 60, default: null },
-    lwfState: { type: String, trim: true, maxlength: 60, default: null },
+    nssfEmployerCode: { type: String, trim: true, uppercase: true, maxlength: 40, default: null },
+    nhifEmployerCode: { type: String, trim: true, uppercase: true, maxlength: 40, default: null },
+    wcfEmployerCode: { type: String, trim: true, uppercase: true, maxlength: 40, default: null },
 
     isActive: { type: Boolean, default: true, index: true },
   },

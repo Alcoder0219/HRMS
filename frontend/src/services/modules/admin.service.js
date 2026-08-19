@@ -55,6 +55,23 @@ const adminService = {
   updateNotifications: (payload) => axiosClient.patch(url('/settings/notifications'), payload),
   setMaintenance: (payload) => axiosClient.patch(url('/settings/maintenance'), payload),
 
+  /* -------------------------------------------------- biometric devices -- */
+  /**
+   * Attendance terminals. Configured under Settings, but saved per action
+   * rather than with the payroll form -- adding a device and changing the NSSF
+   * rate are unrelated acts and should not share a Save button.
+   */
+  listBiometricDevices: () => axiosClient.get(url('/biometric/devices')),
+  addBiometricDevice: (payload) => axiosClient.post(url('/biometric/devices'), payload),
+  updateBiometricDevice: (deviceId, payload) =>
+    axiosClient.put(url(`/biometric/devices/${deviceId}`), payload),
+  removeBiometricDevice: (deviceId) => axiosClient.delete(url(`/biometric/devices/${deviceId}`)),
+  testBiometricDevice: (deviceId) => axiosClient.post(url(`/biometric/devices/${deviceId}/test`)),
+  syncBiometricDevice: (deviceId) => axiosClient.post(url(`/biometric/devices/${deviceId}/sync`)),
+  fetchDeviceUsers: (deviceId) => axiosClient.get(url(`/biometric/devices/${deviceId}/users`)),
+  mapDeviceUsers: (deviceId, mappings) =>
+    axiosClient.post(url(`/biometric/devices/${deviceId}/map`), { mappings }),
+
   /* --------------------------------------------------- backup, restore -- */
   backupPreview: () => axiosClient.get(url('/backup/preview')),
   downloadBackup: () => axiosClient.get(url('/backup'), { responseType: 'blob' }),

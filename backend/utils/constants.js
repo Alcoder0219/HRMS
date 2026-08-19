@@ -173,8 +173,8 @@ export const EMPLOYMENT_TYPE = {
  * Workforce classification, distinct from employment type.
  *
  * Employment type is the contract (full time, contract); category is the class
- * of work. Statutory obligations key off the category -- overtime and LWF
- * treat a workman differently from an executive -- which is why it is not
+ * of work. Statutory obligations key off the category -- overtime entitlement
+ * treats a workman differently from an executive -- which is why it is not
  * folded into employment type.
  */
 export const EMPLOYEE_CATEGORY = {
@@ -282,10 +282,11 @@ export const ACTIVE_EMPLOYEE_STATUSES = [
 /**
  * Employee document classes.
  *
- * The original values are retained unchanged -- documents already uploaded
- * against them must keep resolving -- and the specific identity-proof types
- * are added alongside. `ID_PROOF` and `ADDRESS_PROOF` stay as the generic
- * fallbacks they always were.
+ * The identity-proof types are the Tanzanian ones: NIDA national id, TIN for
+ * PAYE, and the two social-fund cards. `ID_PROOF` and `ADDRESS_PROOF` remain
+ * the generic fallbacks they always were, and `WORK_PERMIT` exists because an
+ * expatriate's right to work is a document with an expiry date -- exactly what
+ * the expiring-documents report is for.
  */
 export const DOCUMENT_TYPES = {
   PHOTO: 'PHOTO',
@@ -295,8 +296,12 @@ export const DOCUMENT_TYPES = {
   JOINING_LETTER: 'JOINING_LETTER',
   ID_PROOF: 'ID_PROOF',
   ADDRESS_PROOF: 'ADDRESS_PROOF',
-  AADHAAR_COPY: 'AADHAAR_COPY',
-  PAN_COPY: 'PAN_COPY',
+  NATIONAL_ID_COPY: 'NATIONAL_ID_COPY',
+  TIN_COPY: 'TIN_COPY',
+  NSSF_CARD_COPY: 'NSSF_CARD_COPY',
+  NHIF_CARD_COPY: 'NHIF_CARD_COPY',
+  BIRTH_CERTIFICATE: 'BIRTH_CERTIFICATE',
+  WORK_PERMIT: 'WORK_PERMIT',
   PASSPORT_COPY: 'PASSPORT_COPY',
   DRIVING_LICENSE_COPY: 'DRIVING_LICENSE_COPY',
   BANK_PASSBOOK: 'BANK_PASSBOOK',
@@ -309,11 +314,28 @@ export const DOCUMENT_TYPES = {
   OTHER: 'OTHER',
 };
 
+/** Tanzanian banks offer savings and current accounts; there is no salary type. */
 export const BANK_ACCOUNT_TYPES = {
   SAVINGS: 'SAVINGS',
   CURRENT: 'CURRENT',
-  SALARY: 'SALARY',
 };
+
+/**
+ * The currency every amount in this system is denominated in.
+ *
+ * `CODE` is ISO 4217 and is what gets stored; `SYMBOL` is what a Tanzanian
+ * reader expects to see written. The two differ deliberately -- ISO says TZS,
+ * the shilling is written TSH -- and a screen should read the way the user
+ * writes rather than the way a standards body does.
+ */
+export const CURRENCY = {
+  CODE: 'TZS',
+  SYMBOL: 'TSH',
+  LOCALE: 'en-TZ',
+  LABEL: 'Tanzanian Shilling',
+};
+
+export const DEFAULT_CURRENCY = CURRENCY.CODE;
 
 export const PAY_FREQUENCY = {
   MONTHLY: 'MONTHLY',
@@ -426,8 +448,13 @@ export const COMPONENT_CODE = {
   // Earnings
   BASIC: 'BASIC',
   HRA: 'HRA',
-  DA: 'DA',
-  SPECIAL_ALLOWANCE: 'SPECIAL_ALLOWANCE',
+  FOOD_ALLOWANCE: 'FOOD_ALLOWANCE',
+  TRANSPORTATION_ALLOWANCE: 'TRANSPORTATION_ALLOWANCE',
+  COMMUNICATION_ALLOWANCE: 'COMMUNICATION_ALLOWANCE',
+  MEDICLAIM: 'MEDICLAIM',
+  SCHOOL_FEES_ALLOWANCE: 'SCHOOL_FEES_ALLOWANCE',
+  ANNUAL_LEAVE_ALLOWANCE: 'ANNUAL_LEAVE_ALLOWANCE',
+  PERFORMANCE_INCENTIVE: 'PERFORMANCE_INCENTIVE',
   OTHER_ALLOWANCE: 'OTHER_ALLOWANCE',
   OVERTIME: 'OVERTIME',
   BONUS: 'BONUS',
@@ -435,30 +462,25 @@ export const COMPONENT_CODE = {
   ARREARS: 'ARREARS',
 
   // Deductions
-  PF: 'PF',
-  ESI: 'ESI',
-  PT: 'PT',
-  TDS: 'TDS',
+  NSSF_EMPLOYEE: 'NSSF_EMPLOYEE',
+  NHIF: 'NHIF',
+  PAYE: 'PAYE',
   LOAN_EMI: 'LOAN_EMI',
   ADVANCE_RECOVERY: 'ADVANCE_RECOVERY',
   LOP: 'LOP',
   OTHER_DEDUCTION: 'OTHER_DEDUCTION',
 
-  // Employer side - reported, never deducted from the employee
-  EMPLOYER_PF: 'EMPLOYER_PF',
-  EMPLOYER_EPS: 'EMPLOYER_EPS',
-  EMPLOYER_ESI: 'EMPLOYER_ESI',
-
   /**
-   * Labour welfare fund, both sides.
+   * Employer side -- reported for cost to company and for the monthly returns,
+   * never deducted from the employee.
    *
-   * The Employee Master has carried an LWF figure all along; payroll had no
-   * code for it, so it could not appear on a payslip as itself. Naming it lets
-   * the statutory reports find it instead of it hiding inside a generic other
-   * deduction.
+   * SDL and WCF have no employee half at all: they are levies on the employer's
+   * payroll, so naming them here is what lets them appear on a payslip as
+   * themselves rather than hiding inside a generic contribution total.
    */
-  LWF: 'LWF',
-  EMPLOYER_LWF: 'EMPLOYER_LWF',
+  NSSF_EMPLOYER: 'NSSF_EMPLOYER',
+  SDL: 'SDL',
+  WCF: 'WCF',
 };
 
 /**
@@ -526,24 +548,25 @@ export const LOAN_TYPES = {
   OTHER: 'OTHER',
 };
 
-/** Income tax regime. Drives which slab table and exemptions apply. */
-export const TAX_REGIME = {
-  NEW: 'NEW',
-  OLD: 'OLD',
-};
-
+/**
+ * Salary disbursement file layouts.
+ *
+ * The three named banks are the ones that clear most Tanzanian payrolls. Each
+ * publishes its own bulk-transfer template, so the format is a per-tenant
+ * setting rather than a constant.
+ */
 export const BANK_FILE_FORMATS = {
   GENERIC_CSV: 'GENERIC_CSV',
-  HDFC: 'HDFC',
-  ICICI: 'ICICI',
-  SBI: 'SBI',
+  CRDB: 'CRDB',
+  NMB: 'NMB',
+  NBC: 'NBC',
 };
 
 /* -------------------------------------------------------------------------- */
 /*                        Full & final settlement                             */
 /* -------------------------------------------------------------------------- */
 
-/** What ended the employment. Drives eligibility, notice and gratuity rules. */
+/** What ended the employment. Drives eligibility, notice and severance rules. */
 export const SETTLEMENT_TRIGGER = {
   RESIGNATION: 'RESIGNATION',
   TERMINATION: 'TERMINATION',
@@ -608,7 +631,15 @@ export const SETTLEMENT_COMPONENT = {
   // Payable to the employee
   PENDING_SALARY: 'PENDING_SALARY',
   LEAVE_ENCASHMENT: 'LEAVE_ENCASHMENT',
-  GRATUITY: 'GRATUITY',
+  /**
+   * Severance, under the Employment and Labour Relations Act.
+   *
+   * Not gratuity: Tanzania has no equivalent of the Indian Payment of Gratuity
+   * Act, and severance is a different entitlement with a different trigger --
+   * it is owed on termination by the employer after a qualifying period, not on
+   * any exit after five years.
+   */
+  SEVERANCE_PAY: 'SEVERANCE_PAY',
   BONUS: 'BONUS',
   INCENTIVE: 'INCENTIVE',
   NOTICE_PAY: 'NOTICE_PAY', // Pay in lieu, when the employer waives service
@@ -622,7 +653,7 @@ export const SETTLEMENT_COMPONENT = {
   ADVANCE_RECOVERY: 'ADVANCE_RECOVERY',
   ASSET_RECOVERY: 'ASSET_RECOVERY',
   EXCESS_LEAVE: 'EXCESS_LEAVE',
-  TDS: 'TDS',
+  PAYE: 'PAYE',
   OTHER_DEDUCTION: 'OTHER_DEDUCTION',
 };
 
@@ -841,8 +872,8 @@ export const AUDIT_ACTIONS = {
  */
 export const AUDIT_REDACTED_FIELDS = [
   'password',
-  'statutory.aadhaar',
-  'statutory.pan',
+  'statutory.nationalIdNumber',
+  'statutory.tinNumber',
   'bankDetails.accountNumber',
 ];
 

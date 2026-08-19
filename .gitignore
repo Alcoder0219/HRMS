@@ -30,7 +30,7 @@ application_default_credentials.json
 .gcloud/
 
 # ------------------------------------------------- employee documents (PII) --
-# Uploaded identity documents: Aadhaar, PAN, passport and driving licence
+# Uploaded identity documents: national ID, TIN, passport and driving licence
 # scans of real people, stored outside the served tree precisely because they
 # must not be publicly readable. They belong on the server's disk and in
 # backups, never in source control.

@@ -8,7 +8,8 @@ const componentSchema = new Schema(
     code: { type: String, required: true },
     label: { type: String, required: true },
     amount: { type: Number, required: true },
-    // Free-form context: PF wage base, overtime hours, loan breakup.
+    // Free-form context: NSSF wage base, PAYE taxable income, overtime hours,
+    // loan breakup.
     meta: { type: Schema.Types.Mixed, default: null },
   },
   { _id: false },
@@ -52,14 +53,14 @@ const payslipSchema = new Schema(
           designation: String,
           department: String,
           joiningDate: Date,
-          pan: String,
-          uan: String,
-          pfNumber: String,
-          esiNumber: String,
+          // The statutory identifiers a Tanzanian payslip carries.
+          tinNumber: String,
+          nssfNumber: String,
+          nhifNumber: String,
           bankName: String,
           // Masked for display; the bank file reads the live record.
           accountNumberMasked: String,
-          ifsc: String,
+          swiftCode: String,
         },
         { _id: false },
       ),
@@ -103,7 +104,7 @@ const payslipSchema = new Schema(
     // was issued with.
     ytd: {
       type: new Schema(
-        { gross: Number, deductions: Number, net: Number, pf: Number, tds: Number },
+        { gross: Number, deductions: Number, net: Number, nssf: Number, paye: Number },
         { _id: false },
       ),
       default: null,

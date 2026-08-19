@@ -11,7 +11,11 @@ const { Schema, model } = mongoose;
  * "Contract Hourly" -- after which the amounts belong to the employee and can
  * be adjusted independently.
  *
- * Percentages are of gross, so one template fits every salary level.
+ * Basic is the ANCHOR, and every percentage below is expressed against it
+ * rather than against gross -- which is how a Tanzanian salary is quoted, and
+ * the opposite of the Indian convention this replaced. One template therefore
+ * still fits every salary level, and the components always add up because
+ * basic is solved for rather than guessed at. See `deriveStructureFromCtc`.
  */
 const salaryTemplateSchema = new Schema(
   {
@@ -21,20 +25,32 @@ const salaryTemplateSchema = new Schema(
     code: { type: String, required: true, trim: true, uppercase: true, maxlength: 20 },
     description: { type: String, trim: true, maxlength: 250, default: null },
 
-    /* ------------------------------------------- component percentages -- */
-    basicPercent: { type: Number, default: 40, min: 1, max: 100 },
-    // Of basic, not of gross -- HRA is conventionally expressed against basic.
-    hraPercentOfBasic: { type: Number, default: 50, min: 0, max: 100 },
-    conveyanceAmount: { type: Number, default: 0, min: 0 },
-    medicalAmount: { type: Number, default: 0, min: 0 },
-    otherAllowanceAmount: { type: Number, default: 0, min: 0 },
+    /* --------------------------------------- percentages, all of basic -- */
+    // Optional in Tanzania -- many packages carry no housing allowance at all,
+    // so this defaults to nothing rather than to a conventional share.
+    hraPercent: { type: Number, default: 0, min: 0, max: 200 },
+    transportationPercent: { type: Number, default: 10, min: 0, max: 200 },
+    communicationPercent: { type: Number, default: 5, min: 0, max: 200 },
+    /**
+     * Annual leave allowance, as a percentage of basic PER ANNUM.
+     *
+     * 100 means one month's basic a year, which is the usual entitlement. The
+     * monthly figure it produces is a twelfth of that, because every other
+     * amount in a structure is a month's worth.
+     */
+    annualLeavePercent: { type: Number, default: 100, min: 0, max: 200 },
+
+    /* ------------------------------------------- flat monthly amounts -- */
+    foodAllowanceAmount: { type: Number, default: 0, min: 0 },
+    mediclaimAmount: { type: Number, default: 0, min: 0 },
+    schoolFeesAllowanceAmount: { type: Number, default: 0, min: 0 },
 
     /* ------------------------------------------------ statutory flags -- */
     // Defaults applied to a new employee on selection; each stays editable.
-    pfApplicable: { type: Boolean, default: true },
-    esiApplicable: { type: Boolean, default: true },
-    lwfApplicable: { type: Boolean, default: false },
-    professionalTaxApplicable: { type: Boolean, default: true },
+    // All three are on, because all three apply to almost everyone here.
+    nssfApplicable: { type: Boolean, default: true },
+    nhifApplicable: { type: Boolean, default: true },
+    payeApplicable: { type: Boolean, default: true },
 
     isDefault: { type: Boolean, default: false },
     isActive: { type: Boolean, default: true, index: true },
@@ -43,15 +59,5 @@ const salaryTemplateSchema = new Schema(
 );
 
 salaryTemplateSchema.index({ tenantId: 1, code: 1 }, { unique: true });
-
-// Special allowance is the balancing figure, so basic + HRA must leave room
-// for it. Above 100% of gross the arithmetic has no solution.
-salaryTemplateSchema.pre('validate', function validateSplit(next) {
-  const hraShare = (this.basicPercent * this.hraPercentOfBasic) / 100;
-  if (this.basicPercent + hraShare > 100) {
-    return next(new Error('basic plus HRA cannot exceed 100% of gross'));
-  }
-  return next();
-});
 
 export default model('SalaryTemplate', salaryTemplateSchema);

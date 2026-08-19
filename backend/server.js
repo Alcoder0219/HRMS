@@ -31,6 +31,16 @@ const start = async () => {
   const { useMailConfigResolver } = await import('./helpers/mailer.helper.js');
   useMailConfigResolver(() => settingsService.resolveMailConfig(null));
 
+  /**
+   * Poll the biometric terminals on their own schedules.
+   *
+   * After `connectDatabase`, deliberately: the first tick can land within a
+   * second, and a sweep against an unconnected Mongoose would buffer its query
+   * until the driver's timeout and then log a failure that reads like a bug.
+   */
+  const { startBiometricSyncJob } = await import('./jobs/biometricSync.job.js');
+  startBiometricSyncJob();
+
   // Binding to env.host (0.0.0.0 by default) is what accepts connections from
   // other machines. Omitting the argument binds to every interface too, but
   // making it explicit means it can be locked down to one interface in
@@ -67,6 +77,11 @@ const shutdown = async (signal) => {
   }, 15_000).unref();
 
   try {
+    // Before the server closes: a sweep that starts during shutdown would open
+    // sockets to devices and then query a database that is about to go away.
+    const { stopBiometricSyncJob } = await import('./jobs/biometricSync.job.js');
+    stopBiometricSyncJob();
+
     if (server) await new Promise((resolve) => server.close(resolve));
     await disconnectDatabase();
     clearTimeout(forceExit);

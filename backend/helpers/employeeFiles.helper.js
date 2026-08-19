@@ -17,7 +17,8 @@ import { DOCUMENT_TYPES } from '../utils/constants.js';
  *
  *   attachments/
  *     EMP00001/
- *       Photo/  PAN/  Aadhaar/  DrivingLicense/  Passport/
+ *       Photo/  NationalID/  TIN/  NSSF/  NHIF/  BirthCertificate/
+ *       WorkPermit/  DrivingLicense/  Passport/
  *       Resume/  Education/  Experience/  Other/
  *
  * Nothing binary ever reaches MongoDB. The database stores the relative path
@@ -39,8 +40,12 @@ import { DOCUMENT_TYPES } from '../utils/constants.js';
  */
 export const CATEGORY_FOLDERS = {
   [DOCUMENT_TYPES.PHOTO]: 'Photo',
-  [DOCUMENT_TYPES.PAN_COPY]: 'PAN',
-  [DOCUMENT_TYPES.AADHAAR_COPY]: 'Aadhaar',
+  [DOCUMENT_TYPES.NATIONAL_ID_COPY]: 'NationalID',
+  [DOCUMENT_TYPES.TIN_COPY]: 'TIN',
+  [DOCUMENT_TYPES.NSSF_CARD_COPY]: 'NSSF',
+  [DOCUMENT_TYPES.NHIF_CARD_COPY]: 'NHIF',
+  [DOCUMENT_TYPES.BIRTH_CERTIFICATE]: 'BirthCertificate',
+  [DOCUMENT_TYPES.WORK_PERMIT]: 'WorkPermit',
   [DOCUMENT_TYPES.DRIVING_LICENSE_COPY]: 'DrivingLicense',
   [DOCUMENT_TYPES.PASSPORT_COPY]: 'Passport',
   [DOCUMENT_TYPES.RESUME]: 'Resume',
@@ -49,18 +54,14 @@ export const CATEGORY_FOLDERS = {
   [DOCUMENT_TYPES.OTHER]: 'Other',
 };
 
-/** The nine folders created for every employee, in the order the tab shows them. */
-export const FOLDER_NAMES = [
-  'Photo',
-  'PAN',
-  'Aadhaar',
-  'DrivingLicense',
-  'Passport',
-  'Resume',
-  'Education',
-  'Experience',
-  'Other',
-];
+/**
+ * The folders created for every employee, in the order the tab shows them.
+ *
+ * Derived from the map above rather than repeated, so a new document type
+ * cannot get a folder in one list and not the other -- which would leave
+ * uploads landing in a directory `createEmployeeFolders` never made.
+ */
+export const FOLDER_NAMES = [...new Set(Object.values(CATEGORY_FOLDERS))];
 
 export const folderFor = (documentType) => CATEGORY_FOLDERS[documentType] ?? 'Other';
 
@@ -131,7 +132,7 @@ export const resolveStoredPath = (stored) => {
  * taken from the server-side MIME type rather than from the name, and the
  * remainder is reduced to a conservative character set. That defeats
  * `../../etc/passwd`, `photo.pdf.exe` and null-byte truncation while leaving
- * `pan_card.pdf` looking like itself.
+ * `nida_card.pdf` looking like itself.
  */
 const EXTENSION_FOR_MIME = {
   'image/jpeg': '.jpg',
@@ -178,7 +179,7 @@ export const uniqueFileName = (directory, fileName) => {
 /* -------------------------------------------------------------------------- */
 
 /**
- * Creates the employee's folder and its nine category folders.
+ * Creates the employee's folder and one folder per document category.
  *
  * Idempotent -- `recursive: true` makes a second call a no-op -- so it can be
  * called on create, on rename, and defensively before an upload without

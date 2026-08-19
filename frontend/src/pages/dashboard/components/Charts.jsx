@@ -41,9 +41,8 @@ import { compactCurrencyIn, getActiveCurrency } from '@utils/currency.js';
 export const CHART_COLORS = {
   gross: '#2563EB',
   net: '#16A34A',
-  pf: '#0891B2',
-  esi: '#F59E0B',
-  lwf: '#7C3AED',
+  nssf: '#0891B2',
+  nhif: '#F59E0B',
   employer: '#4F46E5',
   overtime: '#EA580C',
   present: '#16A34A',
@@ -63,9 +62,9 @@ export const CHART_COLORS = {
 export const SERIES_COLORS = [
   CHART_COLORS.gross,
   CHART_COLORS.net,
-  CHART_COLORS.esi,
-  CHART_COLORS.pf,
-  CHART_COLORS.lwf,
+  CHART_COLORS.nhif,
+  CHART_COLORS.nssf,
+  CHART_COLORS.holiday,
   CHART_COLORS.overtime,
   CHART_COLORS.employer,
   CHART_COLORS.leave,
@@ -90,9 +89,7 @@ export const resolveColor = (theme, value) => {
 };
 
 /**
- * 1,20,000 -> "₹1.2L" under the rupee, "$120.0K" under the dollar. Axis labels
- * have no room for the full figure, and the abbreviations themselves follow
- * the currency -- lakh and crore do not travel.
+ * 1,200,000 -> "TSH 1.2M". Axis labels have no room for the full figure.
  *
  * Defaults to the chosen display currency, so an axis formatter passed as a
  * bare function reference stays correct.

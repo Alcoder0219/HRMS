@@ -76,45 +76,48 @@ const SalaryTemplatesPage = () => {
         </Typography>
       ),
     },
-    {
-      key: 'basicPercent',
-      label: 'Basic %',
+    // Every percentage is OF BASIC, which is the Tanzanian convention -- so
+    // there is no "basic %" column: basic is what the split solves for.
+    ...[
+      { key: 'hraPercent', label: 'HRA %' },
+      { key: 'transportationPercent', label: 'Transport %' },
+      { key: 'communicationPercent', label: 'Comms %' },
+      { key: 'annualLeavePercent', label: 'Annual leave % p.a.' },
+    ].map(({ key, label }) => ({
+      key,
+      label,
       align: 'right',
-      exportValue: (row) => row.basicPercent,
-      render: (row) => `${row.basicPercent ?? 0}%`,
-    },
-    {
-      key: 'hraPercentOfBasic',
-      label: 'HRA % of basic',
+      exportValue: (row) => row[key],
+      render: (row) => `${row[key] ?? 0}%`,
+    })),
+    ...[
+      { key: 'foodAllowanceAmount', label: 'Food' },
+      { key: 'mediclaimAmount', label: 'Mediclaim' },
+      { key: 'schoolFeesAllowanceAmount', label: 'School fees' },
+    ].map(({ key, label }) => ({
+      key,
+      label,
       align: 'right',
-      exportValue: (row) => row.hraPercentOfBasic,
-      render: (row) => `${row.hraPercentOfBasic ?? 0}%`,
+      exportValue: (row) => row[key],
+      render: (row) => formatCurrency(row[key]),
+    })),
+    {
+      key: 'nssfApplicable',
+      label: 'NSSF',
+      exportValue: (row) => (row.nssfApplicable ? 'Yes' : 'No'),
+      render: (row) => yesNo(row.nssfApplicable),
     },
     {
-      key: 'conveyanceAmount',
-      label: 'Conveyance',
-      align: 'right',
-      exportValue: (row) => row.conveyanceAmount,
-      render: (row) => formatCurrency(row.conveyanceAmount),
+      key: 'nhifApplicable',
+      label: 'NHIF',
+      exportValue: (row) => (row.nhifApplicable ? 'Yes' : 'No'),
+      render: (row) => yesNo(row.nhifApplicable),
     },
     {
-      key: 'medicalAmount',
-      label: 'Medical',
-      align: 'right',
-      exportValue: (row) => row.medicalAmount,
-      render: (row) => formatCurrency(row.medicalAmount),
-    },
-    {
-      key: 'pfApplicable',
-      label: 'PF',
-      exportValue: (row) => (row.pfApplicable ? 'Yes' : 'No'),
-      render: (row) => yesNo(row.pfApplicable),
-    },
-    {
-      key: 'esiApplicable',
-      label: 'ESI',
-      exportValue: (row) => (row.esiApplicable ? 'Yes' : 'No'),
-      render: (row) => yesNo(row.esiApplicable),
+      key: 'payeApplicable',
+      label: 'PAYE',
+      exportValue: (row) => (row.payeApplicable ? 'Yes' : 'No'),
+      render: (row) => yesNo(row.payeApplicable),
     },
     {
       key: 'isDefault',
@@ -128,7 +131,7 @@ const SalaryTemplatesPage = () => {
     <Box>
       <PageHeader
         title="Salary Templates"
-        subtitle="Reusable component splits a salary structure can be built from"
+        subtitle="Reusable component splits a salary structure can be built from — every percentage is of basic"
         breadcrumbs={[{ label: 'Home', to: PATHS.dashboard }, { label: 'Payroll' }, { label: 'Salary Templates' }]}
         actions={
           <ExportMenu

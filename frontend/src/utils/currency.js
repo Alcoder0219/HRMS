@@ -20,28 +20,31 @@
  * is written TSH locally, and the screen should read the way the user writes.
  *
  * `spaced` separates an alphabetic symbol from its digits (TSH 1,200); glyph
- * symbols sit tight against them (₹1,200).
+ * symbols sit tight against them ($1,200).
  */
 export const CURRENCIES = {
-  INR: {
-    code: 'INR',
-    label: 'Indian Rupee',
-    symbol: '₹',
-    // What the topbar button shows: enough to identify the currency at a
-    // glance without spelling out its name.
-    short: '₹ INR',
-    locale: 'en-IN',
-    scale: 'indian',
-  },
   TZS: {
     code: 'TZS',
     label: 'Tanzanian Shilling',
     symbol: 'TSH',
+    // What the topbar button shows: enough to identify the currency at a
+    // glance without spelling out its name.
     short: 'TSH',
     spaced: true,
-    locale: 'en-TZ',
+    /**
+     * `en-TZ` is missing from some browsers' ICU data, and an unrecognised
+     * locale silently falls back to the browser's own -- which groups digits
+     * differently depending on where the reader happens to be. `en-GB` is the
+     * tested fallback and groups in thousands, as Tanzania does.
+     */
+    locale: ['en-TZ', 'en-GB'],
     scale: 'western',
   },
+  /**
+   * Kept for expatriate packages, which are commonly quoted in dollars. Like
+   * the shilling, this is a RELABEL and not a conversion -- see the note at the
+   * top of this file.
+   */
   USD: {
     code: 'USD',
     label: 'US Dollar',
@@ -52,20 +55,19 @@ export const CURRENCIES = {
   },
 };
 
-export const DEFAULT_CURRENCY_CODE = 'INR';
+export const DEFAULT_CURRENCY_CODE = 'TZS';
 
 export const CURRENCY_OPTIONS = Object.values(CURRENCIES);
 
 /**
- * Lakh and crore are an Indian convention and mean nothing against a shilling
- * or a dollar, so the compact scale follows the currency rather than the app.
+ * Compact suffixes for axis ticks and cramped labels.
+ *
+ * One scale, because both currencies group in thousands. The lakh-and-crore
+ * scale that sat beside this went with the rupee: those units mean nothing
+ * against a shilling, and a chart axis reading "12L" would be unreadable to
+ * every user of this product.
  */
 const SCALES = {
-  indian: [
-    { threshold: 10_000_000, divisor: 10_000_000, suffix: 'Cr', digits: 1 },
-    { threshold: 100_000, divisor: 100_000, suffix: 'L', digits: 1 },
-    { threshold: 1_000, divisor: 1_000, suffix: 'K', digits: 0 },
-  ],
   western: [
     { threshold: 1_000_000_000, divisor: 1_000_000_000, suffix: 'B', digits: 1 },
     { threshold: 1_000_000, divisor: 1_000_000, suffix: 'M', digits: 1 },
@@ -89,14 +91,20 @@ export const normalizeCurrencyCode = (code) => resolveCurrency(code).code;
  * One formatter per locale, kept. Building an `Intl.NumberFormat` is the
  * expensive half of formatting a number, and a salary register asks for a few
  * thousand of them per render.
+ *
+ * A locale may be an array of fallbacks, so the cache key is its joined form
+ * rather than the value itself -- two arrays with the same contents are
+ * different objects and would each build their own formatter.
  */
 const groupers = new Map();
 
 const grouper = (locale) => {
-  if (!groupers.has(locale)) {
-    groupers.set(locale, new Intl.NumberFormat(locale, { maximumFractionDigits: 0 }));
+  const key = Array.isArray(locale) ? locale.join(',') : locale;
+
+  if (!groupers.has(key)) {
+    groupers.set(key, new Intl.NumberFormat(locale, { maximumFractionDigits: 0 }));
   }
-  return groupers.get(locale);
+  return groupers.get(key);
 };
 
 /**
@@ -131,7 +139,7 @@ export const compactAmountIn = (value, code) => {
   return `${(amount / step.divisor).toFixed(step.digits).replace(/\.0$/, '')}${step.suffix}`;
 };
 
-/** ₹1,20,000 -> "₹1.2L", $1,200,000 -> "$1.2M". For labels with no room. */
+/** TSH 1,200,000 -> "TSH 1.2M". For labels with no room. */
 export const compactCurrencyIn = (value, code) => {
   const number = Number(value) || 0;
   return withSymbol(resolveCurrency(code), compactAmountIn(number, code), number < 0);

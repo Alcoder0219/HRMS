@@ -91,7 +91,7 @@ export const PATHS = {
   assetReports: '/reports/assets',
   loanReports: '/reports/loans',
   settlementReports: '/reports/settlements',
-  // The PF/ESI register and cost analysis: a legal document rather than an
+  // The NSSF/NHIF register and cost analysis: a legal document rather than an
   // analytics view, so it keeps a screen of its own.
   payrollStatutoryReports: '/reports/payroll/statutory',
 

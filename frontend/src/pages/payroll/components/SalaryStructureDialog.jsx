@@ -1,11 +1,10 @@
-import { useEffect, useState } from 'react';
+import { Fragment, useEffect, useState } from 'react';
 import Alert from '@mui/material/Alert';
 import Box from '@mui/material/Box';
 import Button from '@mui/material/Button';
 import Divider from '@mui/material/Divider';
 import FormControlLabel from '@mui/material/FormControlLabel';
 import Grid from '@mui/material/Grid';
-import MenuItem from '@mui/material/MenuItem';
 import Stack from '@mui/material/Stack';
 import Switch from '@mui/material/Switch';
 import TextField from '@mui/material/TextField';
@@ -19,18 +18,29 @@ import { formatCurrency } from '@utils/format.js';
 
 const today = () => new Date().toISOString().slice(0, 10);
 
+/** The component fields, in the order the payslip states them. */
+const COMPONENTS = [
+  { key: 'basic', label: 'Basic' },
+  { key: 'hraAllowance', label: 'HRA' },
+  { key: 'foodAllowance', label: 'Food' },
+  { key: 'transportationAllowance', label: 'Transportation' },
+  { key: 'communicationAllowance', label: 'Communication' },
+  { key: 'mediclaim', label: 'Mediclaim' },
+  { key: 'schoolFeesAllowance', label: 'School fees' },
+  // Per annum by entitlement; this dialog, like the model, holds the monthly
+  // twelfth so it sits alongside the other figures without being paid twelve
+  // times over.
+  { key: 'annualLeaveAllowance', label: 'Annual leave (monthly)' },
+  { key: 'performanceIncentive', label: 'Performance incentive' },
+];
+
 const EMPTY = {
   effectiveFrom: today(),
   annualCtc: '',
-  basic: '',
-  hra: '',
-  da: '0',
-  specialAllowance: '',
-  pfApplicable: true,
-  esiApplicable: true,
-  ptApplicable: true,
-  tdsApplicable: true,
-  taxRegime: 'NEW',
+  ...Object.fromEntries(COMPONENTS.map(({ key }) => [key, ''])),
+  nssfApplicable: true,
+  nhifApplicable: true,
+  payeApplicable: true,
   overtimeEligible: true,
   overtimeMultiplier: '2',
   revisionReason: '',
@@ -66,15 +76,12 @@ const SalaryStructureDialog = ({ open, employee, current, onClose, onSaved }) =>
             ...EMPTY,
             effectiveFrom: today(),
             annualCtc: String(current.annualCtc ?? ''),
-            basic: String(current.basic ?? ''),
-            hra: String(current.hra ?? ''),
-            da: String(current.da ?? 0),
-            specialAllowance: String(current.specialAllowance ?? ''),
-            pfApplicable: current.pfApplicable ?? true,
-            esiApplicable: current.esiApplicable ?? true,
-            ptApplicable: current.ptApplicable ?? true,
-            tdsApplicable: current.tdsApplicable ?? true,
-            taxRegime: current.taxRegime ?? 'NEW',
+            ...Object.fromEntries(
+              COMPONENTS.map(({ key }) => [key, String(current[key] ?? '')]),
+            ),
+            nssfApplicable: current.nssfApplicable ?? true,
+            nhifApplicable: current.nhifApplicable ?? true,
+            payeApplicable: current.payeApplicable ?? true,
             overtimeEligible: current.overtimeEligible ?? true,
             overtimeMultiplier: String(current.overtimeMultiplier ?? 2),
             revisionReason: '',
@@ -98,15 +105,26 @@ const SalaryStructureDialog = ({ open, employee, current, onClose, onSaved }) =>
     setError(null);
 
     try {
-      const response = await payrollService.ctcPreview({ annualCtc, basicPercent: 40, hraPercent: 50 });
+      /**
+       * The server's own defaults are used -- no percentages are sent.
+       *
+       * Under the Tanzanian split every percentage is expressed against basic
+       * and basic is solved for, so a client that named its own `basicPercent`
+       * would be describing a split the server does not compute. The preview
+       * exists precisely so the arithmetic that prices the payslip is the
+       * arithmetic that fills this form.
+       */
+      const response = await payrollService.ctcPreview({ annualCtc });
       const split = response.data ?? {};
 
       setForm((previous) => ({
         ...previous,
-        basic: String(Math.round(split.basic ?? previous.basic ?? 0)),
-        hra: String(Math.round(split.hra ?? previous.hra ?? 0)),
-        da: String(Math.round(split.da ?? previous.da ?? 0)),
-        specialAllowance: String(Math.round(split.specialAllowance ?? previous.specialAllowance ?? 0)),
+        ...Object.fromEntries(
+          COMPONENTS.map(({ key }) => [
+            key,
+            String(Math.round(Number(split[key] ?? previous[key]) || 0)),
+          ]),
+        ),
       }));
     } catch (rejection) {
       setError(rejection?.message ?? 'The preview could not be calculated');
@@ -124,15 +142,10 @@ const SalaryStructureDialog = ({ open, employee, current, onClose, onSaved }) =>
         employeeId: employee,
         effectiveFrom: form.effectiveFrom,
         annualCtc: Number(form.annualCtc),
-        basic: Number(form.basic),
-        hra: Number(form.hra) || 0,
-        da: Number(form.da) || 0,
-        specialAllowance: Number(form.specialAllowance) || 0,
-        pfApplicable: form.pfApplicable,
-        esiApplicable: form.esiApplicable,
-        ptApplicable: form.ptApplicable,
-        tdsApplicable: form.tdsApplicable,
-        taxRegime: form.taxRegime,
+        ...Object.fromEntries(COMPONENTS.map(({ key }) => [key, Number(form[key]) || 0])),
+        nssfApplicable: form.nssfApplicable,
+        nhifApplicable: form.nhifApplicable,
+        payeApplicable: form.payeApplicable,
         overtimeEligible: form.overtimeEligible,
         overtimeMultiplier: Number(form.overtimeMultiplier) || 2,
         revisionReason: form.revisionReason.trim() || null,
@@ -146,11 +159,7 @@ const SalaryStructureDialog = ({ open, employee, current, onClose, onSaved }) =>
     }
   };
 
-  const monthly =
-    (Number(form.basic) || 0) +
-    (Number(form.hra) || 0) +
-    (Number(form.da) || 0) +
-    (Number(form.specialAllowance) || 0);
+  const monthly = COMPONENTS.reduce((sum, { key }) => sum + (Number(form[key]) || 0), 0);
 
   const expectedMonthly = (Number(form.annualCtc) || 0) / 12;
   // A gap here means the components do not add up to the CTC being promised.
@@ -248,10 +257,9 @@ const SalaryStructureDialog = ({ open, employee, current, onClose, onSaved }) =>
           </Divider>
         </Grid>
 
-        {money('Basic', 'basic')}
-        {money('HRA', 'hra')}
-        {money('DA', 'da')}
-        {money('Special allowance', 'specialAllowance')}
+        {COMPONENTS.map(({ key, label }) => (
+          <Fragment key={key}>{money(label, key)}</Fragment>
+        ))}
 
         <Grid size={12}>
           <Alert severity={mismatch ? 'warning' : 'info'} icon={false}>
@@ -286,16 +294,15 @@ const SalaryStructureDialog = ({ open, employee, current, onClose, onSaved }) =>
           </Divider>
         </Grid>
 
-        {toggle('PF', 'pfApplicable')}
-        {toggle('ESI', 'esiApplicable')}
-        {toggle('Professional tax', 'ptApplicable')}
-        {toggle('TDS', 'tdsApplicable')}
+        {toggle('NSSF', 'nssfApplicable')}
+        {toggle('NHIF', 'nhifApplicable')}
+        {toggle('PAYE', 'payeApplicable')}
 
-        <Grid size={{ xs: 12, sm: 4 }}>
-          <TextField select label="Tax regime" size="small" fullWidth value={form.taxRegime} onChange={set('taxRegime')}>
-            <MenuItem value="NEW">New regime</MenuItem>
-            <MenuItem value="OLD">Old regime</MenuItem>
-          </TextField>
+        <Grid size={12}>
+          <Typography variant="caption" color="text.secondary">
+            SDL and WCF are levied on the employer&apos;s payroll rather than on the individual, so they have
+            no per-employee switch and are never deducted from pay.
+          </Typography>
         </Grid>
 
         {toggle('Overtime eligible', 'overtimeEligible')}

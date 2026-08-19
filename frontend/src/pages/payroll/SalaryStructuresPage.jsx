@@ -20,13 +20,26 @@ import usePermissions from '@hooks/usePermissions.js';
 import { RESOURCES, ACTIONS } from '@utils/permissions.js';
 import payrollService from '@services/modules/payroll.service.js';
 import SalaryStructureDialog from './components/SalaryStructureDialog.jsx';
-import { formatCurrency, formatDate, humanize } from '@utils/format.js';
+import { formatCurrency, formatDate } from '@utils/format.js';
 import { getRowId, displayName } from '@utils/dataGrid.js';
 import { PATHS } from '@routes/paths.js';
 
 const yesNo = (value) => (
   <Chip label={value ? 'Yes' : 'No'} size="small" color={value ? 'success' : 'default'} variant="outlined" />
 );
+
+/** The structure's earning components, in the order the payslip states them. */
+const COMPONENT_LINES = [
+  { key: 'basic', label: 'Basic' },
+  { key: 'hraAllowance', label: 'HRA' },
+  { key: 'foodAllowance', label: 'Food allowance' },
+  { key: 'transportationAllowance', label: 'Transportation allowance' },
+  { key: 'communicationAllowance', label: 'Communication allowance' },
+  { key: 'mediclaim', label: 'Mediclaim' },
+  { key: 'schoolFeesAllowance', label: 'School fees allowance' },
+  { key: 'annualLeaveAllowance', label: 'Annual leave allowance (monthly)' },
+  { key: 'performanceIncentive', label: 'Performance incentive' },
+];
 
 /**
  * An employee's salary structure and its revision history.
@@ -110,7 +123,13 @@ const SalaryStructuresPage = () => {
       render: (row) => formatCurrency(row.monthlyCtc),
     },
     { key: 'basic', label: 'Basic', align: 'right', exportValue: (row) => row.basic, render: (row) => formatCurrency(row.basic) },
-    { key: 'hra', label: 'HRA', align: 'right', exportValue: (row) => row.hra, render: (row) => formatCurrency(row.hra) },
+    {
+      key: 'transportationAllowance',
+      label: 'Transportation',
+      align: 'right',
+      exportValue: (row) => row.transportationAllowance,
+      render: (row) => formatCurrency(row.transportationAllowance),
+    },
     {
       key: 'revisionReason',
       label: 'Reason',
@@ -220,10 +239,12 @@ const SalaryStructuresPage = () => {
                 {line('Annual CTC', formatCurrency(current.annualCtc))}
                 {line('Monthly CTC', formatCurrency(current.monthlyCtc))}
                 <Divider sx={{ my: 1 }} />
-                {line('Basic', formatCurrency(current.basic))}
-                {line('HRA', formatCurrency(current.hra))}
-                {line('DA', formatCurrency(current.da))}
-                {line('Special allowance', formatCurrency(current.specialAllowance))}
+                {/* Only the components that carry a figure. A structure with
+                    no housing or school-fees allowance is the ordinary case,
+                    and a column of zeroes is noise. */}
+                {COMPONENT_LINES.filter(({ key }) => Number(current[key]) > 0).map(({ key, label }) => (
+                  <Box key={key}>{line(label, formatCurrency(current[key]))}</Box>
+                ))}
 
                 {(current.otherAllowances ?? []).map((allowance) => (
                   <Box key={allowance.code + allowance.label}>{line(allowance.label, formatCurrency(allowance.amount))}</Box>
@@ -242,17 +263,19 @@ const SalaryStructuresPage = () => {
 
                 <Divider sx={{ my: 2 }} />
 
-                {line('Provident fund', yesNo(current.pfApplicable))}
-                {line('ESI', yesNo(current.esiApplicable))}
-                {line('Professional tax', yesNo(current.ptApplicable))}
-                {line('TDS', yesNo(current.tdsApplicable))}
-                {line('Tax regime', humanize(current.taxRegime))}
+                {line('NSSF', yesNo(current.nssfApplicable))}
+                {line('NHIF', yesNo(current.nhifApplicable))}
+                {line('PAYE', yesNo(current.payeApplicable))}
                 <Divider sx={{ my: 1 }} />
                 {line('Overtime eligible', yesNo(current.overtimeEligible))}
                 {line('Overtime multiplier', `${current.overtimeMultiplier}x`)}
-                {current.tdsOverride !== null && current.tdsOverride !== undefined
-                  ? line('TDS override', formatCurrency(current.tdsOverride))
+                {current.payeOverride !== null && current.payeOverride !== undefined
+                  ? line('PAYE override', formatCurrency(current.payeOverride))
                   : null}
+
+                <Typography variant="caption" color="text.secondary" sx={{ mt: 1, display: 'block' }}>
+                  SDL and WCF apply to every payroll and have no per-employee switch.
+                </Typography>
               </CardContent>
             </Card>
           </Grid>

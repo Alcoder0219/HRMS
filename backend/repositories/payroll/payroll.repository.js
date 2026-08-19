@@ -3,7 +3,7 @@ import PayrollRun from '../../models/payroll/payrollRun.model.js';
 import Payslip from '../../models/payroll/payslip.model.js';
 import Loan from '../../models/payroll/loan.model.js';
 import PayrollSettings from '../../models/payroll/payrollSettings.model.js';
-import { LOAN_STATUS, PAYSLIP_STATUS } from '../../utils/constants.js';
+import { COMPONENT_CODE, LOAN_STATUS, PAYSLIP_STATUS } from '../../utils/constants.js';
 
 /* -------------------------------------------------------------------------- */
 /*                             Salary structures                              */
@@ -130,8 +130,12 @@ export const deletePayslipsForRun = (payrollRunId) => Payslip.deleteMany({ payro
 /**
  * Year-to-date figures up to (not including) the given month.
  *
- * Feeds the TDS projection and the payslip's YTD block. Excluding the current
- * month is deliberate -- it is the month being computed.
+ * Feeds the payslip's YTD block. Excluding the current month is deliberate --
+ * it is the month being computed.
+ *
+ * Nothing prices off these figures any more. PAYE is assessed month by month
+ * under Tanzanian rules, so this is reporting rather than an input to the
+ * calculation, which is what it was when it fed the annual TDS projection.
  */
 export const yearToDate = async (employeeId, financialYearStart, year, month) => {
   /**
@@ -164,8 +168,8 @@ export const yearToDate = async (employeeId, financialYearStart, year, month) =>
 
   const totals = rows[0] ?? { gross: 0, deductions: 0, net: 0, months: 0 };
 
-  // PF and TDS are components, so they are summed from the arrays rather than
-  // stored as top-level fields.
+  // NSSF and PAYE are components, so they are summed from the arrays rather
+  // than stored as top-level fields.
   const componentTotals = await Payslip.aggregate([
     { $match: withinFinancialYear },
     { $unwind: '$deductions' },
@@ -179,8 +183,8 @@ export const yearToDate = async (employeeId, financialYearStart, year, month) =>
     deductions: totals.deductions ?? 0,
     net: totals.net ?? 0,
     months: totals.months ?? 0,
-    pf: byCode.PF ?? 0,
-    tds: byCode.TDS ?? 0,
+    nssf: byCode[COMPONENT_CODE.NSSF_EMPLOYEE] ?? 0,
+    paye: byCode[COMPONENT_CODE.PAYE] ?? 0,
   };
 };
 
@@ -258,11 +262,11 @@ export const findSettings = (tenantId) => PayrollSettings.findOne({ tenantId: te
 /**
  * Flattens nested objects into dot-notation paths.
  *
- * `$set: { pf: { wageCeiling: 21000 } }` REPLACES the whole `pf` sub-document,
- * silently discarding every sibling field -- including `pf.enabled`, which
- * would switch provident fund off for the entire organisation on what looked
- * like a one-field edit. Flattening to `{ 'pf.wageCeiling': 21000 }` changes
- * only the leaf that was sent.
+ * `$set: { nssf: { employeeRate: 12 } }` REPLACES the whole `nssf`
+ * sub-document, silently discarding every sibling field -- including
+ * `nssf.enabled`, which would switch social security off for the entire
+ * organisation on what looked like a one-field edit. Flattening to
+ * `{ 'nssf.employeeRate': 12 }` changes only the leaf that was sent.
  *
  * Arrays are treated as leaves: a slab table is replaced as a unit, because
  * merging it index by index would leave stale slabs behind when the new table

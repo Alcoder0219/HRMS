@@ -1,0 +1,560 @@
+import { useCallback, useEffect, useState } from 'react';
+import Alert from '@mui/material/Alert';
+import Box from '@mui/material/Box';
+import Button from '@mui/material/Button';
+import Card from '@mui/material/Card';
+import CardContent from '@mui/material/CardContent';
+import Chip from '@mui/material/Chip';
+import CircularProgress from '@mui/material/CircularProgress';
+import Dialog from '@mui/material/Dialog';
+import DialogActions from '@mui/material/DialogActions';
+import DialogContent from '@mui/material/DialogContent';
+import DialogTitle from '@mui/material/DialogTitle';
+import Divider from '@mui/material/Divider';
+import Snackbar from '@mui/material/Snackbar';
+import Stack from '@mui/material/Stack';
+import Tooltip from '@mui/material/Tooltip';
+import Typography from '@mui/material/Typography';
+import AddIcon from '@mui/icons-material/AddOutlined';
+import DeleteIcon from '@mui/icons-material/DeleteOutlined';
+import EditIcon from '@mui/icons-material/EditOutlined';
+import LinkIcon from '@mui/icons-material/LinkOutlined';
+import SyncIcon from '@mui/icons-material/SyncOutlined';
+import WifiIcon from '@mui/icons-material/WifiTetheringOutlined';
+
+import DataTable from '@components/common/DataTable.jsx';
+import ConfirmDialog from '@components/feedback/ConfirmDialog.jsx';
+import usePermissions from '@hooks/usePermissions.js';
+import { RESOURCES, ACTIONS } from '@utils/permissions.js';
+import adminService from '@services/modules/admin.service.js';
+import { formatRelative, emptyDash } from '@utils/format.js';
+
+import BiometricDeviceDialog from './BiometricDeviceDialog.jsx';
+import BiometricMappingDialog from './BiometricMappingDialog.jsx';
+
+/**
+ * Biometric terminals, as a section of the System Settings page.
+ *
+ * A component rather than more lines in `SystemSettingsPage` because it owns
+ * state that has nothing to do with payroll settings: its own load, its own
+ * four dialogs, and a save per action. The page renders it; everything below
+ * belongs to it.
+ *
+ * Deliberately NOT wired into the page's Save button. Adding a terminal and
+ * changing the NSSF rate are unrelated acts, and a shared Save would mean
+ * either could not be done without the other.
+ */
+
+const STATUS_COLOR = {
+  SUCCESS: 'success',
+  PARTIAL: 'warning',
+  FAILED: 'error',
+  NEVER: 'default',
+};
+
+/** Which per-row action is in flight, so only that button shows a spinner. */
+const IDLE = { deviceId: null, action: null };
+
+const BiometricDevicesSection = () => {
+  const { can } = usePermissions();
+  const canRead = can(RESOURCES.TENANT, ACTIONS.READ);
+  const canEdit = can(RESOURCES.TENANT, ACTIONS.UPDATE);
+  const canDelete = can(RESOURCES.TENANT, ACTIONS.DELETE);
+
+  const [devices, setDevices] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(null);
+  const [busy, setBusy] = useState(IDLE);
+  const [toast, setToast] = useState(null);
+  // Kept apart from `toast`: a diagnosis the user has to act on must stay on
+  // screen until they dismiss it, not vanish on a timer.
+  const [notice, setNotice] = useState(null);
+
+  const [formOpen, setFormOpen] = useState(false);
+  const [editing, setEditing] = useState(null);
+  const [formError, setFormError] = useState(null);
+  const [saving, setSaving] = useState(false);
+
+  const [mappingFor, setMappingFor] = useState(null);
+  const [syncResult, setSyncResult] = useState(null);
+  const [deleting, setDeleting] = useState(null);
+
+  const load = useCallback(() => {
+    if (!canRead) {
+      setLoading(false);
+      return;
+    }
+
+    setLoading(true);
+    setError(null);
+
+    adminService
+      .listBiometricDevices()
+      .then((response) => setDevices(response.data ?? []))
+      .catch((rejection) => {
+        setDevices([]);
+        setError(rejection?.message ?? 'Could not load the biometric devices');
+      })
+      .finally(() => setLoading(false));
+  }, [canRead]);
+
+  useEffect(() => {
+    load();
+  }, [load]);
+
+  const isBusy = (deviceId, action) => busy.deviceId === deviceId && busy.action === action;
+
+  /* ------------------------------------------------------------ actions -- */
+
+  const handleTest = async (device) => {
+    setBusy({ deviceId: device._id, action: 'test' });
+
+    try {
+      const response = await adminService.testBiometricDevice(device._id);
+      const result = response.data ?? {};
+
+      if (result.connected) {
+        // A WDMS server reports terminals; a terminal reports its own counts.
+        const detail =
+          result.info?.serverType === 'WDMS'
+            ? `${result.info.terminalCount ?? 0} terminal(s) registered`
+            : `${result.info?.userCount ?? '?'} enrolled user(s), ${result.info?.logCount ?? '?'} log(s) stored`;
+
+        setToast({ severity: 'success', message: `${device.name} responded — ${detail}` });
+      } else {
+        /**
+         * A failure with a suggestion is shown as a persistent warning, not a
+         * transient error toast.
+         *
+         * The commonest failure here is a protocol that cannot reach the
+         * address at all, and the fix is a specific settings change. That is
+         * too much to read in a snackbar that disappears after six seconds.
+         */
+        if (result.suggestion) {
+          setNotice({ severity: 'warning', message: `${result.error} — ${result.suggestion}` });
+        } else {
+          setToast({ severity: 'error', message: `${device.name} could not be reached: ${result.error}` });
+        }
+      }
+
+      load();
+    } catch (rejection) {
+      setToast({ severity: 'error', message: rejection?.message ?? 'The test failed' });
+    } finally {
+      setBusy(IDLE);
+    }
+  };
+
+  const handleSync = async (device) => {
+    setBusy({ deviceId: device._id, action: 'sync' });
+
+    try {
+      const response = await adminService.syncBiometricDevice(device._id);
+      setSyncResult({ device, ...(response.data ?? {}) });
+      load();
+    } catch (rejection) {
+      setToast({ severity: 'error', message: rejection?.message ?? 'The sync failed' });
+    } finally {
+      setBusy(IDLE);
+    }
+  };
+
+  const handleSaveDevice = async (payload) => {
+    setSaving(true);
+    setFormError(null);
+
+    try {
+      if (editing) await adminService.updateBiometricDevice(editing._id, payload);
+      else await adminService.addBiometricDevice(payload);
+
+      setFormOpen(false);
+      setEditing(null);
+      setToast({ severity: 'success', message: editing ? 'Device updated' : 'Device added' });
+      load();
+    } catch (rejection) {
+      setFormError(rejection?.message ?? 'The device could not be saved');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleDelete = async () => {
+    const device = deleting;
+    setDeleting(null);
+    setBusy({ deviceId: device._id, action: 'delete' });
+
+    try {
+      await adminService.removeBiometricDevice(device._id);
+      setToast({ severity: 'success', message: `${device.name} removed` });
+      load();
+    } catch (rejection) {
+      setToast({ severity: 'error', message: rejection?.message ?? 'The device could not be removed' });
+    } finally {
+      setBusy(IDLE);
+    }
+  };
+
+  /* ------------------------------------------------------------ columns -- */
+
+  const columns = [
+    {
+      key: 'name',
+      label: 'Device',
+      render: (row) => (
+        <Box>
+          <Typography variant="body2">{row.name}</Typography>
+          <Typography variant="caption" color="text.secondary" fontFamily="monospace">
+            {row.ipAddress}:{row.port}
+          </Typography>
+        </Box>
+      ),
+    },
+    {
+      key: 'protocol',
+      label: 'Protocol',
+      render: (row) => (
+        <Typography variant="caption" fontFamily="monospace">
+          {row.protocol}
+        </Typography>
+      ),
+    },
+    {
+      key: 'isActive',
+      label: 'Status',
+      render: (row) => (
+        <Stack direction="row" spacing={0.5}>
+          <Chip
+            size="small"
+            variant="outlined"
+            color={row.isActive ? 'success' : 'default'}
+            label={row.isActive ? 'Active' : 'Inactive'}
+          />
+          {row.autoSync && row.isActive && (
+            <Tooltip title={`Polled every ${row.syncIntervalMinutes} minute(s)`}>
+              <Chip size="small" variant="outlined" label={`Auto ${row.syncIntervalMinutes}m`} />
+            </Tooltip>
+          )}
+        </Stack>
+      ),
+    },
+    {
+      key: 'mappedUserCount',
+      label: 'Mapped',
+      align: 'right',
+      render: (row) =>
+        row.mappedUserCount > 0 ? (
+          row.mappedUserCount
+        ) : (
+          // A device with no mappings reads punches and discards every one of
+          // them, which is worth saying rather than showing as a quiet zero.
+          <Tooltip title="No enrolments are mapped, so this device imports nothing">
+            <Chip size="small" color="warning" variant="outlined" label="None" />
+          </Tooltip>
+        ),
+    },
+    {
+      key: 'lastSyncAt',
+      label: 'Last sync',
+      render: (row) => (
+        <Box>
+          <Typography variant="body2">
+            {row.lastSyncAt ? formatRelative(row.lastSyncAt) : 'Never'}
+          </Typography>
+          {row.lastSyncMessage && (
+            <Tooltip title={row.lastSyncMessage}>
+              <Typography variant="caption" color="text.secondary" noWrap sx={{ maxWidth: 200, display: 'block' }}>
+                {row.lastSyncMessage}
+              </Typography>
+            </Tooltip>
+          )}
+        </Box>
+      ),
+    },
+    {
+      key: 'lastSyncStatus',
+      label: 'Result',
+      render: (row) => (
+        <Chip
+          size="small"
+          label={row.lastSyncStatus ?? 'NEVER'}
+          color={STATUS_COLOR[row.lastSyncStatus] ?? 'default'}
+          variant={row.lastSyncStatus === 'NEVER' || !row.lastSyncStatus ? 'outlined' : 'filled'}
+        />
+      ),
+    },
+    {
+      key: 'actions',
+      label: 'Actions',
+      align: 'right',
+      render: (row) => (
+        <Stack direction="row" spacing={0.5} justifyContent="flex-end">
+          <Tooltip title="Test the connection">
+            <span>
+              <Button
+                size="small"
+                startIcon={isBusy(row._id, 'test') ? <CircularProgress size={14} /> : <WifiIcon />}
+                disabled={!canEdit || busy.deviceId === row._id}
+                onClick={() => handleTest(row)}
+              >
+                Test
+              </Button>
+            </span>
+          </Tooltip>
+
+          <Tooltip title="Pull logs now">
+            <span>
+              <Button
+                size="small"
+                startIcon={isBusy(row._id, 'sync') ? <CircularProgress size={14} /> : <SyncIcon />}
+                disabled={!canEdit || busy.deviceId === row._id}
+                onClick={() => handleSync(row)}
+              >
+                Sync
+              </Button>
+            </span>
+          </Tooltip>
+
+          <Tooltip title="Match enrolments to employees">
+            <span>
+              <Button
+                size="small"
+                startIcon={<LinkIcon />}
+                disabled={!canEdit || busy.deviceId === row._id}
+                onClick={() => setMappingFor(row)}
+              >
+                Map
+              </Button>
+            </span>
+          </Tooltip>
+
+          <Tooltip title="Edit">
+            <span>
+              <Button
+                size="small"
+                disabled={!canEdit || busy.deviceId === row._id}
+                onClick={() => {
+                  setEditing(row);
+                  setFormError(null);
+                  setFormOpen(true);
+                }}
+              >
+                <EditIcon fontSize="small" />
+              </Button>
+            </span>
+          </Tooltip>
+
+          <Tooltip title="Remove">
+            <span>
+              <Button
+                size="small"
+                color="error"
+                disabled={!canDelete || busy.deviceId === row._id}
+                onClick={() => setDeleting(row)}
+              >
+                <DeleteIcon fontSize="small" />
+              </Button>
+            </span>
+          </Tooltip>
+        </Stack>
+      ),
+    },
+  ];
+
+  if (!canRead) return null;
+
+  return (
+    <Card variant="outlined" sx={{ mb: 2 }}>
+      <CardContent>
+        <Stack
+          direction={{ xs: 'column', sm: 'row' }}
+          justifyContent="space-between"
+          alignItems={{ sm: 'flex-start' }}
+          spacing={1}
+        >
+          <Box>
+            <Typography variant="h6">Biometric devices</Typography>
+            <Typography variant="caption" color="text.secondary">
+              Attendance terminals polled in the background. Their punches go through the same pipeline as a
+              device push, so a synced day and a pushed day are computed identically.
+            </Typography>
+          </Box>
+
+          {canEdit && (
+            <Button
+              variant="contained"
+              size="small"
+              startIcon={<AddIcon />}
+              onClick={() => {
+                setEditing(null);
+                setFormError(null);
+                setFormOpen(true);
+              }}
+            >
+              Add device
+            </Button>
+          )}
+        </Stack>
+
+        <Divider sx={{ my: 2 }} />
+
+        {error && (
+          <Alert severity="error" sx={{ mb: 2 }} onClose={() => setError(null)}>
+            {error}
+          </Alert>
+        )}
+
+        {notice && (
+          <Alert severity={notice.severity} sx={{ mb: 2 }} onClose={() => setNotice(null)}>
+            {notice.message}
+          </Alert>
+        )}
+
+        <DataTable
+          columns={columns}
+          rows={devices}
+          loading={loading}
+          onRetry={load}
+          emptyTitle="No biometric devices configured"
+          emptyMessage="Add a terminal to pull attendance from it automatically."
+        />
+
+        {devices.some((device) => device.isActive && device.autoSync && !device.mappedUserCount) && (
+          <Alert severity="warning" sx={{ mt: 2 }}>
+            One or more active devices have no user mappings. They will be polled on schedule, read every
+            punch, and import none of them until their enrolments are mapped to employees.
+          </Alert>
+        )}
+      </CardContent>
+
+      {/* ------------------------------------------------------- dialogs -- */}
+
+      <BiometricDeviceDialog
+        open={formOpen}
+        device={editing}
+        submitting={saving}
+        error={formError}
+        onSubmit={handleSaveDevice}
+        onClose={() => {
+          setFormOpen(false);
+          setEditing(null);
+        }}
+      />
+
+      <BiometricMappingDialog
+        open={Boolean(mappingFor)}
+        device={mappingFor}
+        onClose={() => setMappingFor(null)}
+        onSaved={(message) => {
+          setMappingFor(null);
+          setToast({ severity: 'success', message });
+          load();
+        }}
+      />
+
+      <ConfirmDialog
+        open={Boolean(deleting)}
+        title={`Remove ${deleting?.name ?? 'this device'}?`}
+        message="The device stops being polled. Attendance already imported from it is not affected."
+        confirmLabel="Remove"
+        onConfirm={handleDelete}
+        onClose={() => setDeleting(null)}
+      />
+
+      <SyncResultDialog result={syncResult} onClose={() => setSyncResult(null)} />
+
+      <Snackbar
+        open={Boolean(toast)}
+        autoHideDuration={6000}
+        onClose={() => setToast(null)}
+        anchorOrigin={{ vertical: 'bottom', horizontal: 'center' }}
+      >
+        <Alert severity={toast?.severity ?? 'info'} variant="filled" onClose={() => setToast(null)}>
+          {toast?.message}
+        </Alert>
+      </Snackbar>
+    </Card>
+  );
+};
+
+/**
+ * What one sync actually did.
+ *
+ * Reports the gap between found and synced explicitly rather than showing a
+ * single success count. "1,400 punches found, 0 synced" is the shape of an
+ * unmapped device, and it is the single most likely thing to be wrong here --
+ * a dialog that only said "0 synced" would leave nobody any wiser.
+ */
+const SyncResultDialog = ({ result, onClose }) => {
+  if (!result) return null;
+
+  const line = (label, value) => (
+    <Stack direction="row" justifyContent="space-between" sx={{ py: 0.5 }}>
+      <Typography variant="body2" color="text.secondary">
+        {label}
+      </Typography>
+      <Typography variant="body2" fontWeight={500}>
+        {value}
+      </Typography>
+    </Stack>
+  );
+
+  const skipped = result.punchesFound - result.punchesSynced;
+
+  return (
+    <Dialog open onClose={onClose} maxWidth="xs" fullWidth>
+      <DialogTitle>
+        Sync result — {result.device?.name}
+        <Typography variant="caption" color="text.secondary" display="block">
+          {result.success ? 'The device answered' : 'The device could not be synced'}
+        </Typography>
+      </DialogTitle>
+
+      <DialogContent dividers>
+        {line('Punches on device', result.punchesFound ?? 0)}
+        {line('Punches imported', result.punchesSynced ?? 0)}
+        {line('Attendance days updated', result.daysUpdated ?? 0)}
+        {skipped > 0 &&
+          line(
+            'Skipped',
+            // Already-imported punches are the ordinary reason and are not a
+            // problem; unmapped ones are.
+            `${skipped} (already imported or unmapped)`,
+          )}
+
+        {result.unmappedUserIds?.length > 0 && (
+          <Alert severity="warning" sx={{ mt: 2 }}>
+            <Typography variant="body2" gutterBottom>
+              {result.unmappedUserIds.length} device user ID(s) are not mapped to an employee, so their
+              punches were discarded:
+            </Typography>
+            <Typography variant="caption" fontFamily="monospace">
+              {result.unmappedUserIds.join(', ')}
+            </Typography>
+          </Alert>
+        )}
+
+        {result.unknownEmployeeCodes?.length > 0 && (
+          <Alert severity="error" sx={{ mt: 2 }}>
+            Mapped to employee codes that do not exist: {result.unknownEmployeeCodes.join(', ')}
+          </Alert>
+        )}
+
+        {result.errors?.length > 0 && (
+          <Alert severity="error" sx={{ mt: 2 }}>
+            {result.errors.map((message) => (
+              <Typography key={message} variant="caption" display="block">
+                {emptyDash(message)}
+              </Typography>
+            ))}
+          </Alert>
+        )}
+      </DialogContent>
+
+      <DialogActions>
+        <Button onClick={onClose}>Close</Button>
+      </DialogActions>
+    </Dialog>
+  );
+};
+
+export default BiometricDevicesSection;

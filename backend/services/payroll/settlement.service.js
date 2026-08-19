@@ -16,6 +16,7 @@ import Settlement from '../../models/payroll/settlement.model.js';
 import Employee from '../../models/employee/employee.model.js';
 import Loan from '../../models/payroll/loan.model.js';
 import Payslip from '../../models/payroll/payslip.model.js';
+import { structureGross } from '../../models/payroll/salaryStructure.model.js';
 import payrollRepository from '../../repositories/payroll/payroll.repository.js';
 import employeeRepository from '../../repositories/employee/employee.repository.js';
 import assetService from '../employee/asset.service.js';
@@ -25,7 +26,7 @@ import {
   calculateService,
   DEFAULT_SETTLEMENT_RULES,
 } from '../../helpers/settlementCalculator.helper.js';
-import { roundToRupee } from '../../helpers/statutory.helper.js';
+import { roundToCurrency } from '../../helpers/statutory.helper.js';
 import { recordAudit } from '../../helpers/audit.helper.js';
 import { buildScopeFilter } from '../../helpers/permission.helper.js';
 
@@ -152,19 +153,19 @@ const gatherRecoveries = async (employeeId) => {
       loanId: loan._id,
       loanNumber: loan.loanNumber,
       type: loan.type,
-      outstanding: roundToRupee(loan.outstanding),
+      outstanding: roundToCurrency(loan.outstanding),
     })),
     advances: loans.filter(isAdvance).map((loan) => ({
       advanceId: loan._id,
       reference: loan.loanNumber,
-      outstanding: roundToRupee(loan.outstanding),
+      outstanding: roundToCurrency(loan.outstanding),
     })),
     assets: assets.map((asset) => ({
       assetId: asset._id,
       assetCode: asset.assetCode,
       name: asset.name,
       category: asset.category,
-      recoveryAmount: roundToRupee(asset.recoveryValue ?? 0),
+      recoveryAmount: roundToCurrency(asset.recoveryValue ?? 0),
     })),
   };
 };
@@ -197,18 +198,15 @@ const priceSettlement = async ({ employee, payload, rules }) => {
   }
 
   const service = calculateService(joiningDate, lastWorkingDate, {
-    roundUpFromMonths: rules.gratuity?.roundUpFromMonths ?? 6,
+    roundUpFromMonths: rules.severance?.roundUpFromMonths ?? 6,
   });
 
   const pending = await resolvePendingSalary(employee._id, lastWorkingDate, payload.lastPaidUpto);
   const recoveries = await gatherRecoveries(employee._id);
 
-  const monthlyGross =
-    structure.basic +
-    structure.hra +
-    structure.da +
-    structure.specialAllowance +
-    (structure.otherAllowances ?? []).reduce((sum, entry) => sum + (entry.amount ?? 0), 0);
+  // Through the structure's own gross helper, so the figure a settlement is
+  // priced from is the same one payroll priced the last payslip from.
+  const monthlyGross = structureGross(structure);
 
   const sheet = buildSettlementSheet({
     structure: { ...structure, monthlyGross },
@@ -264,7 +262,7 @@ const toDocument = ({ employee, payload, priced, rules, req }) => ({
     amount: priced.sheet.breakdown.leaveEncashment.amount,
   },
 
-  gratuity: priced.sheet.breakdown.gratuity,
+  severance: priced.sheet.breakdown.severance,
 
   employeeSnapshot: {
     employeeCode: employee.employeeCode,
@@ -273,17 +271,17 @@ const toDocument = ({ employee, payload, priced, rules, req }) => ({
     designation: employee.designationId?.name ?? null,
     department: employee.departmentId?.name ?? null,
     joiningDate: employee.joiningDate,
-    pan: employee.statutory?.pan ?? null,
-    uan: employee.statutory?.uan ?? null,
+    tinNumber: employee.statutory?.tinNumber ?? null,
+    nssfNumber: employee.statutory?.nssfNumber ?? null,
     bankName: employee.bankDetails?.bankName ?? null,
-    ifsc: employee.bankDetails?.ifsc ?? null,
+    swiftCode: employee.bankDetails?.swiftCode ?? null,
   },
   structureSnapshot: {
     basic: priced.structure.basic,
-    hra: priced.structure.hra,
-    da: priced.structure.da,
-    specialAllowance: priced.structure.specialAllowance,
-    monthlyGross: roundToRupee(priced.monthlyGross),
+    hraAllowance: priced.structure.hraAllowance,
+    transportationAllowance: priced.structure.transportationAllowance,
+    communicationAllowance: priced.structure.communicationAllowance,
+    monthlyGross: roundToCurrency(priced.monthlyGross),
     effectiveFrom: priced.structure.effectiveFrom,
   },
   rulesSnapshot: rules,
@@ -324,7 +322,7 @@ export const createSettlement = async (payload, req) => {
     throw ApiError.notFound('Employee not found');
   }
 
-  // Settling someone who is still employed would pay out gratuity and
+  // Settling someone who is still employed would pay out severance and
   // encashment to a person who has not left.
   if (!EXIT_STATUSES.includes(employee.status)) {
     throw ApiError.badRequest(
@@ -654,7 +652,7 @@ export const listSettlements = async (query, req) => {
   const range = dateRange(query.from, query.to);
   if (range) filter.lastWorkingDate = range;
 
-  // A settlement exposes salary, gratuity and debts. The same scope that
+  // A settlement exposes salary, severance and debts. The same scope that
   // guards payslips guards this.
   const scope = buildScopeFilter(req, {
     ownerField: '_id',
@@ -777,7 +775,7 @@ export const dashboard = async (req) => {
     Object.values(SETTLEMENT_STATUS).map((status) => [status, { count: 0, value: 0 }]),
   );
   byStatus.forEach((row) => {
-    statusMap[row._id] = { count: row.count, value: roundToRupee(row.value) };
+    statusMap[row._id] = { count: row.count, value: roundToCurrency(row.value) };
   });
 
   const pendingStatuses = [
@@ -792,7 +790,7 @@ export const dashboard = async (req) => {
     byStatus: statusMap,
     totals: {
       open: pendingStatuses.reduce((sum, status) => sum + statusMap[status].count, 0),
-      openValue: roundToRupee(
+      openValue: roundToCurrency(
         pendingStatuses.reduce((sum, status) => sum + statusMap[status].value, 0),
       ),
       paid: statusMap[SETTLEMENT_STATUS.PAID].count,
@@ -808,14 +806,14 @@ export const dashboard = async (req) => {
       bucket: AGEING_LABELS[bucket._id] ?? String(bucket._id),
       lowerBound: bucket._id,
       count: bucket.count,
-      value: roundToRupee(bucket.value),
+      value: roundToCurrency(bucket.value),
     })),
     monthly: monthly
       .map((row) => ({
         year: row._id.year,
         month: row._id.month,
         count: row.count,
-        value: roundToRupee(row.value),
+        value: roundToCurrency(row.value),
       }))
       .reverse(),
   };

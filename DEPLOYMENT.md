@@ -444,7 +444,7 @@ Current implementation — local filesystem, no cloud storage SDK installed:
 | Data | Path | Written by |
 |---|---|---|
 | Avatars, documents | `UPLOAD_DIR` (`/app/data/uploads`) | Multer `diskStorage` |
-| Identity documents (PAN, passport, Aadhaar) | `ATTACHMENTS_DIR` (`/app/data/attachments`) | `helpers/employeeFiles.helper.js` |
+| Identity documents (national ID, TIN, passport) | `ATTACHMENTS_DIR` (`/app/data/attachments`) | `helpers/employeeFiles.helper.js` |
 | DB dumps | `backups/` | Admin backup feature |
 
 On Cloud Run this means:

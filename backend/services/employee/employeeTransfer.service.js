@@ -52,16 +52,17 @@ export const COLUMNS = [
   { header: 'Work Location', key: 'workLocation', width: 18 },
   { header: 'CTC', key: 'ctc', width: 14, type: 'number', format: '#,##0.00' },
   { header: 'Grade', key: 'grade', width: 10 },
-  { header: 'PF Number', key: 'pfNumber', width: 18 },
-  { header: 'ESI Number', key: 'esiNumber', width: 18 },
-  { header: 'UAN', key: 'uan', width: 16 },
-  { header: 'PAN', key: 'pan', width: 14 },
-  { header: 'Aadhaar', key: 'aadhaar', width: 16 },
+  { header: 'NSSF Number', key: 'nssfNumber', width: 18 },
+  { header: 'NHIF Number', key: 'nhifNumber', width: 18 },
+  { header: 'TIN', key: 'tinNumber', width: 16 },
+  { header: 'National ID', key: 'nationalIdNumber', width: 24 },
   { header: 'Passport Number', key: 'passportNumber', width: 18 },
+  { header: 'Work Permit Number', key: 'workPermitNumber', width: 20 },
   { header: 'Driving License', key: 'drivingLicense', width: 18 },
   { header: 'Bank Account Number', key: 'accountNumber', width: 22 },
   { header: 'Bank Name', key: 'bankName', width: 22 },
-  { header: 'IFSC', key: 'ifsc', width: 14 },
+  { header: 'SWIFT Code', key: 'swiftCode', width: 14 },
+  { header: 'Branch Code', key: 'branchCode', width: 14 },
   { header: 'Emergency Contact Name', key: 'emergencyName', width: 24 },
   { header: 'Emergency Contact Relation', key: 'emergencyRelation', width: 22 },
   { header: 'Emergency Contact Phone', key: 'emergencyPhone', width: 22 },
@@ -102,16 +103,17 @@ const toRow = (employee) => ({
   workLocation: employee.workLocation,
   ctc: employee.salaryStructure?.ctc ?? null,
   grade: employee.salaryStructure?.grade ?? null,
-  pfNumber: employee.statutory?.pfNumber ?? null,
-  esiNumber: employee.statutory?.esiNumber ?? null,
-  uan: employee.statutory?.uan ?? null,
-  pan: employee.statutory?.pan ?? null,
-  aadhaar: employee.statutory?.aadhaar ?? null,
+  nssfNumber: employee.statutory?.nssfNumber ?? null,
+  nhifNumber: employee.statutory?.nhifNumber ?? null,
+  tinNumber: employee.statutory?.tinNumber ?? null,
+  nationalIdNumber: employee.statutory?.nationalIdNumber ?? null,
   passportNumber: employee.statutory?.passportNumber ?? null,
+  workPermitNumber: employee.statutory?.workPermitNumber ?? null,
   drivingLicense: employee.statutory?.drivingLicense ?? null,
   accountNumber: employee.bankDetails?.accountNumber ?? null,
   bankName: employee.bankDetails?.bankName ?? null,
-  ifsc: employee.bankDetails?.ifsc ?? null,
+  swiftCode: employee.bankDetails?.swiftCode ?? null,
+  branchCode: employee.bankDetails?.branchCode ?? null,
   emergencyName: employee.emergencyContacts?.[0]?.name ?? null,
   emergencyRelation: employee.emergencyContacts?.[0]?.relationship ?? null,
   emergencyPhone: employee.emergencyContacts?.[0]?.phone ?? null,
@@ -246,12 +248,16 @@ const validateRow = (data, lookups) => {
     errors.push(`Unknown designation code: ${data.designationCode}`);
   }
 
-  if (data.pan && !/^[A-Z]{5}\d{4}[A-Z]$/.test(String(data.pan).toUpperCase())) {
-    errors.push('PAN format is invalid');
+  // Nine digits, with or without the conventional 3-3-3 grouping.
+  if (data.tinNumber && !/^\d{3}-?\d{3}-?\d{3}$/.test(String(data.tinNumber).trim())) {
+    errors.push('TIN must be 9 digits, e.g. 123-456-789');
   }
 
-  if (data.aadhaar && !/^\d{12}$/.test(String(data.aadhaar).replace(/\s/g, ''))) {
-    errors.push('Aadhaar must be 12 digits');
+  if (
+    data.swiftCode &&
+    !/^[A-Z]{4}[A-Z]{2}[A-Z0-9]{2}([A-Z0-9]{3})?$/.test(String(data.swiftCode).trim().toUpperCase())
+  ) {
+    errors.push('SWIFT code must look like CORUTZTZ or CORUTZTZXXX');
   }
 
   return errors;
@@ -286,20 +292,29 @@ const toEmployeePayload = (data, lookups, tenantId, actorId) => ({
   workLocation: data.workLocation ?? null,
   salaryStructure: { ctc: data.ctc ? Number(data.ctc) : null, grade: data.grade ?? null },
   statutory: {
-    pfNumber: data.pfNumber ?? null,
-    pfApplicable: Boolean(data.pfNumber),
-    esiNumber: data.esiNumber ?? null,
-    esiApplicable: Boolean(data.esiNumber),
-    uan: data.uan ? String(data.uan) : null,
-    pan: data.pan ? String(data.pan).toUpperCase() : null,
-    aadhaar: data.aadhaar ? String(data.aadhaar).replace(/\s/g, '') : null,
+    nssfNumber: data.nssfNumber ? String(data.nssfNumber).toUpperCase() : null,
+    nhifNumber: data.nhifNumber ? String(data.nhifNumber).toUpperCase() : null,
+    tinNumber: data.tinNumber ? String(data.tinNumber).trim() : null,
+    nationalIdNumber: data.nationalIdNumber ? String(data.nationalIdNumber).toUpperCase() : null,
+    /**
+     * All three schemes are on unless the sheet says otherwise, matching the
+     * schema defaults. An imported employee with no NSSF number is still
+     * enrolled -- the number is issued after registration, not before, so
+     * keying enrolment off its presence would leave every new hire outside the
+     * fund until somebody noticed.
+     */
+    nssfApplicable: true,
+    nhifApplicable: true,
+    payeApplicable: true,
     passportNumber: data.passportNumber ?? null,
+    workPermitNumber: data.workPermitNumber ?? null,
     drivingLicense: data.drivingLicense ?? null,
   },
   bankDetails: {
     accountNumber: data.accountNumber ? String(data.accountNumber) : null,
     bankName: data.bankName ?? null,
-    ifsc: data.ifsc ? String(data.ifsc).toUpperCase() : null,
+    swiftCode: data.swiftCode ? String(data.swiftCode).toUpperCase() : null,
+    branchCode: data.branchCode ? String(data.branchCode).toUpperCase() : null,
   },
   emergencyContacts: data.emergencyName
     ? [

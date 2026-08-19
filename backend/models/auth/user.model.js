@@ -119,8 +119,15 @@ userSchema.index({ tenantId: 1, status: 1, role: 1 });
 
 /* -------------------------------------------------------------- virtuals */
 
+/**
+ * Both halves are required on the schema, so this looks over-careful -- but a
+ * PROJECTED document has only the fields that were selected, and the virtual
+ * still runs. Populating a user with `select: 'email role status'` produced
+ * the string "undefined undefined" in every employee response, which is the
+ * kind of value that gets rendered on a screen before anyone notices.
+ */
 userSchema.virtual('fullName').get(function fullName() {
-  return `${this.firstName} ${this.lastName}`.trim();
+  return [this.firstName, this.lastName].filter(Boolean).join(' ');
 });
 
 userSchema.virtual('isLocked').get(function isLocked() {

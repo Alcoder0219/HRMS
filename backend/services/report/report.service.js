@@ -564,8 +564,9 @@ const payrollReport = async (query, ctx) => {
       deductions: round(payslip.totalDeductions),
       net: round(payslip.netPayable),
       employerCost: round((payslip.grossEarnings ?? 0) + (payslip.employerContributionTotal ?? 0)),
-      pf: round(payslip.statutoryDetail?.pf?.employee ?? 0),
-      esi: round(payslip.statutoryDetail?.esi?.employee ?? 0),
+      nssf: round(payslip.statutoryDetail?.nssf?.employee ?? 0),
+      nhif: round(payslip.statutoryDetail?.nhif ?? 0),
+      paye: round(payslip.statutoryDetail?.paye?.monthly ?? 0),
       status: payslip.status,
     };
   });
@@ -614,9 +615,12 @@ const payrollReport = async (query, ctx) => {
         'statutory',
         'Statutory contributions',
         'bar',
+        // Employee side only. SDL and WCF are employer levies and would make
+        // this chart read as money taken from people's pay.
         [
-          { label: 'PF (employee)', value: round(rows.reduce((total, row) => total + row.pf, 0)) },
-          { label: 'ESI (employee)', value: round(rows.reduce((total, row) => total + row.esi, 0)) },
+          { label: 'NSSF (employee)', value: round(rows.reduce((total, row) => total + row.nssf, 0)) },
+          { label: 'NHIF', value: round(rows.reduce((total, row) => total + row.nhif, 0)) },
+          { label: 'PAYE', value: round(rows.reduce((total, row) => total + row.paye, 0)) },
         ].filter((entry) => entry.value > 0),
         { valueFormat: 'currency' },
       ),

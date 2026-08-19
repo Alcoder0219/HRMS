@@ -38,10 +38,9 @@ const bodies = {
     city: optionalText(80),
     state: optionalText(80),
     address: optionalText(300),
-    pfEstablishmentCode: optionalText(40),
-    esiEstablishmentCode: optionalText(40),
-    ptState: optionalText(60),
-    lwfState: optionalText(60),
+    nssfEmployerCode: optionalText(40),
+    nhifEmployerCode: optionalText(40),
+    wcfEmployerCode: optionalText(40),
     isActive: Joi.boolean(),
   },
 

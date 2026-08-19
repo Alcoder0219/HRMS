@@ -64,7 +64,7 @@ import { PATHS } from '@routes/paths.js';
 
 const MONTHS = Array.from({ length: 12 }, (_, index) => ({
   value: index + 1,
-  label: new Date(2000, index).toLocaleString('en-IN', { month: 'long' }),
+  label: new Date(2000, index).toLocaleString(['en-TZ', 'en-GB'], { month: 'long' }),
 }));
 
 const CURRENT = new Date();
@@ -78,10 +78,10 @@ const toHours = (minutes) => Math.round(((Number(minutes) || 0) / 60) * 10) / 10
 /** Department bars, primary blue first and distinct from there down. */
 const DEPARTMENT_COLORS = [
   CHART_COLORS.gross,
-  CHART_COLORS.pf,
-  CHART_COLORS.lwf,
+  CHART_COLORS.nssf,
+  CHART_COLORS.holiday,
   CHART_COLORS.net,
-  CHART_COLORS.esi,
+  CHART_COLORS.nhif,
   CHART_COLORS.employer,
   CHART_COLORS.overtime,
   CHART_COLORS.leave,
@@ -95,14 +95,14 @@ const DEPARTMENT_COLORS = [
  * currency relabels amounts rather than converting them.
  */
 const SALARY_BANDS = [
-  { min: 0, max: 20_000 },
-  { min: 20_000, max: 40_000 },
-  { min: 40_000, max: 60_000 },
-  { min: 60_000, max: 100_000 },
-  { min: 100_000, max: Infinity },
+  { min: 0, max: 500_000 },
+  { min: 500_000, max: 1_000_000 },
+  { min: 1_000_000, max: 2_500_000 },
+  { min: 2_500_000, max: 5_000_000 },
+  { min: 5_000_000, max: Infinity },
 ];
 
-/** "Below ₹20K", "₹20K – ₹40K", "Above ₹1L" -- or the same in TSH or dollars. */
+/** "Below TSH 500K", "TSH 500K – TSH 1M", "Above TSH 5M" -- or the same in dollars. */
 const describeBand = (band, amount) => {
   if (band.min === 0) return `Below ${amount(band.max)}`;
   if (!Number.isFinite(band.max)) return `Above ${amount(band.min)}`;
@@ -164,8 +164,8 @@ const DashboardPage = () => {
 
   const runId = run.data ? getRowId(run.data) : null;
 
-  // The register carries the deduction detail -- LWF included -- that the run's
-  // own totals do not break out. Requested only once a run exists for the month.
+  // The register carries the per-employee deduction detail that the run's own
+  // totals do not break out. Requested only once a run exists for the month.
   const register = useDashboardQuery(
     () => payrollService.salaryRegister(runId).then((r) => r.data),
     [runId],
@@ -320,23 +320,21 @@ const DashboardPage = () => {
      */
     const gross = sum('gross');
     const employeeDeductions = sum('employeeDeductions');
-    const pf = sum('pf');
-    const esi = sum('esi');
-    const lwf = sum('lwf');
-    const pt = sum('pt');
-    const tds = sum('tds');
+    // The employee's three, and only those. SDL and WCF are employer levies
+    // and would show as slices of a gross the employee never lost.
+    const nssf = sum('nssfEmployee');
+    const nhif = sum('nhif');
+    const paye = sum('paye');
 
     return {
       gross,
       net: gross - employeeDeductions,
-      pf,
-      esi,
-      lwf,
-      pt,
-      tds,
+      nssf,
+      nhif,
+      paye,
       // Loan and advance recovery and any ad-hoc line, derived from the
       // employee total so the parts always add up to it.
-      other: Math.max(0, employeeDeductions - (pf + esi + lwf + pt + tds)),
+      other: Math.max(0, employeeDeductions - (nssf + nhif + paye)),
       overtimeCost: sum('overtime'),
       bonus: sum('bonus'),
     };
@@ -634,11 +632,9 @@ const DashboardPage = () => {
                     centerLabel="Gross"
                     data={[
                       { label: 'Net pay', value: salaryBreakdown.net, color: CHART_COLORS.net },
-                      { label: 'Employee PF', value: salaryBreakdown.pf, color: CHART_COLORS.pf },
-                      { label: 'Employee ESI', value: salaryBreakdown.esi, color: CHART_COLORS.esi },
-                      { label: 'Employee LWF', value: salaryBreakdown.lwf, color: CHART_COLORS.lwf },
-                      { label: 'Professional tax', value: salaryBreakdown.pt, color: CHART_COLORS.pending },
-                      { label: 'TDS', value: salaryBreakdown.tds, color: CHART_COLORS.tax },
+                      { label: 'NSSF (employee)', value: salaryBreakdown.nssf, color: CHART_COLORS.nssf },
+                      { label: 'NHIF', value: salaryBreakdown.nhif, color: CHART_COLORS.nhif },
+                      { label: 'PAYE', value: salaryBreakdown.paye, color: CHART_COLORS.tax },
                       { label: 'Other deductions', value: salaryBreakdown.other, color: CHART_COLORS.other },
                     ]}
                   />
@@ -681,10 +677,10 @@ const DashboardPage = () => {
                   series={[{ label: '' }]}
                   colorByCategory={[
                     CHART_COLORS.leave,
-                    CHART_COLORS.pf,
+                    CHART_COLORS.nssf,
                     CHART_COLORS.net,
-                    CHART_COLORS.esi,
-                    CHART_COLORS.lwf,
+                    CHART_COLORS.nhif,
+                    CHART_COLORS.holiday,
                   ]}
                   data={(salaryDistribution ?? []).map((band) => ({
                     label: band.axisLabel,
@@ -925,7 +921,7 @@ const DashboardPage = () => {
                       </Typography>
                       <Typography variant="caption" color="text.secondary">
                         {formatDate(holiday.date)} ·{' '}
-                        {new Date(holiday.date).toLocaleDateString('en-IN', { weekday: 'long' })}
+                        {new Date(holiday.date).toLocaleDateString(['en-TZ', 'en-GB'], { weekday: 'long' })}
                       </Typography>
                     </Box>
                     <Chip label={humanize(holiday.type)} size="small" variant="outlined" />

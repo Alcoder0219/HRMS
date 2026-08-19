@@ -1,4 +1,5 @@
 import mongoose from 'mongoose';
+import { CURRENCY } from '../../utils/constants.js';
 
 const { Schema, model } = mongoose;
 
@@ -14,9 +15,11 @@ const companyProfileSchema = new Schema(
     legalName: { type: String, trim: true, maxlength: 200, default: null },
     registrationNumber: { type: String, trim: true, maxlength: 60, default: null },
     taxNumber: { type: String, trim: true, uppercase: true, maxlength: 30, default: null },
-    pan: { type: String, trim: true, uppercase: true, maxlength: 10, default: null },
-    pfCode: { type: String, trim: true, uppercase: true, maxlength: 30, default: null },
-    esiCode: { type: String, trim: true, uppercase: true, maxlength: 30, default: null },
+    // The employer's own registrations, quoted on the monthly returns.
+    tinNumber: { type: String, trim: true, uppercase: true, maxlength: 20, default: null },
+    nssfCode: { type: String, trim: true, uppercase: true, maxlength: 30, default: null },
+    nhifCode: { type: String, trim: true, uppercase: true, maxlength: 30, default: null },
+    wcfCode: { type: String, trim: true, uppercase: true, maxlength: 30, default: null },
 
     email: { type: String, trim: true, lowercase: true, maxlength: 120, default: null },
     phone: { type: String, trim: true, maxlength: 20, default: null },
@@ -26,14 +29,16 @@ const companyProfileSchema = new Schema(
     addressLine2: { type: String, trim: true, maxlength: 150, default: null },
     city: { type: String, trim: true, maxlength: 80, default: null },
     state: { type: String, trim: true, maxlength: 80, default: null },
-    country: { type: String, trim: true, maxlength: 80, default: 'India' },
+    country: { type: String, trim: true, maxlength: 80, default: 'Tanzania' },
     postalCode: { type: String, trim: true, maxlength: 12, default: null },
 
     logoPath: { type: String, default: null },
-    financialYearStartMonth: { type: Number, min: 1, max: 12, default: 4 },
+    // Tanzania's tax year is the calendar year.
+    financialYearStartMonth: { type: Number, min: 1, max: 12, default: 1 },
     dateFormat: { type: String, trim: true, maxlength: 20, default: 'dd MMM yyyy' },
-    currency: { type: String, trim: true, uppercase: true, maxlength: 3, default: 'INR' },
-    timezone: { type: String, trim: true, maxlength: 60, default: 'Asia/Kolkata' },
+    // The ISO code; the symbol shown to a reader is TSH. See CURRENCY.
+    currency: { type: String, trim: true, uppercase: true, maxlength: 3, default: CURRENCY.CODE },
+    timezone: { type: String, trim: true, maxlength: 60, default: 'Africa/Dar_es_Salaam' },
   },
   { _id: false },
 );
@@ -94,6 +99,119 @@ const notificationSettingsSchema = new Schema(
   { _id: false },
 );
 
+/* -------------------------------------------------------------------------- */
+/*                             Biometric devices                              */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * One device enrolment mapped to one employee.
+ *
+ * A biometric terminal knows its own user IDs -- usually a short number typed
+ * in when the finger was enrolled -- and knows nothing about employee codes.
+ * Nothing can reconcile the two automatically, so the mapping is held here and
+ * maintained by an administrator.
+ *
+ * Deliberately NOT a field on the employee. The same person can be enrolled on
+ * two devices under two different IDs, and a single field on the employee could
+ * only ever record one of them.
+ */
+const biometricUserMappingSchema = new Schema(
+  {
+    deviceUserId: { type: String, required: true, trim: true, maxlength: 30 },
+    employeeCode: { type: String, required: true, trim: true, uppercase: true, maxlength: 20 },
+    // Carried across from the device so the mapping screen can show who a
+    // device ID belongs to without a second round trip.
+    deviceUserName: { type: String, trim: true, maxlength: 120, default: null },
+  },
+  { _id: false },
+);
+
+/**
+ * A physical attendance terminal.
+ *
+ * Kept inside AppSettings rather than in a collection of its own, for the same
+ * reason the mail configuration is: it is administrator-configured, read
+ * whenever the settings screen renders, written by the same person on the same
+ * page, and a tenant has a handful of them rather than thousands.
+ */
+const biometricDeviceSchema = new Schema(
+  {
+    name: { type: String, required: true, trim: true, maxlength: 100 },
+    ipAddress: { type: String, required: true, trim: true, maxlength: 45 },
+    // 4370 is the ZKTeco SDK port. Web firmware and WDMS both answer on 8081.
+    port: { type: Number, required: true, min: 1, max: 65535, default: 4370 },
+    /**
+     * How this endpoint is spoken to.
+     *
+     * The first two are the SDK over a raw socket and reach a TERMINAL on the
+     * local network. The last three are HTTP:
+     *
+     *   ZK_WEB / GENERIC_API -- a terminal whose own firmware serves its logs
+     *     over HTTP, as tab-separated text.
+     *   WDMS_API -- a ZKTeco WDMS/BioTime SERVER that terminals push to, which
+     *     is a different thing entirely: it aggregates many devices, it is
+     *     reachable over the internet, and it needs credentials.
+     */
+    protocol: {
+      type: String,
+      enum: ['ZK_UDP', 'ZK_TCP', 'ZK_WEB', 'GENERIC_API', 'WDMS_API'],
+      default: 'ZK_UDP',
+    },
+    serialNumber: { type: String, trim: true, maxlength: 60, default: null },
+
+    /**
+     * Credentials, for the endpoints that need them.
+     *
+     * WDMS is a multi-tenant server holding every employee's attendance, so it
+     * authenticates -- unlike a terminal on the office LAN, which answers
+     * anyone who can reach the socket.
+     *
+     * `select: false` on the password for the same reason the mail password
+     * carries it: a service that forgets to strip it gets undefined rather than
+     * the secret. It is never returned to a client in any form.
+     */
+    username: { type: String, trim: true, maxlength: 150, default: null },
+    password: { type: String, default: null, select: false },
+
+    /**
+     * Restricts a WDMS pull to one terminal.
+     *
+     * A WDMS server carries punches from every device registered to it, which
+     * for a multi-site tenant is not what a single HRMS device row should
+     * import. Null means take everything the server has.
+     */
+    wdmsTerminalSerial: { type: String, trim: true, maxlength: 60, default: null },
+
+    isActive: { type: Boolean, default: true },
+    autoSync: { type: Boolean, default: true },
+    syncIntervalMinutes: { type: Number, min: 1, max: 1440, default: 5 },
+
+    /**
+     * The high-water mark, and the only thing that stops a sync re-importing
+     * the device's entire log every few minutes.
+     *
+     * It is the timestamp of the newest punch actually taken, not the clock
+     * time of the last run -- a device whose clock is behind the server's would
+     * otherwise have its punches skipped forever.
+     */
+    lastSyncAt: { type: Date, default: null },
+    lastSyncStatus: {
+      type: String,
+      enum: ['SUCCESS', 'FAILED', 'PARTIAL', 'NEVER', null],
+      default: null,
+    },
+    lastSyncMessage: { type: String, trim: true, maxlength: 500, default: null },
+    lastSyncPunchCount: { type: Number, default: 0 },
+    // Clock time of the last attempt, successful or not. Drives the "is this
+    // device due?" test, which must advance even when a device is offline so a
+    // dead terminal is not retried on every tick of the job.
+    lastAttemptAt: { type: Date, default: null },
+
+    userMappings: { type: [biometricUserMappingSchema], default: [] },
+  },
+  { _id: true, timestamps: true },
+);
+
 /**
  * Everything an administrator configures, as one document per tenant.
  *
@@ -110,6 +228,7 @@ const appSettingsSchema = new Schema(
     company: { type: companyProfileSchema, default: () => ({}) },
     email: { type: emailConfigSchema, default: () => ({}) },
     notifications: { type: notificationSettingsSchema, default: () => ({}) },
+    biometricDevices: { type: [biometricDeviceSchema], default: [] },
 
     // Set while a restore is running so a second one cannot start alongside it.
     maintenanceMode: { type: Boolean, default: false },

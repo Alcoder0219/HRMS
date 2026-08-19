@@ -21,6 +21,17 @@ const POPULATE = [
   { path: 'unitId', select: 'name code city state' },
   { path: 'gradeId', select: 'name code level' },
   { path: 'salaryTemplateId', select: 'name code' },
+  /**
+   * The login account, so a screen can show whether this employee can sign in
+   * without a second request per row.
+   *
+   * The selection is deliberately narrow. A User carries a password hash, its
+   * history, and the brute-force counters; populating the whole document into
+   * every employee list would put all of that one careless `res.json` away from
+   * a response body. These five fields are what the Employee screens display
+   * and nothing else.
+   */
+  { path: 'userId', select: 'email role status lastLoginAt isEmailVerified' },
 ];
 
 /* ------------------------------------------------------------------ reads */

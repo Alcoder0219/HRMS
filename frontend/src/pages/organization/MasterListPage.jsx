@@ -54,9 +54,9 @@ const codeCell = (row) => (
 const EXTRA_COLUMNS = {
   units: [
     { key: 'city', label: 'City', sortable: true, render: (row) => emptyDash(row.city) },
-    { key: 'state', label: 'State', sortable: true, render: (row) => emptyDash(row.state) },
-    { key: 'ptState', label: 'PT state', render: (row) => emptyDash(row.ptState) },
-    { key: 'lwfState', label: 'LWF state', render: (row) => emptyDash(row.lwfState) },
+    { key: 'state', label: 'Region', sortable: true, render: (row) => emptyDash(row.state) },
+    { key: 'nssfEmployerCode', label: 'NSSF code', render: (row) => emptyDash(row.nssfEmployerCode) },
+    { key: 'nhifEmployerCode', label: 'NHIF code', render: (row) => emptyDash(row.nhifEmployerCode) },
   ],
 
   departments: [

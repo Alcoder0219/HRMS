@@ -22,7 +22,7 @@ const MONTHS = [
  * The legal entity behind the payslips.
  *
  * Grouped by who asks for each field rather than by data type: an accountant
- * looking for the PF code should not have to read past the postal address.
+ * looking for the NSSF code should not have to read past the postal address.
  */
 const SECTIONS = [
   {
@@ -39,10 +39,11 @@ const SECTIONS = [
     title: 'Statutory registrations',
     caption: 'Printed on payslips and used by the statutory reports',
     fields: [
-      { key: 'taxNumber', label: 'GSTIN / tax number', size: 4 },
-      { key: 'pan', label: 'PAN', size: 4 },
-      { key: 'pfCode', label: 'PF establishment code', size: 4 },
-      { key: 'esiCode', label: 'ESI code', size: 4 },
+      { key: 'taxNumber', label: 'VAT registration number', size: 4 },
+      { key: 'tinNumber', label: 'TIN', size: 4 },
+      { key: 'nssfCode', label: 'NSSF employer code', size: 4 },
+      { key: 'nhifCode', label: 'NHIF employer code', size: 4 },
+      { key: 'wcfCode', label: 'WCF employer code', size: 4 },
     ],
   },
   {
@@ -54,7 +55,7 @@ const SECTIONS = [
       { key: 'addressLine1', label: 'Address line 1', size: 12 },
       { key: 'addressLine2', label: 'Address line 2', size: 12 },
       { key: 'city', label: 'City', size: 3 },
-      { key: 'state', label: 'State', size: 3 },
+      { key: 'state', label: 'Region', size: 3 },
       { key: 'country', label: 'Country', size: 3 },
       { key: 'postalCode', label: 'Postal code', size: 3 },
     ],
@@ -63,7 +64,7 @@ const SECTIONS = [
     title: 'Conventions',
     caption: 'How dates, money and the financial year are handled across the product',
     fields: [
-      { key: 'financialYearStartMonth', label: 'Financial year starts', size: 4, select: 'month' },
+      { key: 'financialYearStartMonth', label: 'Tax year starts', size: 4, select: 'month' },
       { key: 'currency', label: 'Currency code', size: 4 },
       { key: 'timezone', label: 'Timezone', size: 4 },
       { key: 'dateFormat', label: 'Date format', size: 4 },

@@ -5,7 +5,8 @@ import { buildScopeFilter } from '../../helpers/permission.helper.js';
 import payrollRepository from '../../repositories/payroll/payroll.repository.js';
 import employeeRepository from '../../repositories/employee/employee.repository.js';
 import { deriveStructureFromCtc } from '../../helpers/salaryCalculator.helper.js';
-import { roundToRupee } from '../../helpers/statutory.helper.js';
+import { structureGross } from '../../models/payroll/salaryStructure.model.js';
+import { roundToCurrency } from '../../helpers/statutory.helper.js';
 import { recordAudit, diffObjects } from '../../helpers/audit.helper.js';
 
 const ENTITY = 'SalaryStructure';
@@ -19,22 +20,19 @@ const ENTITY = 'SalaryStructure';
  */
 
 const assertComponentsMatchCtc = (payload) => {
-  const components =
-    Number(payload.basic || 0) +
-    Number(payload.hra || 0) +
-    Number(payload.da || 0) +
-    Number(payload.specialAllowance || 0) +
-    (payload.otherAllowances ?? []).reduce((sum, entry) => sum + Number(entry.amount || 0), 0);
+  // Through the same helper the structure's own gross virtual uses, so adding
+  // an earning column cannot leave this check silently ignoring it.
+  const components = structureGross(payload);
 
-  const monthlyCtc = roundToRupee(payload.monthlyCtc ?? Number(payload.annualCtc || 0) / 12);
+  const monthlyCtc = roundToCurrency(payload.monthlyCtc ?? Number(payload.annualCtc || 0) / 12);
 
-  // A rupee of slack absorbs rounding across five components; more than that
+  // A shilling of slack absorbs rounding across the components; more than that
   // is a data-entry error that would quietly under- or over-pay every month.
-  if (Math.abs(roundToRupee(components) - monthlyCtc) > 1) {
+  if (Math.abs(roundToCurrency(components) - monthlyCtc) > 1) {
     throw ApiError.unprocessable('Salary components do not add up to the monthly CTC', [
       {
         field: 'components',
-        message: `Components total ${roundToRupee(components)} but monthly CTC is ${monthlyCtc}`,
+        message: `Components total ${roundToCurrency(components)} but monthly CTC is ${monthlyCtc}`,
       },
     ]);
   }
@@ -81,8 +79,20 @@ export const createStructure = async (payload, req) => {
     entityLabel: `${employee.employeeCode} from ${effectiveFrom.toISOString().slice(0, 10)}`,
     action: existing ? AUDIT_ACTIONS.UPDATE : AUDIT_ACTIONS.CREATE,
     changes: diffObjects(
-      existing ? { basic: existing.basic, hra: existing.hra, da: existing.da, annualCtc: existing.annualCtc } : {},
-      { basic: structure.basic, hra: structure.hra, da: structure.da, annualCtc: structure.annualCtc },
+      existing
+        ? {
+            basic: existing.basic,
+            hraAllowance: existing.hraAllowance,
+            transportationAllowance: existing.transportationAllowance,
+            annualCtc: existing.annualCtc,
+          }
+        : {},
+      {
+        basic: structure.basic,
+        hraAllowance: structure.hraAllowance,
+        transportationAllowance: structure.transportationAllowance,
+        annualCtc: structure.annualCtc,
+      },
     ),
     metadata: { revisionReason: payload.revisionReason ?? null },
   });

@@ -35,6 +35,7 @@ import { useAppDispatch, useAppSelector } from '@hooks/useRedux.js';
 import usePermissions from '@hooks/usePermissions.js';
 import { RESOURCES, ACTIONS } from '@utils/permissions.js';
 import { formatDate, humanize } from '@utils/format.js';
+import { ROLE_LABELS } from '@utils/roles.js';
 import { getRowId, displayName, toSortParams } from '@utils/dataGrid.js';
 import employeeService, { downloadBlob } from '@services/modules/employee.service.js';
 import {
@@ -204,6 +205,45 @@ const EmployeeListPage = () => {
         headerName: 'Type',
         width: 130,
         renderCell: ({ value }) => <Chip label={humanize(value)} size="small" variant="outlined" />,
+      },
+      {
+        /**
+         * Whether this person can sign in, and as what.
+         *
+         * Here rather than on a separate Users screen: portal access is granted
+         * from the Employee form now, so who holds it belongs beside everything
+         * else about them.
+         *
+         * Not sortable -- `userId` is a populated reference, and asking Mongo to
+         * order by it would sort on the ObjectId rather than on the role or the
+         * status anyone actually means.
+         */
+        field: 'userId',
+        headerName: 'Portal',
+        width: 150,
+        sortable: false,
+        renderCell: ({ value }) => {
+          if (!value) {
+            return <Chip label="No access" size="small" variant="outlined" />;
+          }
+
+          // DEACTIVATED and SUSPENDED both mean "cannot sign in"; the account
+          // still exists, which is why neither reads as "No access".
+          if (value.status !== 'ACTIVE') {
+            return (
+              <Chip label={humanize(value.status)} size="small" color="error" variant="outlined" />
+            );
+          }
+
+          return (
+            <Chip
+              label={ROLE_LABELS[value.role] ?? humanize(value.role)}
+              size="small"
+              color="success"
+              variant="outlined"
+            />
+          );
+        },
       },
       {
         field: 'joiningDate',

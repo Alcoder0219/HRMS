@@ -211,7 +211,7 @@ const DocumentCard = ({
 /**
  * The placeholder shown where a required document has not been uploaded.
  *
- * A named prompt -- "Upload PAN Card" -- rather than an empty row, so the gap
+ * A named prompt -- "Upload National ID (NIDA)" -- rather than an empty row, so the gap
  * itself tells the reader what is missing and is the control that fixes it.
  */
 export const MissingDocumentCard = ({ label, onClick, disabled = false }) => (

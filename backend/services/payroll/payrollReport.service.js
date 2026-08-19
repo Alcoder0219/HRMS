@@ -4,8 +4,8 @@ import { AUDIT_ACTIONS, COMPONENT_CODE } from '../../utils/constants.js';
 import Payslip from '../../models/payroll/payslip.model.js';
 import payrollRepository from '../../repositories/payroll/payroll.repository.js';
 import { buildWorkbook } from '../../helpers/excel.helper.js';
-import { calculateGrossSalary } from '../../helpers/salaryCalculator.helper.js';
-import { roundToRupee } from '../../helpers/statutory.helper.js';
+import { calculateGrossSalary, FIXED_EARNINGS } from '../../helpers/salaryCalculator.helper.js';
+import { roundToCurrency } from '../../helpers/statutory.helper.js';
 import { recordAudit } from '../../helpers/audit.helper.js';
 
 /**
@@ -21,42 +21,42 @@ const componentTotal = (payslip, list, code) =>
   (payslip[list] ?? []).find((entry) => entry.code === code)?.amount ?? 0;
 
 /**
- * Conveyance, medical and other allowance share one component code.
+ * Whatever the named earning columns do not account for.
  *
- * The payroll structure has four named earning columns and a list for
- * everything else, so all three arrive as OTHER_ALLOWANCE and are told apart
- * only by their label. Matching on the label is what lets the register show
- * them in their own columns; `componentTotal` would return whichever happened
- * to be first and silently drop the other two.
- */
-const allowanceByLabel = (payslip, pattern) =>
-  (payslip.earnings ?? [])
-    .filter((entry) => entry.code === COMPONENT_CODE.OTHER_ALLOWANCE && pattern.test(entry.label ?? ''))
-    .reduce((sum, entry) => sum + (entry.amount ?? 0), 0);
-
-const CONVEYANCE = /conveyance/i;
-const MEDICAL = /medical/i;
-
-/**
- * Whatever is left in the allowance list once conveyance and medical are out.
- *
- * Dearness allowance is folded in here rather than dropped. It is a fixed
- * earning and so is part of gross, but the register has no column of its own
- * for it -- leaving it out of every column while gross still counted it would
- * break the one invariant this report guarantees, that the earnings columns
- * add up to the gross printed beside them. It is nil in every current
- * structure; if it is ever used in earnest it deserves its own column.
+ * Every Tanzanian allowance now has a component code and a column of its own,
+ * so this catches only the free-form `otherAllowances` entries a structure may
+ * carry. It exists to keep the one invariant this report guarantees: the
+ * earnings columns add up to the gross printed beside them. Under the Indian
+ * model three allowances shared the OTHER_ALLOWANCE code and had to be told
+ * apart by matching their labels against regular expressions, which silently
+ * dropped anything worded differently.
  */
 const residualAllowance = (payslip) =>
   (payslip.earnings ?? [])
-    .filter(
-      (entry) =>
-        entry.code === COMPONENT_CODE.DA ||
-        (entry.code === COMPONENT_CODE.OTHER_ALLOWANCE &&
-          !CONVEYANCE.test(entry.label ?? '') &&
-          !MEDICAL.test(entry.label ?? '')),
-    )
+    .filter((entry) => entry.code === COMPONENT_CODE.OTHER_ALLOWANCE)
     .reduce((sum, entry) => sum + (entry.amount ?? 0), 0);
+
+/** The register's earning columns, keyed off the engine's own component list. */
+const EARNING_COLUMN_KEYS = {
+  [COMPONENT_CODE.BASIC]: 'basic',
+  [COMPONENT_CODE.HRA]: 'hraAllowance',
+  [COMPONENT_CODE.FOOD_ALLOWANCE]: 'foodAllowance',
+  [COMPONENT_CODE.TRANSPORTATION_ALLOWANCE]: 'transportationAllowance',
+  [COMPONENT_CODE.COMMUNICATION_ALLOWANCE]: 'communicationAllowance',
+  [COMPONENT_CODE.MEDICLAIM]: 'mediclaim',
+  [COMPONENT_CODE.SCHOOL_FEES_ALLOWANCE]: 'schoolFeesAllowance',
+  [COMPONENT_CODE.ANNUAL_LEAVE_ALLOWANCE]: 'annualLeaveAllowance',
+  [COMPONENT_CODE.PERFORMANCE_INCENTIVE]: 'performanceIncentive',
+};
+
+/** One row key per fixed earning, read straight off the stored payslip. */
+const earningColumns = (payslip) =>
+  Object.fromEntries(
+    FIXED_EARNINGS.map(({ code }) => [
+      EARNING_COLUMN_KEYS[code],
+      componentTotal(payslip, 'earnings', code),
+    ]),
+  );
 
 /* -------------------------------------------------------------------------- */
 /*                              Salary register                               */
@@ -90,7 +90,7 @@ export const salaryRegister = async (runId, req) => {
     // Overtime, bonus, incentive and arrears are earned on top of the monthly
     // salary. `grossEarnings` includes them; the register reports the salary
     // and the extras in separate columns, as the payslip itself does.
-    const variablePay = roundToRupee(overtime + bonus + incentive + arrears);
+    const variablePay = roundToCurrency(overtime + bonus + incentive + arrears);
 
     /**
      * Gross comes from the same function the payroll engine used, applied to
@@ -105,11 +105,9 @@ export const salaryRegister = async (runId, req) => {
      */
     const grossSalary = calculateGrossSalary(payslip.earnings);
 
-    const pf = componentTotal(payslip, 'deductions', COMPONENT_CODE.PF);
-    const esi = componentTotal(payslip, 'deductions', COMPONENT_CODE.ESI);
-    const lwf = componentTotal(payslip, 'deductions', COMPONENT_CODE.LWF);
-    const pt = componentTotal(payslip, 'deductions', COMPONENT_CODE.PT);
-    const tds = componentTotal(payslip, 'deductions', COMPONENT_CODE.TDS);
+    const nssfEmployee = componentTotal(payslip, 'deductions', COMPONENT_CODE.NSSF_EMPLOYEE);
+    const nhif = componentTotal(payslip, 'deductions', COMPONENT_CODE.NHIF);
+    const paye = componentTotal(payslip, 'deductions', COMPONENT_CODE.PAYE);
     const loan = componentTotal(payslip, 'deductions', COMPONENT_CODE.LOAN_EMI);
     const advance = componentTotal(payslip, 'deductions', COMPONENT_CODE.ADVANCE_RECOVERY);
     /**
@@ -124,7 +122,7 @@ export const salaryRegister = async (runId, req) => {
     // recovery, and any ad-hoc deduction added to the run. Derived from the
     // employee total so the employee columns always add up to it, whatever a
     // run contained.
-    const otherDeductions = roundToRupee(employeeDeductions - (pf + esi + lwf + pt + tds));
+    const otherDeductions = roundToCurrency(employeeDeductions - (nssfEmployee + nhif + paye));
 
     /**
      * The register's Total Deductions column: both sides together.
@@ -139,7 +137,7 @@ export const salaryRegister = async (runId, req) => {
      * employer columns, so there is no path on which a contribution is counted
      * both as its own line and again inside the total.
      */
-    const totalDeductions = roundToRupee(employeeDeductions + employerContribution);
+    const totalDeductions = roundToCurrency(employeeDeductions + employerContribution);
 
     return {
       employeeCode: payslip.employeeSnapshot?.employeeCode,
@@ -152,21 +150,14 @@ export const salaryRegister = async (runId, req) => {
       lopDays: payslip.attendance?.lopDays ?? 0,
 
       /* --- earnings -------------------------------------------------- */
-      basic: componentTotal(payslip, 'earnings', COMPONENT_CODE.BASIC),
-      hra: componentTotal(payslip, 'earnings', COMPONENT_CODE.HRA),
-      da: componentTotal(payslip, 'earnings', COMPONENT_CODE.DA),
-      conveyanceAllowance: allowanceByLabel(payslip, CONVEYANCE),
-      medicalAllowance: allowanceByLabel(payslip, MEDICAL),
-      specialAllowance: componentTotal(payslip, 'earnings', COMPONENT_CODE.SPECIAL_ALLOWANCE),
+      ...earningColumns(payslip),
       otherAllowance: residualAllowance(payslip),
       grossSalary,
 
       /* --- employee deductions --------------------------------------- */
-      pf,
-      esi,
-      lwf,
-      pt,
-      tds,
+      nssfEmployee,
+      nhif,
+      paye,
       loan,
       advance,
       otherDeductions,
@@ -177,32 +168,34 @@ export const salaryRegister = async (runId, req) => {
       totalDeductions,
 
       /**
-       * The employer side. No ESI: the company makes no ESI contribution, so
-       * there is no figure to report and no column for one.
+       * The employer side: NSSF, and the two levies that exist only there.
+       *
+       * SDL and WCF have no employee half at all, so they appear in this block
+       * and nowhere else -- a column for either among the deductions would
+       * misrepresent a payroll levy as something taken from a salary.
        */
-      employerPf: componentTotal(payslip, 'employerContributions', COMPONENT_CODE.EMPLOYER_PF),
-      employerEps: componentTotal(payslip, 'employerContributions', COMPONENT_CODE.EMPLOYER_EPS),
-      employerLwf: componentTotal(payslip, 'employerContributions', COMPONENT_CODE.EMPLOYER_LWF),
+      nssfEmployer: componentTotal(payslip, 'employerContributions', COMPONENT_CODE.NSSF_EMPLOYER),
+      sdl: componentTotal(payslip, 'employerContributions', COMPONENT_CODE.SDL),
+      wcf: componentTotal(payslip, 'employerContributions', COMPONENT_CODE.WCF),
       /**
        * Retained on the row for the accounting reports that consume it, but no
-       * longer a column: the register shows the employer's PF and LWF as their
-       * own lines and does not repeat them as an aggregate.
+       * longer a column: the register shows each employer contribution as its
+       * own line and does not repeat them as an aggregate.
        */
       employerContribution,
 
       /* --- what is paid ---------------------------------------------- */
       /**
        * Gross less the COMBINED deduction total -- employee side and employer
-       * side together -- as the register is now specified.
+       * side together -- as the register is specified.
        *
-       * Read that carefully before changing it back: `totalDeductions`
-       * includes the employer's own PF and LWF, so this figure is the gross
-       * less money the company contributed rather than money the employee
-       * lost. It is 892 rupees below the employee's own arithmetic for
-       * Akansh, and the stored payslip still carries that other figure. See
-       * the note above `totalDeductions`.
+       * Read that carefully before changing it: `totalDeductions` includes the
+       * employer's NSSF, SDL and WCF, so this figure is the gross less money
+       * the company contributed rather than money the employee lost. The
+       * stored payslip's own `netPayable` is the take-home figure, and it is
+       * the larger of the two.
        */
-      netSalary: roundToRupee(grossSalary - totalDeductions),
+      netSalary: roundToCurrency(grossSalary - totalDeductions),
       overtime,
       bonus,
       incentive,
@@ -214,19 +207,19 @@ export const salaryRegister = async (runId, req) => {
        * Overtime and bonus only -- no employer contribution is added back, so
        * nothing that was subtracted above reappears here.
        */
-      finalPayable: roundToRupee(grossSalary - totalDeductions + variablePay),
+      finalPayable: roundToCurrency(grossSalary - totalDeductions + variablePay),
 
       // Kept under their original names so anything already reading the
       // register -- the old export, a saved report -- keeps working.
-      gross: roundToRupee(grossSalary + variablePay),
-      netPayable: roundToRupee(grossSalary - totalDeductions + variablePay),
+      gross: roundToCurrency(grossSalary + variablePay),
+      netPayable: roundToCurrency(grossSalary - totalDeductions + variablePay),
 
       status: payslip.status,
     };
   });
 
   /** Column totals, for the summary cards. Summed from the rows above. */
-  const sum = (key) => roundToRupee(rows.reduce((total, row) => total + (row[key] ?? 0), 0));
+  const sum = (key) => roundToCurrency(rows.reduce((total, row) => total + (row[key] ?? 0), 0));
 
   /**
    * The summary cards keep their existing meanings.
@@ -267,25 +260,29 @@ const REGISTER_COLUMNS = [
   { header: 'LOP', key: 'lopDays', width: 10 },
 
   { header: 'Basic Salary', key: 'basic', width: 14, format: '#,##0.00' },
-  { header: 'HRA', key: 'hra', width: 13, format: '#,##0.00' },
-  { header: 'Conveyance Allowance', key: 'conveyanceAllowance', width: 20, format: '#,##0.00' },
-  { header: 'Medical Allowance', key: 'medicalAllowance', width: 18, format: '#,##0.00' },
-  { header: 'Special Allowance', key: 'specialAllowance', width: 18, format: '#,##0.00' },
+  { header: 'HRA', key: 'hraAllowance', width: 13, format: '#,##0.00' },
+  { header: 'Food Allowance', key: 'foodAllowance', width: 16, format: '#,##0.00' },
+  { header: 'Transportation Allowance', key: 'transportationAllowance', width: 22, format: '#,##0.00' },
+  { header: 'Communication Allowance', key: 'communicationAllowance', width: 22, format: '#,##0.00' },
+  { header: 'Mediclaim', key: 'mediclaim', width: 14, format: '#,##0.00' },
+  { header: 'School Fees Allowance', key: 'schoolFeesAllowance', width: 20, format: '#,##0.00' },
+  { header: 'Annual Leave Allowance', key: 'annualLeaveAllowance', width: 21, format: '#,##0.00' },
+  { header: 'Performance Incentive', key: 'performanceIncentive', width: 20, format: '#,##0.00' },
   { header: 'Other Allowance', key: 'otherAllowance', width: 17, format: '#,##0.00' },
   { header: 'Gross Salary', key: 'grossSalary', width: 15, format: '#,##0.00' },
 
-  { header: 'Employee PF', key: 'pf', width: 14, format: '#,##0.00' },
-  { header: 'Employer PF', key: 'employerPf', width: 14, format: '#,##0.00' },
-  // No Employer ESI column: there is no employer ESI contribution.
-  { header: 'Employee ESI', key: 'esi', width: 14, format: '#,##0.00' },
-  { header: 'Employee LWF', key: 'lwf', width: 14, format: '#,##0.00' },
-  { header: 'Employer LWF', key: 'employerLwf', width: 14, format: '#,##0.00' },
-  { header: 'Professional Tax', key: 'pt', width: 16, format: '#,##0.00' },
-  { header: 'TDS', key: 'tds', width: 13, format: '#,##0.00' },
+  { header: 'NSSF - Employee', key: 'nssfEmployee', width: 16, format: '#,##0.00' },
+  { header: 'NSSF - Employer', key: 'nssfEmployer', width: 16, format: '#,##0.00' },
+  { header: 'NHIF', key: 'nhif', width: 13, format: '#,##0.00' },
+  { header: 'PAYE', key: 'paye', width: 14, format: '#,##0.00' },
+  // Employer-side levies. No employee column for either, because there is no
+  // employee half to report.
+  { header: 'SDL (Employer)', key: 'sdl', width: 15, format: '#,##0.00' },
+  { header: 'WCF (Employer)', key: 'wcf', width: 15, format: '#,##0.00' },
   { header: 'Other Deductions', key: 'otherDeductions', width: 17, format: '#,##0.00' },
-  // Named for what it now holds: both sides, not the employee's alone. The
-  // employer's PF and LWF have their own columns above, so there is no
-  // aggregate Employer Contribution column repeating them.
+  // Named for what it holds: both sides, not the employee's alone. Each
+  // employer contribution has its own column above, so there is no aggregate
+  // Employer Contribution column repeating them.
   { header: 'Total Deductions', key: 'totalDeductions', width: 18, format: '#,##0.00' },
 
   { header: 'Net Salary', key: 'netSalary', width: 15, format: '#,##0.00' },
@@ -321,88 +318,81 @@ export const exportSalaryRegister = async (runId, req) => {
 /* -------------------------------------------------------------------------- */
 
 /**
- * PF and ESI contribution statements -- the shape the monthly ECR and ESI
- * returns are prepared from.
+ * NSSF and NHIF contribution statements, plus the levy and PAYE totals -- the
+ * shape the monthly returns to the two funds, the TRA and the WCF are prepared
+ * from.
  */
 export const statutoryReport = async ({ year, month }, req) => {
   const tenantId = req.user.tenantId ?? null;
   const payslips = await Payslip.find({ tenantId, year, month }).lean();
 
-  const pf = [];
-  const esi = [];
-  let pfTotals = { employee: 0, employer: 0, pension: 0, wages: 0 };
-  let esiTotals = { employee: 0, employer: 0, gross: 0 };
+  const nssf = [];
+  const nhif = [];
+  let nssfTotals = { employee: 0, employer: 0, wages: 0 };
+  let nhifTotals = { employee: 0, gross: 0 };
 
   payslips.forEach((payslip) => {
-    const employeePf = componentTotal(payslip, 'deductions', COMPONENT_CODE.PF);
-    const employerPf = componentTotal(payslip, 'employerContributions', COMPONENT_CODE.EMPLOYER_PF);
-    const pension = componentTotal(payslip, 'employerContributions', COMPONENT_CODE.EMPLOYER_EPS);
+    const employeeNssf = componentTotal(payslip, 'deductions', COMPONENT_CODE.NSSF_EMPLOYEE);
+    const employerNssf = componentTotal(payslip, 'employerContributions', COMPONENT_CODE.NSSF_EMPLOYER);
 
-    if (employeePf > 0 || employerPf > 0) {
-      const wages = payslip.statutoryDetail?.pf?.wages ?? 0;
-      pf.push({
+    if (employeeNssf > 0 || employerNssf > 0) {
+      const wages = payslip.statutoryDetail?.nssf?.wages ?? 0;
+      nssf.push({
         employeeCode: payslip.employeeSnapshot?.employeeCode,
         fullName: payslip.employeeSnapshot?.fullName,
-        uan: payslip.employeeSnapshot?.uan,
-        pfNumber: payslip.employeeSnapshot?.pfNumber,
+        nssfNumber: payslip.employeeSnapshot?.nssfNumber,
         wages,
-        employee: employeePf,
-        employer: employerPf,
-        pension,
+        employee: employeeNssf,
+        employer: employerNssf,
+        // The fund is remitted one figure per member, not two.
+        total: employeeNssf + employerNssf,
       });
 
-      pfTotals = {
-        employee: pfTotals.employee + employeePf,
-        employer: pfTotals.employer + employerPf,
-        pension: pfTotals.pension + pension,
-        wages: pfTotals.wages + wages,
+      nssfTotals = {
+        employee: nssfTotals.employee + employeeNssf,
+        employer: nssfTotals.employer + employerNssf,
+        wages: nssfTotals.wages + wages,
       };
     }
 
     /**
-     * The employer contributes nothing to ESI here, so the employer figure is
-     * a constant zero rather than a lookup. The key is kept so the report's
-     * shape -- and anything already reading it -- is unchanged.
+     * NHIF is an employee-only contribution here, so no employer figure is
+     * carried. It is a flat band amount rather than a rate, which is why the
+     * gross it was banded on is reported beside it.
      */
-    const employeeEsi = componentTotal(payslip, 'deductions', COMPONENT_CODE.ESI);
+    const employeeNhif = componentTotal(payslip, 'deductions', COMPONENT_CODE.NHIF);
 
-    if (employeeEsi > 0) {
-      esi.push({
+    if (employeeNhif > 0) {
+      nhif.push({
         employeeCode: payslip.employeeSnapshot?.employeeCode,
         fullName: payslip.employeeSnapshot?.fullName,
-        esiNumber: payslip.employeeSnapshot?.esiNumber,
+        nhifNumber: payslip.employeeSnapshot?.nhifNumber,
         gross: payslip.grossEarnings,
-        employee: employeeEsi,
-        employer: 0,
+        employee: employeeNhif,
       });
 
-      esiTotals = {
-        employee: esiTotals.employee + employeeEsi,
-        employer: 0,
-        gross: esiTotals.gross + payslip.grossEarnings,
+      nhifTotals = {
+        employee: nhifTotals.employee + employeeNhif,
+        gross: nhifTotals.gross + payslip.grossEarnings,
       };
     }
   });
 
-  const ptTotal = payslips.reduce(
-    (sum, payslip) => sum + componentTotal(payslip, 'deductions', COMPONENT_CODE.PT),
-    0,
-  );
-  const tdsTotal = payslips.reduce(
-    (sum, payslip) => sum + componentTotal(payslip, 'deductions', COMPONENT_CODE.TDS),
-    0,
-  );
+  const totalOf = (list, code) =>
+    payslips.reduce((sum, payslip) => sum + componentTotal(payslip, list, code), 0);
 
   const round = (object) =>
-    Object.fromEntries(Object.entries(object).map(([key, value]) => [key, roundToRupee(value)]));
+    Object.fromEntries(Object.entries(object).map(([key, value]) => [key, roundToCurrency(value)]));
 
   return {
     year,
     month,
-    pf: { rows: pf, totals: round(pfTotals), count: pf.length },
-    esi: { rows: esi, totals: round(esiTotals), count: esi.length },
-    professionalTax: { total: roundToRupee(ptTotal) },
-    tds: { total: roundToRupee(tdsTotal) },
+    nssf: { rows: nssf, totals: round({ ...nssfTotals, total: nssfTotals.employee + nssfTotals.employer }), count: nssf.length },
+    nhif: { rows: nhif, totals: round(nhifTotals), count: nhif.length },
+    paye: { total: roundToCurrency(totalOf('deductions', COMPONENT_CODE.PAYE)) },
+    // Employer-side levies, reported for their own returns.
+    sdl: { total: roundToCurrency(totalOf('employerContributions', COMPONENT_CODE.SDL)) },
+    wcf: { total: roundToCurrency(totalOf('employerContributions', COMPONENT_CODE.WCF)) },
   };
 };
 
@@ -435,12 +425,12 @@ export const costByDepartment = async ({ year, month }, req) => {
     rows: rows.map((row) => ({
       department: row._id ?? 'Unassigned',
       headcount: row.headcount,
-      gross: roundToRupee(row.gross),
-      deductions: roundToRupee(row.deductions),
-      net: roundToRupee(row.net),
-      employerCost: roundToRupee(row.employerCost),
+      gross: roundToCurrency(row.gross),
+      deductions: roundToCurrency(row.deductions),
+      net: roundToCurrency(row.net),
+      employerCost: roundToCurrency(row.employerCost),
       // What the month actually costs the company: gross plus employer side.
-      totalCost: roundToRupee(row.gross + row.employerCost),
+      totalCost: roundToCurrency(row.gross + row.employerCost),
     })),
   };
 };
@@ -471,9 +461,9 @@ export const yearlyTrend = async ({ year }, req) => {
     months: rows.map((row) => ({
       month: row._id,
       headcount: row.headcount,
-      gross: roundToRupee(row.gross),
-      net: roundToRupee(row.net),
-      employerCost: roundToRupee(row.employerCost),
+      gross: roundToCurrency(row.gross),
+      net: roundToCurrency(row.net),
+      employerCost: roundToCurrency(row.employerCost),
     })),
   };
 };

@@ -1,4 +1,5 @@
 import { humanize } from './format.js';
+import { ROLES, ROLE_LABELS } from './roles.js';
 
 /**
  * Option lists for the employee screens, mirroring the backend enums in
@@ -67,7 +68,38 @@ export const BLOOD_GROUP_OPTIONS = ['A+', 'A-', 'B+', 'B-', 'AB+', 'AB-', 'O+', 
   (value) => ({ value, label: value }),
 );
 
-export const BANK_ACCOUNT_TYPE_OPTIONS = toOptions(['SAVINGS', 'CURRENT', 'SALARY']);
+export const BANK_ACCOUNT_TYPE_OPTIONS = toOptions(['SAVINGS', 'CURRENT']);
+
+/* -------------------------------------------------------- portal access -- */
+
+/**
+ * Roles that can be granted from the Employee form.
+ *
+ * SUPER_ADMIN is absent deliberately, and its absence is enforced on the server
+ * as well -- it is a platform account that may have no employee record at all,
+ * and granting it from an HR screen would hand over the whole system. The one
+ * Super Admin is managed from the Users page.
+ *
+ * Derived from ROLE_LABELS rather than re-listed, so a role added to the
+ * product appears here without a second edit.
+ */
+export const PORTAL_ROLE_OPTIONS = Object.entries(ROLE_LABELS)
+  .filter(([value]) => value !== ROLES.SUPER_ADMIN)
+  .map(([value, label]) => ({ value, label }));
+
+/**
+ * The account states an administrator may set here.
+ *
+ * PENDING and LOCKED are omitted: neither is a choice. PENDING is what an
+ * unverified account starts as, and LOCKED is set by the failed-login counter
+ * and cleared by unlocking -- offering either as a dropdown option would invite
+ * somebody to "set" a state the system owns.
+ */
+export const PORTAL_STATUS_OPTIONS = [
+  { value: 'ACTIVE', label: 'Active' },
+  { value: 'SUSPENDED', label: 'Suspended' },
+  { value: 'DEACTIVATED', label: 'Deactivated' },
+];
 
 export const DOCUMENT_TYPE_OPTIONS = toOptions([
   'PHOTO',
@@ -77,8 +109,12 @@ export const DOCUMENT_TYPE_OPTIONS = toOptions([
   'JOINING_LETTER',
   'ID_PROOF',
   'ADDRESS_PROOF',
-  'AADHAAR_COPY',
-  'PAN_COPY',
+  'NATIONAL_ID_COPY',
+  'TIN_COPY',
+  'NSSF_CARD_COPY',
+  'NHIF_CARD_COPY',
+  'BIRTH_CERTIFICATE',
+  'WORK_PERMIT',
   'PASSPORT_COPY',
   'DRIVING_LICENSE_COPY',
   'BANK_PASSBOOK',
@@ -99,19 +135,25 @@ export const DOCUMENT_TYPE_OPTIONS = toOptions([
  */
 export const SALARY_EARNING_FIELDS = [
   { key: 'basic', label: 'Basic Salary' },
-  { key: 'hra', label: 'HRA' },
-  { key: 'conveyanceAllowance', label: 'Conveyance Allowance' },
-  { key: 'specialAllowance', label: 'Special Allowance' },
-  { key: 'medicalAllowance', label: 'Medical Allowance' },
-  { key: 'otherAllowance', label: 'Other Allowance' },
+  { key: 'hraAllowance', label: 'HRA' },
+  { key: 'foodAllowance', label: 'Food Allowance' },
+  { key: 'transportationAllowance', label: 'Transportation Allowance' },
+  { key: 'communicationAllowance', label: 'Communication Allowance' },
+  { key: 'mediclaim', label: 'Mediclaim' },
+  { key: 'schoolFeesAllowance', label: 'School Fees Allowance' },
+  {
+    key: 'annualLeaveAllowance',
+    label: 'Annual Leave Allowance',
+    help: 'Monthly equivalent — a per-annum entitlement divided by twelve',
+  },
+  { key: 'performanceIncentive', label: 'Performance Incentive' },
 ];
 
 /** Employee-side deductions. These reduce take-home pay. */
 export const SALARY_DEDUCTION_FIELDS = [
-  { key: 'pfEmployee', label: 'PF - Employee' },
-  { key: 'esiEmployee', label: 'ESI - Employee' },
-  { key: 'lwfEmployee', label: 'LWF - Employee' },
-  { key: 'professionalTax', label: 'Professional Tax' },
+  { key: 'nssfEmployee', label: 'NSSF - Employee' },
+  { key: 'nhif', label: 'NHIF' },
+  { key: 'paye', label: 'PAYE' },
 ];
 
 /* -------------------------------------------------------------- overtime -- */
@@ -179,9 +221,15 @@ export const OVERTIME_PREMIUM_FIELDS = [
   },
 ];
 
-/** Employer-side contributions. Cost to company, never deducted from salary. */
+/**
+ * Employer-side contributions. Cost to company, never deducted from salary.
+ *
+ * SDL and WCF have no employee half at all -- they are levies on the employer's
+ * payroll rather than shares of a joint contribution, which is why neither
+ * appears in the deduction list above.
+ */
 export const SALARY_EMPLOYER_FIELDS = [
-  { key: 'pfEmployer', label: 'PF - Employer' },
-  { key: 'esiEmployer', label: 'ESI - Employer' },
-  { key: 'lwfEmployer', label: 'LWF - Employer' },
+  { key: 'nssfEmployer', label: 'NSSF - Employer' },
+  { key: 'sdl', label: 'SDL' },
+  { key: 'wcf', label: 'WCF' },
 ];
