@@ -14,6 +14,8 @@ import env from '../config/env.js';
 import logger from '../config/logger.js';
 import { hashPassword } from '../helpers/password.helper.js';
 import { ROLES, ACCOUNT_STATUS } from '../utils/constants.js';
+import { ensureSystemRoles } from '../services/admin/role.service.js';
+import { loadRoleCache } from '../services/auth/roleCache.service.js';
 import User from '../models/auth/user.model.js';
 import Department from '../models/organization/department.model.js';
 import Designation from '../models/organization/designation.model.js';
@@ -107,6 +109,12 @@ const run = async () => {
   }
 
   await connectDatabase();
+
+  // Roles must exist -- and the in-memory cache must be warm -- before any
+  // User is created below: User.role now validates against the live role set
+  // rather than a fixed enum.
+  await ensureSystemRoles();
+  await loadRoleCache();
 
   for (const department of DEPARTMENTS) {
     await upsert(Department, { tenantId: null, code: department.code }, department);

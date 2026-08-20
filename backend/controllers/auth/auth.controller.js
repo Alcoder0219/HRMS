@@ -106,7 +106,7 @@ export const permissions = asyncHandler(async (req, res) => {
 });
 
 export const roleDefinitions = asyncHandler(async (_req, res) => {
-  return ApiResponse.ok(res, authService.listRoleDefinitions(), 'Role definitions');
+  return ApiResponse.ok(res, await authService.listRoleDefinitions(), 'Role definitions');
 });
 
 export const sessions = asyncHandler(async (req, res) => {

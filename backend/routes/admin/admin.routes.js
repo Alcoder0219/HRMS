@@ -2,10 +2,12 @@
 import multer from 'multer';
 
 import controller from '../../controllers/admin/admin.controller.js';
+import roleController from '../../controllers/admin/role.controller.js';
 import validate from '../../middlewares/validate.js';
 import { requirePermission } from '../../middlewares/authorize.js';
 import { ACTIONS, RESOURCES } from '../../utils/constants.js';
 import schemas from '../../validators/admin/admin.validator.js';
+import roleSchemas from '../../validators/admin/role.validator.js';
 
 const router = Router();
 
@@ -121,6 +123,40 @@ router.delete(
   requirePermission(RESOURCES.USER, ACTIONS.DELETE),
   validate({ params: schemas.idParamSchema }),
   controller.deleteUser,
+);
+
+/* ------------------------------------------------------------------- roles -- */
+
+router.get('/roles', requirePermission(RESOURCES.ROLE, ACTIONS.READ), roleController.listRoles);
+
+router.post(
+  '/roles',
+  requirePermission(RESOURCES.ROLE, ACTIONS.CREATE),
+  validate({ body: roleSchemas.createRoleSchema }),
+  roleController.createRole,
+);
+
+// Literal before `/:id`: Express matches in order, and `permissions` would
+// otherwise be captured as a role id.
+router.patch(
+  '/roles/permissions',
+  requirePermission(RESOURCES.ROLE, ACTIONS.UPDATE),
+  validate({ body: roleSchemas.updateRolePermissionsSchema }),
+  roleController.updateRolePermissions,
+);
+
+router.patch(
+  '/roles/:id',
+  requirePermission(RESOURCES.ROLE, ACTIONS.UPDATE),
+  validate({ params: schemas.idParamSchema, body: roleSchemas.updateRoleSchema }),
+  roleController.updateRole,
+);
+
+router.delete(
+  '/roles/:id',
+  requirePermission(RESOURCES.ROLE, ACTIONS.DELETE),
+  validate({ params: schemas.idParamSchema }),
+  roleController.deleteRole,
 );
 
 /* ------------------------------------------------------------- audit logs -- */

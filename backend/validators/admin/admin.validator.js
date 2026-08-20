@@ -1,7 +1,6 @@
 ﻿import Joi from 'joi';
 
 import {
-  ROLES,
   ACCOUNT_STATUS,
   AUDIT_ACTIONS,
   LOGIN_EVENTS,
@@ -51,7 +50,9 @@ export const idParamSchema = Joi.object({ id: objectId.required() });
 export const listUsersSchema = Joi.object({
   ...pagination,
   search: Joi.string().trim().max(120).allow('', null),
-  role: Joi.string().valid(...Object.values(ROLES)).allow('', null),
+  // Shape-checked, not registry-checked -- roles now live in the `Role`
+  // collection, so the real check is the model's dynamic validator.
+  role: Joi.string().trim().max(40).allow('', null),
   status: Joi.string().valid(...Object.values(ACCOUNT_STATUS)).allow('', null),
   isEmailVerified: Joi.boolean().allow('', null),
   linked: Joi.string().valid('true', 'false').allow('', null),
@@ -63,7 +64,7 @@ export const createUserSchema = Joi.object({
   firstName: Joi.string().trim().min(1).max(60).required(),
   lastName: Joi.string().trim().min(1).max(60).required(),
   phone: Joi.string().trim().max(20).allow('', null),
-  role: Joi.string().valid(...Object.values(ROLES)).required(),
+  role: Joi.string().trim().max(40).required(),
   employeeId: objectId.allow(null),
   departmentId: objectId.allow(null),
   status: Joi.string().valid(...Object.values(ACCOUNT_STATUS)),
@@ -75,7 +76,7 @@ export const updateUserSchema = Joi.object({
   firstName: Joi.string().trim().min(1).max(60),
   lastName: Joi.string().trim().min(1).max(60),
   phone: Joi.string().trim().max(20).allow('', null),
-  role: Joi.string().valid(...Object.values(ROLES)),
+  role: Joi.string().trim().max(40),
   employeeId: objectId.allow(null),
   departmentId: objectId.allow(null),
   mustChangePassword: Joi.boolean(),

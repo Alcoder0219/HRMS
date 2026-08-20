@@ -1,6 +1,7 @@
 import mongoose from 'mongoose';
 import env from '../../config/env.js';
-import { ROLE_VALUES, ROLES, ACCOUNT_STATUS } from '../../utils/constants.js';
+import { ROLES, ACCOUNT_STATUS } from '../../utils/constants.js';
+import { getRoleCache } from '../../services/auth/roleCache.service.js';
 
 const { Schema, model } = mongoose;
 
@@ -50,7 +51,16 @@ const userSchema = new Schema(
 
     role: {
       type: String,
-      enum: { values: ROLE_VALUES, message: '{VALUE} is not a valid role' },
+      trim: true,
+      uppercase: true,
+      // Checked against the live Role collection (via its in-memory cache)
+      // rather than a fixed enum, so a role created after the app was built
+      // -- not just the ten seeded ones -- can be assigned. The cache lookup
+      // is synchronous, so this stays an ordinary Mongoose validator.
+      validate: {
+        validator: (value) => Boolean(getRoleCache()[value]),
+        message: '{VALUE} is not a valid role',
+      },
       default: ROLES.EMPLOYEE,
       index: true,
     },

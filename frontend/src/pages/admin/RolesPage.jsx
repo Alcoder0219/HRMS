@@ -10,9 +10,9 @@ import Stack from '@mui/material/Stack';
 import Typography from '@mui/material/Typography';
 
 import PageHeader from '@components/common/PageHeader.jsx';
-import authService from '@services/modules/auth.service.js';
+import adminService from '@services/modules/admin.service.js';
 import { ACTION_LABELS } from '@utils/permissions.js';
-import { ROLE_LABELS, SCOPE_LABELS } from '@utils/roles.js';
+import { SCOPE_LABELS } from '@utils/roles.js';
 import { humanize } from '@utils/format.js';
 import { PATHS } from '@routes/paths.js';
 
@@ -25,12 +25,11 @@ const SCOPE_COLOR = {
 };
 
 /**
- * The role catalogue, read from GET /auth/roles.
+ * The role catalogue: an overview card per role, read from GET /administration/roles.
  *
- * Deliberately read-only, and not because the screen was cut short: the matrix
- * is defined in backend/config/permissions.js and is the same for every tenant.
- * Editing it is a deployment, not a settings change -- which is what stops a
- * customer administrator from quietly granting themselves payroll approval.
+ * This screen itself stays read-only -- it is a summary, not a form -- but the
+ * roles it lists are no longer fixed in code. Edit permissions or manage
+ * custom roles from Administration > Permissions.
  */
 const RolesPage = () => {
   const [roles, setRoles] = useState([]);
@@ -38,8 +37,8 @@ const RolesPage = () => {
   const [error, setError] = useState(null);
 
   useEffect(() => {
-    authService
-      .roleDefinitions()
+    adminService
+      .listRoles()
       .then((response) => setRoles(response.data ?? []))
       .catch((rejection) => setError(rejection?.message ?? 'Could not load the roles'))
       .finally(() => setLoading(false));
@@ -72,20 +71,18 @@ const RolesPage = () => {
         </Alert>
       )}
 
-      <Alert severity="info" sx={{ mb: 3 }}>
-        Roles are defined in the application, not in the database, so the same guarantees hold for every
-        tenant. Changing them is a release rather than a setting.
-      </Alert>
-
       {loading && <Typography variant="body2">Loading roles…</Typography>}
 
       <Grid container spacing={2}>
         {roles.map((role) => (
-          <Grid key={role.role} size={{ xs: 12, md: 6 }}>
+          <Grid key={role.id ?? role.role} size={{ xs: 12, md: 6 }}>
             <Card variant="outlined" sx={{ height: '100%' }}>
               <CardContent>
                 <Stack direction="row" spacing={1} alignItems="center" justifyContent="space-between">
-                  <Typography variant="h6">{ROLE_LABELS[role.role] ?? humanize(role.role)}</Typography>
+                  <Stack direction="row" spacing={1} alignItems="center">
+                    <Typography variant="h6">{role.label ?? humanize(role.role)}</Typography>
+                    {!role.isSystem && <Chip label="Custom" size="small" variant="outlined" />}
+                  </Stack>
                   <Stack direction="row" spacing={0.5}>
                     <Chip
                       label={SCOPE_LABELS[role.scope] ?? role.scope}

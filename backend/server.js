@@ -3,6 +3,8 @@ import app from './app.js';
 import env from './config/env.js';
 import logger from './config/logger.js';
 import { connectDatabase, disconnectDatabase } from './config/database.js';
+import { ensureSystemRoles } from './services/admin/role.service.js';
+import { loadRoleCache } from './services/auth/roleCache.service.js';
 
 let server;
 
@@ -23,6 +25,16 @@ const start = async () => {
   // Connect before listening: a server that accepts traffic without a database
   // just converts every request into a 500.
   await connectDatabase();
+
+  /**
+   * Roles moved from a static import to the `Role` collection. `ensureSystemRoles`
+   * fills in the ten built-in roles on a fresh database without ever touching
+   * one that already exists (see its own comment), and `loadRoleCache` must run
+   * before `app.listen` -- every permission check reads the cache
+   * synchronously, so the very first request needs it already warm.
+   */
+  await ensureSystemRoles();
+  await loadRoleCache();
 
   // Let the mailer read SMTP settings configured in Administration, falling
   // back to the environment. Wired here rather than imported inside the mailer

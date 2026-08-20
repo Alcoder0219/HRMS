@@ -9,10 +9,10 @@ import {
   LOGIN_STATUS,
   ROLES,
   ROLE_LABELS,
-  ROLE_VALUES,
   TOKEN_TYPES,
 } from '../../utils/constants.js';
 import { permissionsFor, scopeFor, describeRole } from '../../helpers/permission.helper.js';
+import roleService from '../admin/role.service.js';
 
 import userRepository from '../../repositories/auth/user.repository.js';
 import loginHistoryRepository from '../../repositories/auth/loginHistory.repository.js';
@@ -90,11 +90,12 @@ export const getMyPermissions = async (userId) => {
 };
 
 /**
- * The whole matrix, for an RBAC administration screen. Read-only: the matrix
- * is code, so this reports it rather than offering to change it.
+ * The whole matrix, for an RBAC administration screen. Roles now live in the
+ * `Role` collection (see `services/admin/role.service.js`); this delegates to
+ * it so `/auth/roles` keeps its existing response shape for any consumer that
+ * only ever needed to read it.
  */
-export const listRoleDefinitions = () =>
-  ROLE_VALUES.map((role) => describeRole(role)).filter(Boolean);
+export const listRoleDefinitions = () => roleService.listRoleDefinitions();
 
 /* --------------------------------------------------- email verification */
 

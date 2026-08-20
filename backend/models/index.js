@@ -11,6 +11,7 @@
  */
 
 export { default as User } from './auth/user.model.js';
+export { default as Role } from './auth/role.model.js';
 export { default as RefreshToken } from './auth/refreshToken.model.js';
 export { default as LoginHistory } from './auth/loginHistory.model.js';
 export { default as VerificationToken } from './auth/verificationToken.model.js';

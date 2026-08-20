@@ -14,11 +14,14 @@ const SELF_SERVICE = [READ, CREATE];
 /**
  * The authorisation matrix: role -> resource -> permitted actions.
  *
- * Static and in code on purpose. Authorisation rules are a security boundary,
- * and keeping them in a reviewable, diffable, deployable file means a change
- * goes through code review rather than a database write. Per-tenant custom
- * roles, when they arrive, layer ON TOP of this baseline -- they never widen a
- * role beyond what is granted here.
+ * Seed data, not the runtime source of truth. The ten roles below are written
+ * into the `Role` collection once by `role.service.js#ensureSystemRoles()` --
+ * idempotently, via `$setOnInsert`, so an administrator's saved edit to one of
+ * them survives every later restart -- and every permission check after that
+ * reads the live collection (through the in-memory cache in
+ * `roleCache.service.js`), not this file. This stays the reviewable,
+ * diffable starting point new environments boot with; it is not consulted
+ * again once a role exists in the database.
  *
  * `scope` answers "over whose records" and is enforced separately from the
  * action check. Both must pass.

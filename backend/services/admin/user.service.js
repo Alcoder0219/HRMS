@@ -4,7 +4,8 @@ import LoginHistory from '../../models/auth/loginHistory.model.js';
 import RefreshToken from '../../models/auth/refreshToken.model.js';
 
 import ApiError from '../../utils/ApiError.js';
-import { AUDIT_ACTIONS, ROLE_RANK, ROLES, ACCOUNT_STATUS } from '../../utils/constants.js';
+import { AUDIT_ACTIONS, ROLES, ACCOUNT_STATUS } from '../../utils/constants.js';
+import { getRoleCache } from '../auth/roleCache.service.js';
 import { buildPagination, buildSort, buildSearch } from '../../utils/queryBuilder.js';
 import { recordAudit, diffObjects } from '../../helpers/audit.helper.js';
 import { hashPassword } from '../../helpers/password.helper.js';
@@ -24,7 +25,11 @@ const tenantOf = (req) => req.user?.tenantId ?? null;
 
 const SORTABLE = ['email', 'firstName', 'lastName', 'role', 'status', 'lastLoginAt', 'createdAt'];
 
-const rankOf = (role) => ROLE_RANK[role] ?? 0;
+// Reads the live cache rather than a fixed map, so a custom role's rank
+// (set on creation, or inherited from a clone) is respected here too --
+// otherwise every custom role would read as rank 0 and be manageable by
+// anyone, which is exactly the privilege-escalation path this guards against.
+const rankOf = (role) => getRoleCache()[role]?.rank ?? 0;
 
 /**
  * Nobody may create, promote to, or edit a role at or above their own.

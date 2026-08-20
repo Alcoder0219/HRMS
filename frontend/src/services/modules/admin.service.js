@@ -33,6 +33,13 @@ const adminService = {
   deleteUser: (id) => axiosClient.delete(url(`/users/${id}`)),
   exportUsers: (params) => axiosClient.get(url('/users/export'), { params: clean(params), responseType: 'blob' }),
 
+  /* -------------------------------------------------------------- roles -- */
+  listRoles: () => axiosClient.get(url('/roles')),
+  createRole: (payload) => axiosClient.post(url('/roles'), payload),
+  updateRole: (id, payload) => axiosClient.patch(url(`/roles/${id}`), payload),
+  updateRolePermissions: (updates) => axiosClient.patch(url('/roles/permissions'), { updates }),
+  deleteRole: (id) => axiosClient.delete(url(`/roles/${id}`)),
+
   /* --------------------------------------------------------- audit logs -- */
   listAuditLogs: (params) => axiosClient.get(url('/audit'), { params: clean(params) }),
   getAuditLog: (id) => axiosClient.get(url(`/audit/${id}`)),

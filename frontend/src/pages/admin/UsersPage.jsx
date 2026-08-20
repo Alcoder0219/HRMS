@@ -35,7 +35,7 @@ import { useToast } from '@contexts/ToastContext.jsx';
 import { useAppSelector } from '@hooks/useRedux.js';
 import { selectUserRole } from '@redux/slices/authSlice.js';
 import adminService from '@services/modules/admin.service.js';
-import { UserFormDialog, ResetPasswordDialog, UserDetailDialog, ROLES, ACCOUNT_STATUSES } from './UserDialogs.jsx';
+import { UserFormDialog, ResetPasswordDialog, UserDetailDialog, ACCOUNT_STATUSES } from './UserDialogs.jsx';
 import { formatDateTime, humanize } from '@utils/format.js';
 import { employeeIdentifiers } from '@utils/dataGrid.js';
 import { PATHS } from '@routes/paths.js';
@@ -53,6 +53,7 @@ const UsersPage = () => {
   const toast = useToast();
 
   const [rows, setRows] = useState([]);
+  const [roles, setRoles] = useState([]);
   const [summary, setSummary] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
@@ -101,6 +102,13 @@ const UsersPage = () => {
   useEffect(() => {
     loadSummary();
   }, [loadSummary]);
+
+  useEffect(() => {
+    adminService
+      .listRoles()
+      .then((response) => setRoles(response.data ?? []))
+      .catch(() => setRoles([]));
+  }, []);
 
   const refresh = () => {
     load();
@@ -276,7 +284,7 @@ const UsersPage = () => {
             label="Role"
             value={table.filters.role}
             onChange={setFilter('role')}
-            options={ROLES.map((role) => ({ value: role, label: humanize(role) }))}
+            options={roles.map((role) => ({ value: role.code, label: role.label }))}
             emptyLabel="All roles"
           />
         </Box>
@@ -415,6 +423,7 @@ const UsersPage = () => {
         open={formOpen}
         user={editing}
         myRole={myRole}
+        roles={roles}
         onClose={() => setFormOpen(false)}
         onSaved={() => {
           toast.success(editing ? 'Account updated' : 'Account created');

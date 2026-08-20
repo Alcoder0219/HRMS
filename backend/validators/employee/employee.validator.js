@@ -338,9 +338,15 @@ const employeeBody = {
    * from an HR form would be a route to the whole system. The role dropdown
    * omits it too, but a dropdown is a courtesy and this is the rule.
    */
-  portalRole: Joi.string().valid(
-    ...Object.values(ROLES).filter((role) => role !== ROLES.SUPER_ADMIN),
-  ),
+  // Shape-checked, not registry-checked -- roles now live in the `Role`
+  // collection. SUPER_ADMIN stays explicitly excluded here regardless: that
+  // exclusion is the actual security rule this field enforces, not an
+  // artifact of enumerating the ten built-in roles.
+  portalRole: Joi.string()
+    .trim()
+    .max(40)
+    .invalid(ROLES.SUPER_ADMIN)
+    .messages({ 'any.invalid': 'Super Admin cannot be granted from this form' }),
   /**
    * Blank means "generate one" on create and "leave it alone" on update, so an
    * empty string is accepted rather than rejected as too short.

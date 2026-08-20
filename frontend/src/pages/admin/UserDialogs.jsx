@@ -24,42 +24,20 @@ import adminService from '@services/modules/admin.service.js';
 import { formatDateTime, humanize } from '@utils/format.js';
 import { employeeIdentifiers } from '@utils/dataGrid.js';
 
-export const ROLES = [
-  'SUPER_ADMIN',
-  'COMPANY_ADMIN',
-  'HR',
-  'PAYROLL',
-  'ACCOUNTS',
-  'HOD',
-  'MANAGER',
-  'SECURITY',
-  'AUDITOR',
-  'EMPLOYEE',
-];
-
 export const ACCOUNT_STATUSES = ['PENDING', 'ACTIVE', 'SUSPENDED', 'LOCKED', 'DEACTIVATED'];
 
 /**
- * The same rule the server enforces, stated once here.
+ * The same rule the server enforces, stated once here, now over the live role
+ * catalogue rather than a fixed list -- a custom role is exactly as
+ * assignable (or not) as a built-in one, by rank.
  *
  * The client copy is a courtesy -- it stops someone filling in a form that was
- * always going to be refused. The server check is the one that matters, and
- * both are driven by the same ranking.
+ * always going to be refused. The server check is the one that matters.
  */
-const RANK = {
-  SUPER_ADMIN: 100,
-  COMPANY_ADMIN: 90,
-  HR: 70,
-  PAYROLL: 65,
-  ACCOUNTS: 60,
-  HOD: 50,
-  MANAGER: 40,
-  AUDITOR: 30,
-  SECURITY: 20,
-  EMPLOYEE: 10,
+export const assignableRoles = (myRole, roles = []) => {
+  const myRank = roles.find((role) => role.code === myRole)?.rank ?? 0;
+  return roles.filter((role) => myRank > role.rank);
 };
-
-export const assignableRoles = (myRole) => ROLES.filter((role) => (RANK[myRole] ?? 0) > (RANK[role] ?? 0));
 
 const PASSWORD_RULE = 'At least 10 characters, with an uppercase letter, a lowercase letter and a digit.';
 
@@ -70,7 +48,7 @@ const validPassword = (value) =>
 /*                             Create and edit                                */
 /* -------------------------------------------------------------------------- */
 
-export const UserFormDialog = ({ open, user = null, myRole, onClose, onSaved }) => {
+export const UserFormDialog = ({ open, user = null, myRole, roles = [], onClose, onSaved }) => {
   const editing = Boolean(user);
 
   const [form, setForm] = useState({});
@@ -110,7 +88,7 @@ export const UserFormDialog = ({ open, user = null, myRole, onClose, onSaved }) 
       [field]: event.target.type === 'checkbox' ? event.target.checked : event.target.value,
     }));
 
-  const options = assignableRoles(myRole);
+  const options = assignableRoles(myRole, roles);
 
   const handleSubmit = async () => {
     setSaving(true);
@@ -200,8 +178,8 @@ export const UserFormDialog = ({ open, user = null, myRole, onClose, onSaved }) 
         <Grid size={{ xs: 12, sm: 6 }}>
           <TextField fullWidth select size="small" label="Role" value={form.role ?? ''} onChange={set('role')} required>
             {options.map((role) => (
-              <MenuItem key={role} value={role}>
-                {humanize(role)}
+              <MenuItem key={role.code} value={role.code}>
+                {role.label}
               </MenuItem>
             ))}
           </TextField>
@@ -394,4 +372,4 @@ export const UserDetailDialog = ({ open, userId, onClose }) => {
   );
 };
 
-export default { UserFormDialog, ResetPasswordDialog, UserDetailDialog, assignableRoles, ROLES, ACCOUNT_STATUSES };
+export default { UserFormDialog, ResetPasswordDialog, UserDetailDialog, assignableRoles, ACCOUNT_STATUSES };

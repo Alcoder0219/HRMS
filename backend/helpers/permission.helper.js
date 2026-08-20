@@ -1,17 +1,15 @@
-import {
-  ACTION_VALUES,
-  RESOURCE_VALUES,
-  SCOPES,
-  SCOPE_RANK,
-  WILDCARD,
-  CROSS_TENANT_ROLES,
-} from '../utils/constants.js';
-import { PERMISSION_MATRIX, ALWAYS_SELF_SCOPED } from '../config/permissions.js';
+import { ACTION_VALUES, RESOURCE_VALUES, SCOPES, SCOPE_RANK, WILDCARD } from '../utils/constants.js';
+import { ALWAYS_SELF_SCOPED } from '../config/permissions.js';
+import { getRoleCache } from '../services/auth/roleCache.service.js';
 
 /** Canonical permission string. One format everywhere: `resource:action`. */
 export const toPermission = (resource, action) => `${resource}:${action}`;
 
-const entryFor = (role) => PERMISSION_MATRIX[role] ?? null;
+/**
+ * Roles now live in the `Role` collection; this reads the in-memory cache
+ * `roleCache.service.js` keeps warm, so every check below stays synchronous.
+ */
+const entryFor = (role) => getRoleCache()[role] ?? null;
 
 /**
  * Core check: may this role perform this action on this resource?
@@ -57,7 +55,7 @@ export const scopeFor = (role, resource = null) => {
 export const hasScopeAtLeast = (role, required, resource = null) =>
   (SCOPE_RANK[scopeFor(role, resource)] ?? 0) >= (SCOPE_RANK[required] ?? Number.MAX_SAFE_INTEGER);
 
-export const isCrossTenant = (role) => CROSS_TENANT_ROLES.includes(role);
+export const isCrossTenant = (role) => Boolean(entryFor(role)?.isCrossTenant);
 
 /**
  * Translates a role's scope into a MongoDB filter fragment, so repositories

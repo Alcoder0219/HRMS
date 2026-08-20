@@ -3,7 +3,8 @@ import RefreshToken from '../../models/auth/refreshToken.model.js';
 
 import ApiError from '../../utils/ApiError.js';
 import logger from '../../config/logger.js';
-import { ACCOUNT_STATUS, AUDIT_ACTIONS, ROLE_RANK, ROLES } from '../../utils/constants.js';
+import { ACCOUNT_STATUS, AUDIT_ACTIONS, ROLES } from '../../utils/constants.js';
+import { getRoleCache } from '../auth/roleCache.service.js';
 import { recordAudit } from '../../helpers/audit.helper.js';
 import { hashPassword, generatePassword } from '../../helpers/password.helper.js';
 
@@ -28,7 +29,7 @@ import { hashPassword, generatePassword } from '../../helpers/password.helper.js
  *     able to here either.
  */
 
-const rankOf = (role) => ROLE_RANK[role] ?? 0;
+const rankOf = (role) => getRoleCache()[role]?.rank ?? 0;
 
 /**
  * The same escalation guard `user.service.js` applies, restated for this path.

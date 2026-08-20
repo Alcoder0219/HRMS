@@ -1,8 +1,9 @@
 import ApiError from '../utils/ApiError.js';
 import logger from '../config/logger.js';
 import env from '../config/env.js';
-import { ERROR_CODES, ROLE_RANK, ACTION_LABELS, ACTION_VALUES } from '../utils/constants.js';
+import { ERROR_CODES, ACTION_LABELS, ACTION_VALUES } from '../utils/constants.js';
 import permissionHelper from '../helpers/permission.helper.js';
+import { getRoleCache } from '../services/auth/roleCache.service.js';
 
 const { can, canAny, canAll, scopeFor, hasScopeAtLeast, isCrossTenant, toPermission } =
   permissionHelper;
@@ -225,12 +226,13 @@ export const authorize =
     return next();
   };
 
-/** Rank-based: "this role or more senior". See ROLE_RANK's caveat. */
+/** Rank-based: "this role or more senior". See Role.rank's caveat in the model. */
 export const authorizeMinimum = (minimumRole) => (req, _res, next) => {
   if (!requireSession(req, next)) return undefined;
 
-  const userRank = ROLE_RANK[req.user.role] ?? 0;
-  const requiredRank = ROLE_RANK[minimumRole] ?? Number.MAX_SAFE_INTEGER;
+  const cache = getRoleCache();
+  const userRank = cache[req.user.role]?.rank ?? 0;
+  const requiredRank = cache[minimumRole]?.rank ?? Number.MAX_SAFE_INTEGER;
 
   if (userRank < requiredRank) {
     return deny(req, next, {
