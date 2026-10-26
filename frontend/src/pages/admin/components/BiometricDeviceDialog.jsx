@@ -51,10 +51,18 @@ const PROTOCOLS = [
     label: 'ZKTeco WDMS / BioTime server',
     help: 'A server that terminals push to, not a terminal itself. Works over the internet; needs a username and password.',
   },
+  {
+    value: 'ADMS_PUSH',
+    label: 'ZKTeco ADMS push — terminal calls this HRMS',
+    help: 'The terminal’s Cloud Server setting (Server Mode: ADMS) points at this HRMS or the office gateway. Nothing is polled; the device is recognised by its serial number.',
+  },
 ];
 
 /** Socket protocols answer on 4370; every HTTP one on 8081. */
-const DEFAULT_PORT = { ZK_UDP: 4370, ZK_TCP: 4370, ZK_WEB: 8081, GENERIC_API: 8081, WDMS_API: 8081 };
+const DEFAULT_PORT = { ZK_UDP: 4370, ZK_TCP: 4370, ZK_WEB: 8081, GENERIC_API: 8081, WDMS_API: 8081, ADMS_PUSH: 8081 };
+
+/** `yyyy-MM-dd` for a date input, from whatever the API sent. */
+const toDateInput = (value) => (value ? new Date(value).toISOString().slice(0, 10) : '');
 
 /** What a saved password is shown as. Posting it back means "leave it alone". */
 const MASK = '********';
@@ -68,12 +76,17 @@ const EMPTY = {
   username: '',
   password: '',
   wdmsTerminalSerial: '',
+  acceptPunchesFrom: '',
   isActive: true,
   autoSync: true,
   syncIntervalMinutes: '5',
 };
 
-const BiometricDeviceDialog = ({ open, device, submitting, error, onSubmit, onClose }) => {
+/**
+ * `prefill` seeds a NEW device -- the settings screen passes a serial that
+ * called in unregistered, so registering it is one click rather than retyping.
+ */
+const BiometricDeviceDialog = ({ open, device, prefill = null, submitting, error, onSubmit, onClose }) => {
   const [form, setForm] = useState(EMPTY);
 
   useEffect(() => {
@@ -92,13 +105,18 @@ const BiometricDeviceDialog = ({ open, device, submitting, error, onSubmit, onCl
             // it, and posting the mask back leaves the stored one alone.
             password: device.passwordSet ? MASK : '',
             wdmsTerminalSerial: device.wdmsTerminalSerial ?? '',
+            acceptPunchesFrom: toDateInput(device.acceptPunchesFrom),
             isActive: device.isActive ?? true,
             autoSync: device.autoSync ?? true,
             syncIntervalMinutes: String(device.syncIntervalMinutes ?? 5),
           }
-        : EMPTY,
+        : {
+            ...EMPTY,
+            ...(prefill?.protocol ? { protocol: prefill.protocol, port: String(DEFAULT_PORT[prefill.protocol]) } : {}),
+            ...(prefill?.serialNumber ? { serialNumber: prefill.serialNumber } : {}),
+          },
     );
-  }, [open, device]);
+  }, [open, device, prefill]);
 
   const set = (field) => (event) =>
     setForm((previous) => ({
@@ -125,17 +143,26 @@ const BiometricDeviceDialog = ({ open, device, submitting, error, onSubmit, onCl
 
   const chosen = PROTOCOLS.find((entry) => entry.value === form.protocol);
   const needsCredentials = form.protocol === 'WDMS_API';
+  // A push terminal calls in: it has no address to type, nothing to poll, and
+  // its serial number is its whole identity.
+  const isPush = form.protocol === 'ADMS_PUSH';
 
   const handleSubmit = () =>
     onSubmit({
       name: form.name.trim(),
-      ipAddress: form.ipAddress.trim(),
-      port: Number(form.port),
+      ...(isPush ? {} : { ipAddress: form.ipAddress.trim() }),
+      port: Number(form.port) || DEFAULT_PORT[form.protocol],
       protocol: form.protocol,
       serialNumber: form.serialNumber.trim() || null,
       isActive: form.isActive,
-      autoSync: form.autoSync,
+      autoSync: isPush ? false : form.autoSync,
       syncIntervalMinutes: Number(form.syncIntervalMinutes) || 5,
+      ...(isPush
+        ? {
+            // Midnight local time on the chosen day; blank means "accept everything".
+            acceptPunchesFrom: form.acceptPunchesFrom ? new Date(`${form.acceptPunchesFrom}T00:00:00`).toISOString() : null,
+          }
+        : {}),
 
       /**
        * Credentials go only with the protocol that uses them.
@@ -165,7 +192,11 @@ const BiometricDeviceDialog = ({ open, device, submitting, error, onSubmit, onCl
       error={error}
       submitting={submitting}
       submitLabel={device ? 'Save device' : 'Add device'}
-      disabled={!form.name.trim() || !form.ipAddress.trim() || !Number(form.port) || credentialsMissing}
+      disabled={
+        !form.name.trim() ||
+        (isPush ? !/^[A-Za-z0-9_-]{4,60}$/.test(form.serialNumber.trim()) : !form.ipAddress.trim() || !Number(form.port)) ||
+        credentialsMissing
+      }
       onSubmit={handleSubmit}
       onClose={onClose}
       maxWidth="sm"
@@ -183,30 +214,34 @@ const BiometricDeviceDialog = ({ open, device, submitting, error, onSubmit, onCl
           />
         </Grid>
 
-        <Grid size={{ xs: 12, sm: 8 }}>
-          <TextField
-            label="IP address or hostname"
-            size="small"
-            fullWidth
-            required
-            value={form.ipAddress}
-            onChange={set('ipAddress')}
-            placeholder="192.168.1.201"
-          />
-        </Grid>
+        {!isPush && (
+          <>
+            <Grid size={{ xs: 12, sm: 8 }}>
+              <TextField
+                label="IP address or hostname"
+                size="small"
+                fullWidth
+                required
+                value={form.ipAddress}
+                onChange={set('ipAddress')}
+                placeholder="192.168.1.201"
+              />
+            </Grid>
 
-        <Grid size={{ xs: 12, sm: 4 }}>
-          <TextField
-            label="Port"
-            type="number"
-            size="small"
-            fullWidth
-            required
-            value={form.port}
-            onChange={set('port')}
-            slotProps={{ input: { inputProps: { min: 1, max: 65535 } } }}
-          />
-        </Grid>
+            <Grid size={{ xs: 12, sm: 4 }}>
+              <TextField
+                label="Port"
+                type="number"
+                size="small"
+                fullWidth
+                required
+                value={form.port}
+                onChange={set('port')}
+                slotProps={{ input: { inputProps: { min: 1, max: 65535 } } }}
+              />
+            </Grid>
+          </>
+        )}
 
         <Grid size={12}>
           <TextField
@@ -279,16 +314,46 @@ const BiometricDeviceDialog = ({ open, device, submitting, error, onSubmit, onCl
           </>
         )}
 
+        {isPush && (
+          <Grid size={12}>
+            <Alert severity="info" variant="outlined">
+              The terminal must reach this HRMS — directly over HTTPS, or through the office gateway. Punches
+              are accepted only from a serial number registered here, and only through the gateway token or
+              office IP allowlist configured on the server.
+            </Alert>
+          </Grid>
+        )}
+
         <Grid size={12}>
           <TextField
             label="Serial number"
             size="small"
             fullWidth
+            required={isPush}
             value={form.serialNumber}
             onChange={set('serialNumber')}
-            helperText="Optional. Read from the device on a successful test, and stamped on every punch it produces."
+            helperText={
+              isPush
+                ? 'Required. Exactly as shown on the terminal under System Info → Device Info (Serial Number).'
+                : 'Optional. Read from the device on a successful test, and stamped on every punch it produces.'
+            }
           />
         </Grid>
+
+        {isPush && (
+          <Grid size={12}>
+            <TextField
+              label="Accept punches from"
+              type="date"
+              size="small"
+              fullWidth
+              value={form.acceptPunchesFrom}
+              onChange={set('acceptPunchesFrom')}
+              slotProps={{ inputLabel: { shrink: true } }}
+              helperText="On its first connection a terminal uploads everything in its memory. Older punches are stored for review but not applied to attendance. New devices default to the last 7 days."
+            />
+          </Grid>
+        )}
 
         <Grid size={{ xs: 12, sm: 6 }}>
           <FormControlLabel
@@ -297,14 +362,16 @@ const BiometricDeviceDialog = ({ open, device, submitting, error, onSubmit, onCl
           />
         </Grid>
 
-        <Grid size={{ xs: 12, sm: 6 }}>
-          <FormControlLabel
-            control={<Switch checked={form.autoSync} onChange={set('autoSync')} />}
-            label="Sync automatically"
-          />
-        </Grid>
+        {!isPush && (
+          <Grid size={{ xs: 12, sm: 6 }}>
+            <FormControlLabel
+              control={<Switch checked={form.autoSync} onChange={set('autoSync')} />}
+              label="Sync automatically"
+            />
+          </Grid>
+        )}
 
-        {form.autoSync && (
+        {!isPush && form.autoSync && (
           <Grid size={{ xs: 12, sm: 6 }}>
             <TextField
               label="Sync every (minutes)"

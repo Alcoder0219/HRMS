@@ -18,6 +18,7 @@ import Typography from '@mui/material/Typography';
 import AddIcon from '@mui/icons-material/AddOutlined';
 import DeleteIcon from '@mui/icons-material/DeleteOutlined';
 import EditIcon from '@mui/icons-material/EditOutlined';
+import InsightsIcon from '@mui/icons-material/InsightsOutlined';
 import LinkIcon from '@mui/icons-material/LinkOutlined';
 import SyncIcon from '@mui/icons-material/SyncOutlined';
 import WifiIcon from '@mui/icons-material/WifiTetheringOutlined';
@@ -29,6 +30,7 @@ import { RESOURCES, ACTIONS } from '@utils/permissions.js';
 import adminService from '@services/modules/admin.service.js';
 import { formatRelative, emptyDash } from '@utils/format.js';
 
+import BiometricActivityDialog, { ConnectionChip } from './BiometricActivityDialog.jsx';
 import BiometricDeviceDialog from './BiometricDeviceDialog.jsx';
 import BiometricMappingDialog from './BiometricMappingDialog.jsx';
 
@@ -44,13 +46,6 @@ import BiometricMappingDialog from './BiometricMappingDialog.jsx';
  * changing the NSSF rate are unrelated acts, and a shared Save would mean
  * either could not be done without the other.
  */
-
-const STATUS_COLOR = {
-  SUCCESS: 'success',
-  PARTIAL: 'warning',
-  FAILED: 'error',
-  NEVER: 'default',
-};
 
 /** Which per-row action is in flight, so only that button shows a spinner. */
 const IDLE = { deviceId: null, action: null };
@@ -76,8 +71,12 @@ const BiometricDevicesSection = () => {
   const [saving, setSaving] = useState(false);
 
   const [mappingFor, setMappingFor] = useState(null);
+  const [activityFor, setActivityFor] = useState(null);
   const [syncResult, setSyncResult] = useState(null);
   const [deleting, setDeleting] = useState(null);
+  // A serial calling in unregistered, offered as the starting point of a new device.
+  const [prefill, setPrefill] = useState(null);
+  const [integration, setIntegration] = useState(null);
 
   const load = useCallback(() => {
     if (!canRead) {
@@ -96,6 +95,12 @@ const BiometricDevicesSection = () => {
         setError(rejection?.message ?? 'Could not load the biometric devices');
       })
       .finally(() => setLoading(false));
+
+    // Best effort: the device list is usable without it.
+    adminService
+      .biometricIntegrationStatus()
+      .then((response) => setIntegration(response.data ?? null))
+      .catch(() => setIntegration(null));
   }, [canRead]);
 
   useEffect(() => {
@@ -114,11 +119,14 @@ const BiometricDevicesSection = () => {
       const result = response.data ?? {};
 
       if (result.connected) {
-        // A WDMS server reports terminals; a terminal reports its own counts.
+        // A WDMS server reports terminals, an ADMS terminal its last contact,
+        // and a polled terminal its own counts.
         const detail =
           result.info?.serverType === 'WDMS'
             ? `${result.info.terminalCount ?? 0} terminal(s) registered`
-            : `${result.info?.userCount ?? '?'} enrolled user(s), ${result.info?.logCount ?? '?'} log(s) stored`;
+            : result.info?.serverType === 'ADMS'
+              ? `last contact ${formatRelative(result.info.lastSeenAt)}${result.info.lastSeenIp ? ` from ${result.info.lastSeenIp}` : ''}`
+              : `${result.info?.userCount ?? '?'} enrolled user(s), ${result.info?.logCount ?? '?'} log(s) stored`;
 
         setToast({ severity: 'success', message: `${device.name} responded — ${detail}` });
       } else {
@@ -204,7 +212,7 @@ const BiometricDevicesSection = () => {
         <Box>
           <Typography variant="body2">{row.name}</Typography>
           <Typography variant="caption" color="text.secondary" fontFamily="monospace">
-            {row.ipAddress}:{row.port}
+            {row.protocol === 'ADMS_PUSH' ? `SN ${row.serialNumber}` : `${row.ipAddress}:${row.port}`}
           </Typography>
         </Box>
       ),
@@ -229,10 +237,17 @@ const BiometricDevicesSection = () => {
             color={row.isActive ? 'success' : 'default'}
             label={row.isActive ? 'Active' : 'Inactive'}
           />
-          {row.autoSync && row.isActive && (
-            <Tooltip title={`Polled every ${row.syncIntervalMinutes} minute(s)`}>
-              <Chip size="small" variant="outlined" label={`Auto ${row.syncIntervalMinutes}m`} />
+          {row.protocol === 'ADMS_PUSH' ? (
+            <Tooltip title="The terminal pushes each punch as it happens">
+              <Chip size="small" variant="outlined" label="Push" />
             </Tooltip>
+          ) : (
+            row.autoSync &&
+            row.isActive && (
+              <Tooltip title={`Polled every ${row.syncIntervalMinutes} minute(s)`}>
+                <Chip size="small" variant="outlined" label={`Auto ${row.syncIntervalMinutes}m`} />
+              </Tooltip>
+            )
           )}
         </Stack>
       ),
@@ -272,15 +287,9 @@ const BiometricDevicesSection = () => {
     },
     {
       key: 'lastSyncStatus',
-      label: 'Result',
-      render: (row) => (
-        <Chip
-          size="small"
-          label={row.lastSyncStatus ?? 'NEVER'}
-          color={STATUS_COLOR[row.lastSyncStatus] ?? 'default'}
-          variant={row.lastSyncStatus === 'NEVER' || !row.lastSyncStatus ? 'outlined' : 'filled'}
-        />
-      ),
+      // A push device is judged by its heartbeat, a pull device by its last sync.
+      label: 'Connection',
+      render: (row) => <ConnectionChip device={row} />,
     },
     {
       key: 'actions',
@@ -288,7 +297,15 @@ const BiometricDevicesSection = () => {
       align: 'right',
       render: (row) => (
         <Stack direction="row" spacing={0.5} justifyContent="flex-end">
-          <Tooltip title="Test the connection">
+          <Tooltip title="Status, events, sync logs and unmapped users">
+            <span>
+              <Button size="small" startIcon={<InsightsIcon />} onClick={() => setActivityFor(row)}>
+                Activity
+              </Button>
+            </span>
+          </Tooltip>
+
+          <Tooltip title={row.protocol === 'ADMS_PUSH' ? 'Check when the terminal last called in' : 'Test the connection'}>
             <span>
               <Button
                 size="small"
@@ -301,18 +318,21 @@ const BiometricDevicesSection = () => {
             </span>
           </Tooltip>
 
-          <Tooltip title="Pull logs now">
-            <span>
-              <Button
-                size="small"
-                startIcon={isBusy(row._id, 'sync') ? <CircularProgress size={14} /> : <SyncIcon />}
-                disabled={!canEdit || busy.deviceId === row._id}
-                onClick={() => handleSync(row)}
-              >
-                Sync
-              </Button>
-            </span>
-          </Tooltip>
+          {/* A push terminal cannot be pulled from; its re-upload request lives under Activity. */}
+          {row.protocol !== 'ADMS_PUSH' && (
+            <Tooltip title="Pull logs now">
+              <span>
+                <Button
+                  size="small"
+                  startIcon={isBusy(row._id, 'sync') ? <CircularProgress size={14} /> : <SyncIcon />}
+                  disabled={!canEdit || busy.deviceId === row._id}
+                  onClick={() => handleSync(row)}
+                >
+                  Sync
+                </Button>
+              </span>
+            </Tooltip>
+          )}
 
           <Tooltip title="Match enrolments to employees">
             <span>
@@ -374,8 +394,8 @@ const BiometricDevicesSection = () => {
           <Box>
             <Typography variant="h6">Biometric devices</Typography>
             <Typography variant="caption" color="text.secondary">
-              Attendance terminals polled in the background. Their punches go through the same pipeline as a
-              device push, so a synced day and a pushed day are computed identically.
+              Attendance terminals that are polled in the background or push to this HRMS (ADMS). Every punch is
+              stored, de-duplicated and passed through the same attendance rules, whichever way it arrives.
             </Typography>
           </Box>
 
@@ -409,6 +429,18 @@ const BiometricDevicesSection = () => {
           </Alert>
         )}
 
+        <IntegrationBanner
+          integration={integration}
+          hasPushDevice={devices.some((device) => device.protocol === 'ADMS_PUSH')}
+          canEdit={canEdit}
+          onRegister={(serialNumber) => {
+            setEditing(null);
+            setFormError(null);
+            setPrefill({ protocol: 'ADMS_PUSH', serialNumber });
+            setFormOpen(true);
+          }}
+        />
+
         <DataTable
           columns={columns}
           rows={devices}
@@ -418,10 +450,12 @@ const BiometricDevicesSection = () => {
           emptyMessage="Add a terminal to pull attendance from it automatically."
         />
 
-        {devices.some((device) => device.isActive && device.autoSync && !device.mappedUserCount) && (
+        {devices.some(
+          (device) => device.isActive && (device.autoSync || device.protocol === 'ADMS_PUSH') && !device.mappedUserCount,
+        ) && (
           <Alert severity="warning" sx={{ mt: 2 }}>
-            One or more active devices have no user mappings. They will be polled on schedule, read every
-            punch, and import none of them until their enrolments are mapped to employees.
+            One or more active devices have no user mappings. Their punches are stored but none reach
+            attendance until the enrolments are mapped to employees — then use Activity → Import pending punches.
           </Alert>
         )}
       </CardContent>
@@ -431,13 +465,23 @@ const BiometricDevicesSection = () => {
       <BiometricDeviceDialog
         open={formOpen}
         device={editing}
+        prefill={prefill}
         submitting={saving}
         error={formError}
         onSubmit={handleSaveDevice}
         onClose={() => {
           setFormOpen(false);
           setEditing(null);
+          setPrefill(null);
         }}
+      />
+
+      <BiometricActivityDialog
+        open={Boolean(activityFor)}
+        device={activityFor}
+        onClose={() => setActivityFor(null)}
+        onChanged={load}
+        onMapUsers={(device) => setMappingFor(device)}
       />
 
       <BiometricMappingDialog
@@ -446,7 +490,11 @@ const BiometricDevicesSection = () => {
         onClose={() => setMappingFor(null)}
         onSaved={(message) => {
           setMappingFor(null);
-          setToast({ severity: 'success', message });
+          // Mapped punches are not imported until reprocessed; say so where it is acted on.
+          setToast({
+            severity: 'success',
+            message: `${message}. Use Activity → Import pending punches to apply any stored punches.`,
+          });
           load();
         }}
       />
@@ -477,6 +525,98 @@ const BiometricDevicesSection = () => {
 };
 
 /**
+ * What the server says about the integration as a whole.
+ *
+ * Shown only when there is something to act on: a receiver that is off while
+ * a push device is configured, a production receiver with no network check, a
+ * time-zone mismatch that would grade every shift wrongly, or a terminal
+ * calling in under a serial nobody has registered.
+ */
+const SECURITY_LABEL = {
+  GATEWAY_TOKEN: 'office gateway token',
+  IP_ALLOWLIST: 'office IP allowlist',
+  GATEWAY_TOKEN_AND_IP_ALLOWLIST: 'gateway token and IP allowlist',
+  SERIAL_ONLY: 'serial number only (LAN or development)',
+};
+
+const IntegrationBanner = ({ integration, hasPushDevice, canEdit, onRegister }) => {
+  if (!integration) return null;
+
+  const { receiver, time, unregisteredDevices = [] } = integration;
+  const alerts = [];
+
+  if (hasPushDevice && !receiver.enabled) {
+    alerts.push(
+      <Alert key="off" severity="warning">
+        An ADMS push device is configured but the receiver is switched off on the server. Set ADMS_ENABLED=true on the
+        backend before pointing the terminal at it.
+      </Alert>,
+    );
+  }
+
+  if (receiver.securityMode === 'MISCONFIGURED') {
+    alerts.push(
+      <Alert key="security" severity="error">
+        The ADMS receiver is enabled but refusing every device: in production it needs ADMS_GATEWAY_TOKEN or
+        ADMS_ALLOWED_IPS on the backend.
+      </Alert>,
+    );
+  } else if (receiver.enabled && hasPushDevice) {
+    alerts.push(
+      <Alert key="mode" severity="info" variant="outlined">
+        ADMS receiver active at <code>/iclock</code>, protected by {SECURITY_LABEL[receiver.securityMode] ?? receiver.securityMode}.
+        Heartbeat every {receiver.pollDelaySeconds}s.
+      </Alert>,
+    );
+  }
+
+  (time?.warnings ?? []).forEach((warning) =>
+    alerts.push(
+      <Alert key={warning} severity="warning">
+        {warning}
+      </Alert>,
+    ),
+  );
+
+  if (unregisteredDevices.length) {
+    alerts.push(
+      <Alert key="unregistered" severity="warning">
+        <Typography variant="body2" gutterBottom>
+          {unregisteredDevices.length === 1 ? 'A terminal is' : 'Terminals are'} calling in with a serial number that is
+          not registered. Their requests are refused until registered:
+        </Typography>
+        <Stack spacing={0.5}>
+          {unregisteredDevices.map((entry) => (
+            <Stack key={entry.serialNumber} direction="row" spacing={1} alignItems="center">
+              <Typography variant="caption" fontFamily="monospace">
+                {entry.serialNumber}
+              </Typography>
+              <Typography variant="caption" color="text.secondary">
+                {entry.requests} request(s), last {formatRelative(entry.lastSeenAt)}
+                {entry.lastSeenIp ? ` from ${entry.lastSeenIp}` : ''}
+              </Typography>
+              {canEdit && (
+                <Button size="small" onClick={() => onRegister(entry.serialNumber)}>
+                  Register
+                </Button>
+              )}
+            </Stack>
+          ))}
+        </Stack>
+      </Alert>,
+    );
+  }
+
+  if (!alerts.length) return null;
+
+  return (
+    <Stack spacing={1} sx={{ mb: 2 }}>
+      {alerts}
+    </Stack>
+  );
+};
+
+/**
  * What one sync actually did.
  *
  * Reports the gap between found and synced explicitly rather than showing a
@@ -498,7 +638,7 @@ const SyncResultDialog = ({ result, onClose }) => {
     </Stack>
   );
 
-  const skipped = result.punchesFound - result.punchesSynced;
+  const skipped = result.punchesFound - result.punchesSynced - (result.duplicates ?? 0) - (result.held ?? 0);
 
   return (
     <Dialog open onClose={onClose} maxWidth="xs" fullWidth>
@@ -513,19 +653,20 @@ const SyncResultDialog = ({ result, onClose }) => {
         {line('Punches on device', result.punchesFound ?? 0)}
         {line('Punches imported', result.punchesSynced ?? 0)}
         {line('Attendance days updated', result.daysUpdated ?? 0)}
+        {result.duplicates > 0 && line('Already imported', result.duplicates)}
+        {result.held > 0 && line('Held (locked or corrected days)', result.held)}
         {skipped > 0 &&
           line(
-            'Skipped',
-            // Already-imported punches are the ordinary reason and are not a
-            // problem; unmapped ones are.
-            `${skipped} (already imported or unmapped)`,
+            'Not imported',
+            // Older than the high-water mark, or unmapped.
+            `${skipped} (before the last sync, or unmapped)`,
           )}
 
         {result.unmappedUserIds?.length > 0 && (
           <Alert severity="warning" sx={{ mt: 2 }}>
             <Typography variant="body2" gutterBottom>
-              {result.unmappedUserIds.length} device user ID(s) are not mapped to an employee, so their
-              punches were discarded:
+              {result.unmappedUserIds.length} device user ID(s) are not mapped to an employee. Their punches
+              are stored — map them, then use Activity → Import pending punches:
             </Typography>
             <Typography variant="caption" fontFamily="monospace">
               {result.unmappedUserIds.join(', ')}

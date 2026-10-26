@@ -53,6 +53,44 @@ const start = async () => {
   const { startBiometricSyncJob } = await import('./jobs/biometricSync.job.js');
   startBiometricSyncJob();
 
+  /**
+   * The ADMS receiver's configuration, checked once at boot.
+   *
+   * A mistyped zone name would otherwise surface as every pushed punch being
+   * rejected; failing here names the variable instead.
+   */
+  if (env.biometricTimeZone) {
+    const { assertTimeZone } = await import('./helpers/adms.helper.js');
+    try {
+      assertTimeZone(env.biometricTimeZone);
+    } catch {
+      throw new Error(`[config] BIOMETRIC_DEVICE_TIMEZONE is not a valid IANA time zone: ${env.biometricTimeZone}`);
+    }
+  }
+
+  if (env.adms.enabled) {
+    const { admsSecurityMode } = await import('./middlewares/admsGuard.js');
+    const { default: BiometricEvent } = await import('./models/attendance/biometricEvent.model.js');
+
+    /**
+     * Checked, not created: production runs with autoIndex off and index builds
+     * are an operator's decision (npm run migrate:biometric). Without this one,
+     * concurrent retries of the same punch can store it twice, so its absence
+     * is loud rather than silent.
+     */
+    const indexes = await BiometricEvent.collection.indexes().catch(() => []);
+    if (!indexes.some((index) => index.key?.dedupKey === 1 && index.unique)) {
+      logger.error('biometricevents.dedupKey unique index is missing -- run `npm run migrate:biometric`');
+    }
+
+    const mode = admsSecurityMode();
+    const log = mode === 'MISCONFIGURED' ? logger.error.bind(logger) : logger.info.bind(logger);
+    log(`ADMS receiver enabled at /iclock (security: ${mode})`, {
+      deviceTimeZone: env.biometricTimeZone ?? 'server local',
+      pollDelaySeconds: env.adms.pollDelaySeconds,
+    });
+  }
+
   // Binding to env.host (0.0.0.0 by default) is what accepts connections from
   // other machines. Omitting the argument binds to every interface too, but
   // making it explicit means it can be locked down to one interface in

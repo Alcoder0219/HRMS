@@ -13,6 +13,7 @@ import { apiLimiter } from './middlewares/rateLimiter.js';
 import notFound from './middlewares/notFound.js';
 import errorHandler from './middlewares/errorHandler.js';
 import routes from './routes/index.js';
+import admsRoutes from './routes/adms/adms.routes.js';
 
 const app = express();
 
@@ -38,6 +39,15 @@ app.use(cors(corsOptions));
 app.use(requestId);
 app.use(httpLogger);
 
+/* ------------------------------------------------------- biometric receiver */
+// ZKTeco terminals in ADMS mode push to this fixed path. Mounted BEFORE the
+// body parsers on purpose: a terminal labels its tab-separated upload as
+// form-urlencoded, and the urlencoded parser would consume it before the
+// receiver's own text parser could read it. Outside the API prefix and the
+// JWT middleware because the firmware can be given only a host and a port;
+// its own guard chain protects it instead. Off unless ADMS_ENABLED=true.
+app.use('/iclock', admsRoutes);
+
 /* ------------------------------------------------------------ body parsing */
 // Bounded payloads: an unbounded JSON body is a trivial memory-exhaustion
 // vector. File uploads bypass this entirely and go through Multer.
@@ -62,6 +72,9 @@ app.get('/health', (_req, res) => {
     environment: env.nodeEnv,
     uptime: Math.round(process.uptime()),
     database: dbStates[mongoose.connection.readyState] ?? 'unknown',
+    // Whether the ADMS receiver is switched on -- nothing about its devices,
+    // which is what the authenticated integration status endpoint is for.
+    biometricReceiver: env.adms.enabled ? 'enabled' : 'disabled',
     timestamp: new Date().toISOString(),
   });
 });

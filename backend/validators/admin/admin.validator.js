@@ -231,8 +231,9 @@ const deviceBody = {
   name: Joi.string().trim().min(2).max(100),
   ipAddress: deviceHost,
   port: Joi.number().integer().min(1).max(65535),
-  protocol: Joi.string().valid('ZK_UDP', 'ZK_TCP', 'ZK_WEB', 'GENERIC_API', 'WDMS_API'),
+  protocol: Joi.string().valid('ZK_UDP', 'ZK_TCP', 'ZK_WEB', 'GENERIC_API', 'WDMS_API', 'ADMS_PUSH'),
   serialNumber: Joi.string().trim().max(60).allow('', null),
+  acceptPunchesFrom: Joi.date().iso().allow(null),
 
   /* ------------------------------------------------- WDMS credentials -- */
   username: Joi.string().trim().max(150).allow('', null),
@@ -256,8 +257,27 @@ const deviceBody = {
  * fails silently every five minutes is exactly the failure this whole feature
  * is meant to make visible.
  */
+/**
+ * An ADMS device is the mirror image: it has no address worth typing -- it
+ * calls in from wherever the office router puts it -- and is known only by its
+ * serial, so the serial is mandatory and the address is not.
+ */
+const pushSerial = Joi.string()
+  .trim()
+  .pattern(/^[A-Za-z0-9_-]{4,60}$/)
+  .required()
+  .messages({
+    'any.required': 'An ADMS device needs the serial number shown in its System Info',
+    'string.empty': 'An ADMS device needs the serial number shown in its System Info',
+    'string.pattern.base': 'A serial number is 4–60 letters, digits, dashes or underscores',
+  });
+
 export const createBiometricDeviceSchema = Joi.object(deviceBody)
-  .fork(['name', 'ipAddress', 'port'], (schema) => schema.required())
+  .fork(['name', 'port'], (schema) => schema.required())
+  .when(Joi.object({ protocol: Joi.valid('ADMS_PUSH') }).unknown(), {
+    then: Joi.object({ serialNumber: pushSerial, ipAddress: deviceHost.allow('', null) }),
+    otherwise: Joi.object({ ipAddress: deviceHost.required() }),
+  })
   .when(Joi.object({ protocol: Joi.valid('WDMS_API') }).unknown(), {
     then: Joi.object({
       username: Joi.string().trim().min(1).max(150).required().messages({
@@ -297,6 +317,39 @@ export const mapDeviceUsersSchema = Joi.object({
     )
     .max(5000)
     .required(),
+});
+
+const paging = {
+  page: Joi.number().integer().min(1).default(1),
+  limit: Joi.number().integer().min(1).max(200).default(25),
+};
+
+export const deviceEventsQuerySchema = Joi.object({
+  ...paging,
+  status: Joi.string().valid('IMPORTED', 'UNMAPPED', 'HELD', 'IGNORED', 'FAILED', 'PENDING'),
+  from: Joi.date().iso(),
+  to: Joi.date().iso().min(Joi.ref('from')),
+});
+
+export const deviceLogsQuerySchema = Joi.object(paging);
+
+/**
+ * Reprocess. HELD events are opt-in because including them overrides a human
+ * correction; IGNORED ones are opt-in because they are a backlog someone chose
+ * not to import.
+ */
+export const reprocessDeviceSchema = Joi.object({
+  includeHeld: Joi.boolean().default(false),
+  includeIgnored: Joi.boolean().default(false),
+  acceptPunchesFrom: Joi.date().iso().allow(null),
+  from: Joi.date().iso(),
+  to: Joi.date().iso().min(Joi.ref('from')),
+});
+
+export const deviceCommandSchema = Joi.object({
+  type: Joi.string().valid('QUERY_ATTLOG', 'QUERY_USERINFO', 'INFO').required(),
+  from: Joi.date().iso().when('type', { is: 'QUERY_ATTLOG', then: Joi.required() }),
+  to: Joi.date().iso().min(Joi.ref('from')).when('type', { is: 'QUERY_ATTLOG', then: Joi.required() }),
 });
 
 /* --------------------------------------------------------------- restore -- */
@@ -344,4 +397,8 @@ export default {
   updateBiometricDeviceSchema,
   deviceIdParamSchema,
   mapDeviceUsersSchema,
+  deviceEventsQuerySchema,
+  deviceLogsQuerySchema,
+  reprocessDeviceSchema,
+  deviceCommandSchema,
 };

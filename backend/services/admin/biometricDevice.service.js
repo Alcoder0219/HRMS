@@ -1,11 +1,17 @@
 import AppSettings from '../../models/admin/appSettings.model.js';
 import Employee from '../../models/employee/employee.model.js';
 
+import env from '../../config/env.js';
 import ApiError from '../../utils/ApiError.js';
 import logger from '../../config/logger.js';
-import { AUDIT_ACTIONS } from '../../utils/constants.js';
+import { ACTIONS, AUDIT_ACTIONS, RESOURCES } from '../../utils/constants.js';
 import { recordAudit, diffObjects } from '../../helpers/audit.helper.js';
+import { can } from '../../helpers/permission.helper.js';
+import { ADMS_COMMANDS, timeZoneOffsetMinutes } from '../../helpers/adms.helper.js';
+import { admsSecurityMode } from '../../middlewares/admsGuard.js';
 import biometricSync from '../biometric/biometricSync.service.js';
+import biometricEvents from '../biometric/biometricEvent.service.js';
+import { listUnregisteredSerials } from '../biometric/admsReceiver.service.js';
 
 /**
  * Managing the biometric terminals a tenant owns.
@@ -20,6 +26,10 @@ import biometricSync from '../biometric/biometricSync.service.js';
  */
 
 const tenantOf = (req) => req.user?.tenantId ?? null;
+
+/** How a device is named in logs: its address, or for a push device its serial. */
+const addressOf = (device) =>
+  device.protocol === 'ADMS_PUSH' ? `SN ${device.serialNumber}` : `${device.ipAddress}:${device.port}`;
 
 /** What a saved password is echoed back as. Never the password itself. */
 const MASK = '********';
@@ -68,6 +78,29 @@ const present = (device) => ({
   port: device.port,
   protocol: device.protocol,
   serialNumber: device.serialNumber,
+  acceptPunchesFrom: device.acceptPunchesFrom ?? null,
+
+  /**
+   * The push session, for an ADMS device -- what the screen needs to say
+   * whether the terminal is talking to us. The enrolment list and command
+   * history are summarised; the status endpoint has the detail.
+   */
+  adms:
+    device.protocol === 'ADMS_PUSH'
+      ? {
+          online: biometricSync.isPushDeviceOnline(device, { pollDelaySeconds: env.adms.pollDelaySeconds }),
+          lastSeenAt: device.adms?.lastSeenAt ?? null,
+          lastSeenIp: device.adms?.lastSeenIp ?? null,
+          lastHandshakeAt: device.adms?.lastHandshakeAt ?? null,
+          firmware: device.adms?.firmware ?? null,
+          pushVersion: device.adms?.pushVersion ?? null,
+          lastEventAt: device.adms?.lastEventAt ?? null,
+          lastEventReceivedAt: device.adms?.lastEventReceivedAt ?? null,
+          enrolmentCount: device.adms?.enrolments?.length ?? 0,
+          pendingCommands: (device.adms?.commands ?? []).filter((command) => ['QUEUED', 'SENT'].includes(command.status)).length,
+          recentCommands: (device.adms?.commands ?? []).slice(-10).reverse(),
+        }
+      : null,
 
   /**
    * The username is shown; the password never is, in any form.
@@ -102,7 +135,10 @@ export const listDevices = async (req) => {
  * Two devices on the same address would poll the same terminal twice and
  * import every punch twice, so the pair is treated as an identity.
  */
-const assertAddressFree = (settings, { ipAddress, port }, exceptId = null) => {
+const assertAddressFree = (settings, { ipAddress, port, protocol }, exceptId = null) => {
+  // A push device has no address of its own to clash on; its serial is its identity.
+  if (protocol === 'ADMS_PUSH') return;
+
   const clash = settings.biometricDevices.find(
     (entry) =>
       entry.ipAddress === ipAddress &&
@@ -115,11 +151,60 @@ const assertAddressFree = (settings, { ipAddress, port }, exceptId = null) => {
   }
 };
 
-export const addDevice = async (payload, req) => {
+/**
+ * An ADMS serial is the device's identity -- the receiver routes every request
+ * by it, to a tenant as well as a device -- so it must be unique across the
+ * whole installation, not merely within one tenant's settings.
+ */
+const assertSerialFree = async (serialNumber, exceptId = null) => {
+  const clash = await AppSettings.findOne(
+    { biometricDevices: { $elemMatch: { serialNumber, protocol: 'ADMS_PUSH' } } },
+    { tenantId: 1, biometricDevices: { $elemMatch: { serialNumber, protocol: 'ADMS_PUSH' } } },
+  ).lean();
+
+  const device = clash?.biometricDevices?.[0];
+  if (device && String(device._id) !== String(exceptId ?? '')) {
+    throw ApiError.conflict(`A device with serial ${serialNumber} is already registered`);
+  }
+};
+
+/**
+ * The fields a push device stores differently.
+ *
+ * Its serial is upper-cased because the receiver upper-cases the one on the
+ * wire. It has no address -- whatever is typed in the form would be a guess at
+ * the office router's -- and nothing is ever polled, so auto-sync is off.
+ */
+const normalisePush = (payload, existing = null) => {
+  const protocol = payload.protocol ?? existing?.protocol;
+  if (protocol !== 'ADMS_PUSH') return payload;
+
+  const serialNumber = String(payload.serialNumber ?? existing?.serialNumber ?? '').trim().toUpperCase();
+  if (!serialNumber) throw ApiError.badRequest('An ADMS device needs the serial number shown in its System Info');
+
+  return { ...payload, serialNumber, ipAddress: payload.ipAddress || null, autoSync: false };
+};
+
+export const addDevice = async (rawPayload, req) => {
+  const payload = normalisePush(rawPayload);
   const settings = await load(tenantOf(req));
   assertAddressFree(settings, payload);
+  if (payload.protocol === 'ADMS_PUSH') await assertSerialFree(payload.serialNumber);
 
-  settings.biometricDevices.push({ ...payload, lastSyncStatus: 'NEVER' });
+  /**
+   * A new push device accepts only the last week by default.
+   *
+   * On its first connection a terminal uploads everything it holds, and the
+   * HRMS may already have that period from another source or have paid it.
+   * The same seven days a pull device's first sync takes; an administrator
+   * who wants the backlog back-dates this and reprocesses.
+   */
+  const acceptPunchesFrom =
+    payload.protocol === 'ADMS_PUSH' && payload.acceptPunchesFrom === undefined
+      ? new Date(Date.now() - 7 * 86_400_000)
+      : (payload.acceptPunchesFrom ?? null);
+
+  settings.biometricDevices.push({ ...payload, acceptPunchesFrom, lastSyncStatus: 'NEVER' });
   settings.updatedBy = req.user?.id ?? null;
   await settings.save();
 
@@ -129,26 +214,35 @@ export const addDevice = async (payload, req) => {
     req,
     entity: 'BiometricDevice',
     entityId: device._id,
-    entityLabel: `${device.name} (${device.ipAddress}:${device.port})`,
+    entityLabel: `${device.name} (${addressOf(device)})`,
     action: AUDIT_ACTIONS.CREATE,
     metadata: { protocol: device.protocol, autoSync: device.autoSync },
   });
 
-  logger.info('Biometric device added', { name: device.name, address: `${device.ipAddress}:${device.port}` });
+  logger.info('Biometric device added', { name: device.name, address: addressOf(device) });
 
   return present(device);
 };
 
-export const updateDevice = async (deviceId, payload, req) => {
+export const updateDevice = async (deviceId, rawPayload, req) => {
   // With secrets: an edit has to be able to tell "no password was ever set"
   // from "the form sent the mask back unchanged".
   const { settings, device } = await loadDevice(tenantOf(req), deviceId, { withSecrets: true });
+  const payload = normalisePush(rawPayload, device);
 
   assertAddressFree(
     settings,
-    { ipAddress: payload.ipAddress ?? device.ipAddress, port: payload.port ?? device.port },
+    {
+      ipAddress: payload.ipAddress ?? device.ipAddress,
+      port: payload.port ?? device.port,
+      protocol: payload.protocol ?? device.protocol,
+    },
     deviceId,
   );
+
+  if ((payload.protocol ?? device.protocol) === 'ADMS_PUSH') {
+    await assertSerialFree(payload.serialNumber ?? device.serialNumber, deviceId);
+  }
 
   const before = device.toObject();
 
@@ -198,7 +292,7 @@ export const updateDevice = async (deviceId, payload, req) => {
 
 export const removeDevice = async (deviceId, req) => {
   const { settings, device } = await loadDevice(tenantOf(req), deviceId);
-  const label = `${device.name} (${device.ipAddress}:${device.port})`;
+  const label = `${device.name} (${addressOf(device)})`;
 
   device.deleteOne();
   settings.updatedBy = req.user?.id ?? null;
@@ -230,7 +324,12 @@ export const removeDevice = async (deviceId, req) => {
  */
 export const testDevice = async (deviceId, req) => {
   const { settings, device } = await loadDevice(tenantOf(req), deviceId, { withSecrets: true });
-  const outcome = await biometricSync.testConnection(device);
+  const outcome = await biometricSync.testConnection(device, { pollDelaySeconds: env.adms.pollDelaySeconds });
+
+  // A push device's "test" only reads what the receiver recorded. Writing a
+  // FAILED status from it would overwrite the last real upload's result with
+  // an opinion about a heartbeat.
+  if (device.protocol === 'ADMS_PUSH') return { ...outcome, device: present(device) };
 
   device.lastAttemptAt = new Date();
 
@@ -259,6 +358,12 @@ export const testDevice = async (deviceId, req) => {
 export const syncDevice = async (deviceId, req) => {
   const tenantId = tenantOf(req);
   const { device } = await loadDevice(tenantId, deviceId, { withSecrets: true });
+
+  if (device.protocol === 'ADMS_PUSH') {
+    throw ApiError.badRequest(
+      'An ADMS device pushes its punches as they happen. Use "Request upload" to ask it to resend a date range.',
+    );
+  }
 
   const result = await biometricSync.syncAttendanceLogs(device, tenantId, req);
 
@@ -289,14 +394,38 @@ export const syncDevice = async (deviceId, req) => {
  * who the device knows, who they map to, and who is not mapped at all.
  */
 export const deviceUsers = async (deviceId, req) => {
-  const { device } = await loadDevice(tenantOf(req), deviceId, { withSecrets: true });
+  const tenantId = tenantOf(req);
+  const { device } = await loadDevice(tenantId, deviceId, { withSecrets: true });
 
-  const users = await biometricSync.getDeviceUsers(device);
+  const users = await biometricSync.getDeviceUsers(device, { tenantId });
   const mapped = new Map((device.userMappings ?? []).map((entry) => [entry.deviceUserId, entry.employeeCode]));
+
+  /**
+   * A push device's roster is only what it has chosen to report, so a mapping
+   * missing from it is not evidence the enrolment is gone. Listed with the
+   * name it was saved under, so it is shown -- and kept on save -- rather than
+   * reported as orphaned and dropped.
+   */
+  if (device.protocol === 'ADMS_PUSH') {
+    const listed = new Set(users.map((user) => user.userId));
+    (device.userMappings ?? [])
+      .filter((entry) => !listed.has(entry.deviceUserId))
+      .forEach((entry) =>
+        users.push({ userId: entry.deviceUserId, name: entry.deviceUserName ?? null, role: null, cardNumber: null }),
+      );
+  }
+
+  // How many stored punches each ID has waiting -- which unmapped person to
+  // map first is the one who has been clocking in all week.
+  const waiting = new Map(
+    (await biometricEvents.unmappedUsers(tenantId, device._id)).map((entry) => [entry.deviceUserId, entry]),
+  );
 
   const rows = users.map((user) => ({
     ...user,
     employeeCode: mapped.get(user.userId) ?? null,
+    unmappedPunches: waiting.get(user.userId)?.punches ?? 0,
+    lastPunchAt: waiting.get(user.userId)?.lastPunchAt ?? null,
   }));
 
   /**
@@ -393,6 +522,236 @@ export const mapUsers = async (deviceId, mappings, req) => {
   return { ...present(device), userMappings: cleaned };
 };
 
+/* -------------------------------------------------------------------------- */
+/*                          Events, logs and reprocess                        */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Everything the device's status panel shows, in one call: the device, the
+ * event counters, and the review queue of unmapped IDs.
+ */
+export const deviceStatus = async (deviceId, req) => {
+  const tenantId = tenantOf(req);
+  const { device } = await loadDevice(tenantId, deviceId);
+
+  const [stats, unmapped] = await Promise.all([
+    biometricEvents.deviceStats(tenantId, device._id),
+    biometricEvents.unmappedUsers(tenantId, device._id),
+  ]);
+
+  const names = new Map((device.adms?.enrolments ?? []).map((entry) => [entry.userId, entry.name]));
+
+  return {
+    device: present(device),
+    stats,
+    unmappedUsers: unmapped.map((entry) => ({ ...entry, name: names.get(entry.deviceUserId) ?? null })),
+  };
+};
+
+export const deviceEvents = async (deviceId, query, req) => {
+  const tenantId = tenantOf(req);
+  const { device } = await loadDevice(tenantId, deviceId);
+  return biometricEvents.listEvents(tenantId, device._id, query);
+};
+
+export const deviceLogs = async (deviceId, query, req) => {
+  const tenantId = tenantOf(req);
+  const { device } = await loadDevice(tenantId, deviceId);
+  return biometricEvents.listLogs(tenantId, device._id, query);
+};
+
+/**
+ * Re-applies the device's stored events that are not yet in attendance.
+ *
+ * Optionally moves the accept-from date first, which is how a backlog the
+ * device uploaded on its first connection is deliberately imported.
+ * Including HELD events overrides manual corrections and is audited as such.
+ */
+export const reprocessDevice = async (deviceId, options, req) => {
+  /**
+   * Overriding a correction is an attendance decision, not device admin.
+   *
+   * The route already requires tenant:update. Re-applying HELD punches
+   * additionally requires the authority to correct attendance by hand --
+   * attendance:approve, the same grant the manual-entry endpoint demands --
+   * because that is exactly what it does.
+   */
+  if (options.includeHeld && !can(req.user?.role, RESOURCES.ATTENDANCE, ACTIONS.APPROVE)) {
+    throw ApiError.forbidden('Applying held punches over corrected days requires attendance approval rights');
+  }
+
+  const tenantId = tenantOf(req);
+  const { settings, device } = await loadDevice(tenantId, deviceId);
+
+  if (options.acceptPunchesFrom !== undefined) {
+    device.acceptPunchesFrom = options.acceptPunchesFrom ? new Date(options.acceptPunchesFrom) : null;
+    settings.updatedBy = req.user?.id ?? null;
+    await settings.save();
+  }
+
+  const result = await biometricEvents.reprocessEvents({
+    tenantId,
+    device: device.toObject(),
+    includeHeld: Boolean(options.includeHeld),
+    includeIgnored: Boolean(options.includeIgnored),
+    from: options.from ?? null,
+    to: options.to ?? null,
+    req,
+  });
+
+  await recordAudit({
+    req,
+    entity: 'BiometricDevice',
+    entityId: device._id,
+    entityLabel: device.name,
+    action: AUDIT_ACTIONS.IMPORT,
+    metadata: {
+      trigger: 'REPROCESS',
+      includeHeld: Boolean(options.includeHeld),
+      includeIgnored: Boolean(options.includeIgnored),
+      acceptPunchesFrom: options.acceptPunchesFrom ?? undefined,
+      examined: result.received,
+      imported: result.imported,
+      held: result.held,
+      stillUnmapped: result.unmapped,
+    },
+  });
+
+  return result;
+};
+
+/** How long a date range may be. A terminal re-uploading a year would take hours. */
+const MAX_UPLOAD_RANGE_DAYS = 62;
+
+/**
+ * Queues a request for an ADMS terminal to do something on its next poll.
+ *
+ * Only the whitelisted read commands exist -- see `ADMS_COMMANDS`. Whether a
+ * particular firmware honours `DATA QUERY ATTLOG` is not something the server
+ * can know in advance; the command's return code is recorded when the device
+ * reports it, and the screen shows it.
+ */
+export const queueCommand = async (deviceId, { type, from = null, to = null }, req) => {
+  const tenantId = tenantOf(req);
+  const { settings, device } = await loadDevice(tenantId, deviceId);
+
+  if (device.protocol !== 'ADMS_PUSH') {
+    throw ApiError.badRequest('Commands can only be queued for an ADMS_PUSH device');
+  }
+
+  if (!Object.values(ADMS_COMMANDS).includes(type)) {
+    throw ApiError.badRequest(`Unsupported command: ${type}`);
+  }
+
+  if (type === ADMS_COMMANDS.QUERY_ATTLOG) {
+    if (!from || !to || new Date(from) > new Date(to)) {
+      throw ApiError.badRequest('An upload request needs a start and an end, in that order');
+    }
+    if ((new Date(to) - new Date(from)) / 86_400_000 > MAX_UPLOAD_RANGE_DAYS) {
+      throw ApiError.badRequest(`Request at most ${MAX_UPLOAD_RANGE_DAYS} days at a time`);
+    }
+  }
+
+  device.adms = device.adms ?? {};
+  const commandId = device.adms.nextCommandId ?? 1;
+
+  device.adms.commands = [
+    // History is kept short; the sync log carries the long record.
+    ...(device.adms.commands ?? []).slice(-49),
+    {
+      commandId,
+      type,
+      from: from ? new Date(from) : null,
+      to: to ? new Date(to) : null,
+      status: 'QUEUED',
+      queuedAt: new Date(),
+      requestedBy: req.user?.id ?? null,
+    },
+  ];
+  device.adms.nextCommandId = commandId + 1;
+
+  settings.updatedBy = req.user?.id ?? null;
+  await settings.save();
+
+  await recordAudit({
+    req,
+    entity: 'BiometricDevice',
+    entityId: device._id,
+    entityLabel: device.name,
+    action: AUDIT_ACTIONS.UPDATE,
+    metadata: { command: type, commandId, from, to },
+  });
+
+  return present(device);
+};
+
+/* -------------------------------------------------------------------------- */
+/*                             Integration status                             */
+/* -------------------------------------------------------------------------- */
+
+const serverTimeZone = () => Intl.DateTimeFormat().resolvedOptions().timeZone ?? 'UTC';
+
+/**
+ * Whether device timestamps and shift rules are being read in the office's zone.
+ *
+ * Shift start times, lateness and the day boundary are all evaluated in the
+ * SERVER's local zone -- that is how the attendance engine has always worked,
+ * and this integration does not change it. A server running in UTC for an
+ * office in Dar es Salaam would grade a 09:00 shift as starting at noon. That
+ * is a deployment setting (TZ), and it is reported rather than worked around.
+ */
+const timeZoneCheck = (companyTimeZone) => {
+  const server = serverTimeZone();
+  const serverOffset = -new Date().getTimezoneOffset();
+  const deviceZone = env.biometricTimeZone ?? server;
+
+  let companyOffset = null;
+  try {
+    companyOffset = companyTimeZone ? timeZoneOffsetMinutes(companyTimeZone) : null;
+  } catch {
+    companyOffset = null;
+  }
+
+  const warnings = [];
+  if (companyOffset !== null && companyOffset !== serverOffset) {
+    warnings.push(
+      `The server runs in ${server} (UTC${serverOffset >= 0 ? '+' : ''}${serverOffset / 60}) but the company is in ` +
+        `${companyTimeZone}. Shift times and the attendance day are evaluated in the server's zone — set TZ=${companyTimeZone} on the backend.`,
+    );
+  }
+
+  return { serverTimeZone: server, serverUtcOffsetMinutes: serverOffset, deviceTimeZone: deviceZone, companyTimeZone, warnings };
+};
+
+/** The receiver's configuration and every device's link state, for the settings screen. */
+export const integrationStatus = async (req) => {
+  const settings = await load(tenantOf(req));
+
+  return {
+    receiver: {
+      enabled: env.adms.enabled,
+      path: '/iclock',
+      securityMode: env.adms.enabled ? admsSecurityMode() : 'DISABLED',
+      gatewayTokenConfigured: Boolean(env.adms.gatewayToken),
+      allowedIpCount: env.adms.allowedIps.length,
+      pollDelaySeconds: env.adms.pollDelaySeconds,
+    },
+    time: timeZoneCheck(settings.company?.timezone ?? null),
+    unregisteredDevices: env.adms.enabled ? listUnregisteredSerials() : [],
+    devices: settings.biometricDevices.map((device) => ({
+      _id: device._id,
+      name: device.name,
+      protocol: device.protocol,
+      serialNumber: device.serialNumber,
+      isActive: device.isActive,
+      online: device.protocol === 'ADMS_PUSH' ? present(device).adms.online : null,
+      lastSyncAt: device.lastSyncAt,
+      lastSyncStatus: device.lastSyncStatus ?? 'NEVER',
+    })),
+    checkedAt: new Date(),
+  };
+};
+
 export default {
   listDevices,
   addDevice,
@@ -402,4 +761,10 @@ export default {
   syncDevice,
   deviceUsers,
   mapUsers,
+  deviceStatus,
+  deviceEvents,
+  deviceLogs,
+  reprocessDevice,
+  queueCommand,
+  integrationStatus,
 };

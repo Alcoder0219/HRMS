@@ -29,6 +29,47 @@ export const startOfDay = (date) => {
   return result;
 };
 
+const minutesOfDay = (hhmm) => {
+  const [hours, minutes] = String(hhmm).split(':').map(Number);
+  return hours * 60 + minutes;
+};
+
+/**
+ * The attendance day a device punch belongs to.
+ *
+ * For a day shift that is simply the calendar day. For a shift that crosses
+ * midnight it is not: the 05:58 exit from a 22:00-06:00 shift belongs to the
+ * day the shift STARTED, and filing it under the next calendar day splits one
+ * shift into two half-records -- an entry with no exit, and an exit with no
+ * entry -- both of which the engine then grades as missing punches.
+ *
+ * The boundary is the middle of the off-duty gap. For 22:00-06:00 that is
+ * 14:00: anything earlier belongs to the shift that began the night before,
+ * anything later to the one starting tonight. It is the one point equally far
+ * from both shifts, so an early arrival and a late exit are both still read
+ * correctly.
+ *
+ * Only shifts whose end is not after their start are treated this way -- the
+ * same test `resolveShiftWindow` uses to extend the window past midnight -- so
+ * this and the engine always agree about which shifts cross it.
+ */
+export const attributeShiftDay = (time, shift = null) => {
+  const calendarDay = startOfDay(time);
+  if (!shift?.startTime || !shift?.endTime) return calendarDay;
+
+  const start = minutesOfDay(shift.startTime);
+  const end = minutesOfDay(shift.endTime);
+  if (!Number.isFinite(start) || !Number.isFinite(end) || end > start) return calendarDay;
+
+  const cutoff = end + (start - end) / 2;
+  const punchMinutes = new Date(time).getHours() * 60 + new Date(time).getMinutes();
+  if (punchMinutes >= cutoff) return calendarDay;
+
+  const previous = new Date(calendarDay);
+  previous.setDate(previous.getDate() - 1);
+  return previous;
+};
+
 /**
  * Shift window for a date, expanded across midnight for night shifts.
  *
@@ -415,4 +456,12 @@ export const summarizeMonth = (days = []) => {
   return summary;
 };
 
-export default { evaluateDay, summarizeMonth, resolveShiftWindow, reducePunches, startOfDay, DEFAULT_POLICY };
+export default {
+  evaluateDay,
+  summarizeMonth,
+  resolveShiftWindow,
+  reducePunches,
+  startOfDay,
+  attributeShiftDay,
+  DEFAULT_POLICY,
+};

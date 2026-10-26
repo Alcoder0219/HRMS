@@ -127,6 +127,80 @@ const biometricUserMappingSchema = new Schema(
 );
 
 /**
+ * A command waiting for an ADMS terminal to collect it.
+ *
+ * Persisted rather than held in memory: the terminal's next poll may land on a
+ * different instance from the one that queued the command, and a queue that
+ * lived in one process would be lost on every deploy.
+ */
+const admsCommandSchema = new Schema(
+  {
+    commandId: { type: Number, required: true },
+    type: { type: String, required: true, trim: true, maxlength: 30 },
+    // The time window, for an attendance re-upload request.
+    from: { type: Date, default: null },
+    to: { type: Date, default: null },
+    status: { type: String, enum: ['QUEUED', 'SENT', 'DONE', 'FAILED', 'EXPIRED'], default: 'QUEUED' },
+    returnCode: { type: Number, default: null },
+    queuedAt: { type: Date, default: Date.now },
+    sentAt: { type: Date, default: null },
+    completedAt: { type: Date, default: null },
+    requestedBy: { type: Schema.Types.ObjectId, ref: 'User', default: null },
+  },
+  { _id: false },
+);
+
+/**
+ * Someone enrolled on an ADMS terminal, as the terminal announced them.
+ *
+ * An ADMS device cannot be read on demand the way a LAN terminal can -- it
+ * calls in, it is never called -- so the mapping screen works from what the
+ * device last reported. PIN, name and privilege only: the user's device
+ * passcode and card number arrive on the same row and are never kept.
+ */
+const admsEnrolmentSchema = new Schema(
+  {
+    userId: { type: String, required: true, trim: true, maxlength: 30 },
+    name: { type: String, trim: true, maxlength: 120, default: null },
+    privilege: { type: Number, default: null },
+    reportedAt: { type: Date, default: Date.now },
+  },
+  { _id: false },
+);
+
+/**
+ * What the HRMS knows about an ADMS terminal's push session.
+ *
+ * Everything here is written by the receiver, never by the settings form --
+ * the same rule `lastSyncAt` follows, for the same reason.
+ */
+const admsStateSchema = new Schema(
+  {
+    lastSeenAt: { type: Date, default: null },
+    lastSeenIp: { type: String, trim: true, maxlength: 64, default: null },
+    lastHandshakeAt: { type: Date, default: null },
+    pushVersion: { type: String, trim: true, maxlength: 30, default: null },
+    firmware: { type: String, trim: true, maxlength: 80, default: null },
+    deviceModel: { type: String, trim: true, maxlength: 80, default: null },
+
+    // Resume points the terminal sends with each upload and is handed back on
+    // its next handshake, so a reboot does not resend the whole log.
+    attlogStamp: { type: String, trim: true, maxlength: 30, default: null },
+    operlogStamp: { type: String, trim: true, maxlength: 30, default: null },
+
+    lastEventAt: { type: Date, default: null },
+    lastEventReceivedAt: { type: Date, default: null },
+
+    nextCommandId: { type: Number, default: 1 },
+    commands: { type: [admsCommandSchema], default: [] },
+
+    enrolments: { type: [admsEnrolmentSchema], default: [] },
+    enrolmentsReportedAt: { type: Date, default: null },
+  },
+  { _id: false },
+);
+
+/**
  * A physical attendance terminal.
  *
  * Kept inside AppSettings rather than in a collection of its own, for the same
@@ -137,7 +211,19 @@ const biometricUserMappingSchema = new Schema(
 const biometricDeviceSchema = new Schema(
   {
     name: { type: String, required: true, trim: true, maxlength: 100 },
-    ipAddress: { type: String, required: true, trim: true, maxlength: 45 },
+    /**
+     * Not required for ADMS_PUSH: that terminal calls in from whatever address
+     * the office router gives it, and is identified by its serial instead.
+     */
+    ipAddress: {
+      type: String,
+      trim: true,
+      maxlength: 45,
+      default: null,
+      required: function requiredUnlessPush() {
+        return this.protocol !== 'ADMS_PUSH';
+      },
+    },
     // 4370 is the ZKTeco SDK port. Web firmware and WDMS both answer on 8081.
     port: { type: Number, required: true, min: 1, max: 65535, default: 4370 },
     /**
@@ -151,13 +237,35 @@ const biometricDeviceSchema = new Schema(
      *   WDMS_API -- a ZKTeco WDMS/BioTime SERVER that terminals push to, which
      *     is a different thing entirely: it aggregates many devices, it is
      *     reachable over the internet, and it needs credentials.
+     *
+     * And one that inverts the direction:
+     *
+     *   ADMS_PUSH -- the terminal's own "Cloud Server / ADMS" setting pointed at
+     *     THIS server. Nothing is polled; the device calls the `/iclock`
+     *     receiver and is recognised by its serial number.
      */
     protocol: {
       type: String,
-      enum: ['ZK_UDP', 'ZK_TCP', 'ZK_WEB', 'GENERIC_API', 'WDMS_API'],
+      enum: ['ZK_UDP', 'ZK_TCP', 'ZK_WEB', 'GENERIC_API', 'WDMS_API', 'ADMS_PUSH'],
       default: 'ZK_UDP',
     },
+    // Required for ADMS_PUSH, where it is the device's identity -- enforced by
+    // the validator and the service, which also keep it unique across tenants.
     serialNumber: { type: String, trim: true, maxlength: 60, default: null },
+
+    /**
+     * Punches timed before this are stored but not applied to attendance.
+     *
+     * A terminal connecting for the first time uploads its entire memory --
+     * months of punches -- and recomputing all of those days would rewrite
+     * attendance payroll may already have paid. Pull devices bound this with
+     * their first-sync window; a push device has no window, so it has this.
+     * Back-dating it and reprocessing IGNORED events is the deliberate way to
+     * import the backlog.
+     */
+    acceptPunchesFrom: { type: Date, default: null },
+
+    adms: { type: admsStateSchema, default: () => ({}) },
 
     /**
      * Credentials, for the endpoints that need them.
@@ -243,5 +351,9 @@ const appSettingsSchema = new Schema(
   },
   { timestamps: true },
 );
+
+// The ADMS receiver resolves every request -- a heartbeat every few seconds --
+// from a serial number to its tenant and device. Without this that is a scan.
+appSettingsSchema.index({ 'biometricDevices.serialNumber': 1 });
 
 export default model('AppSettings', appSettingsSchema);

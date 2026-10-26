@@ -212,6 +212,56 @@ export const env = {
     maxSizeBytes: readInt('MAX_UPLOAD_SIZE_MB', 10) * 1024 * 1024,
   },
 
+  /**
+   * The ADMS receiver: the `/iclock` endpoint a ZKTeco terminal's "Cloud
+   * Server" setting pushes attendance to.
+   *
+   * Off unless switched on. When on, a request must come from a terminal whose
+   * serial number is registered as an ADMS_PUSH device, AND -- in production --
+   * pass at least one network check, because ADMS itself carries no credential
+   * and a serial number is printed on the device's own screen:
+   *
+   *   ADMS_GATEWAY_TOKEN  a shared secret the office gateway adds as the
+   *       `X-ADMS-Gateway-Token` header. The recommended setup: the terminal
+   *       speaks plain HTTP on the LAN, the gateway forwards over HTTPS.
+   *   ADMS_ALLOWED_IPS    the office's public address(es) or CIDR ranges, for
+   *       a terminal calling in directly.
+   *
+   * `ADMS_ALLOW_SERIAL_ONLY=true` waives that requirement, for a LAN-only
+   * deployment where the receiver is not reachable from the internet at all.
+   */
+  adms: {
+    enabled: readBool('ADMS_ENABLED', false),
+    gatewayToken: process.env.ADMS_GATEWAY_TOKEN || '',
+    allowedIps: readList('ADMS_ALLOWED_IPS', ''),
+    allowSerialOnly: readBool('ADMS_ALLOW_SERIAL_ONLY', false),
+    /**
+     * Proxies between the terminal and this process, counted from the socket.
+     * The client address is read this many entries in from the right of
+     * X-Forwarded-For. Separate from TRUST_PROXY because a terminal reaches
+     * the API directly while browsers come through the frontend's nginx --
+     * the two paths have different hop counts. 1 is right for Cloud Run.
+     */
+    proxyHops: readInt('ADMS_PROXY_HOPS', 1),
+    pollDelaySeconds: readInt('ADMS_POLL_DELAY_SECONDS', 30),
+    errorDelaySeconds: readInt('ADMS_ERROR_DELAY_SECONDS', 60),
+    // Room for a terminal's catch-up batch after a long outage. Too small and
+    // the device would retry the same oversized upload forever.
+    maxBodyBytes: readInt('ADMS_MAX_BODY_KB', 1024) * 1024,
+    rateLimitPerMinute: readInt('ADMS_RATE_LIMIT_PER_MINUTE', 240),
+  },
+
+  /**
+   * The zone a terminal's wall clock is set to, as an IANA name such as
+   * `Africa/Dar_es_Salaam`.
+   *
+   * Device timestamps carry no zone. Unset, they are read in the server's own
+   * zone, which is what every existing pull path does; set it when the server
+   * runs in a different zone from the office -- Cloud Run runs in UTC unless
+   * TZ says otherwise.
+   */
+  biometricTimeZone: process.env.BIOMETRIC_DEVICE_TIMEZONE || null,
+
   log: {
     level: read('LOG_LEVEL', isProduction ? 'info' : 'debug'),
     dir: path.resolve(ROOT_DIR, read('LOG_DIR', 'logs')),
