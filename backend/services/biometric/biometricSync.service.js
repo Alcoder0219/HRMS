@@ -3,10 +3,16 @@ import ZKLib from 'node-zklib';
 import logger from '../../config/logger.js';
 import ApiError from '../../utils/ApiError.js';
 import AppSettings from '../../models/admin/appSettings.model.js';
-import { ingestBiometric } from '../attendance/attendanceIngest.service.js';
+import {
+  mapPunchDirection,
+  recordAndApply,
+  seenDeviceUserIds,
+  systemContext,
+  ZK_PUNCH_TYPES,
+} from './biometricEvent.service.js';
 
 /**
- * The only module that talks to a physical attendance terminal.
+ * The only module that reaches OUT to a physical attendance terminal.
  *
  * Everything above it -- the admin endpoints, the cron job -- deals in device
  * records and sync results, never in sockets. That boundary is what makes the
@@ -14,11 +20,19 @@ import { ingestBiometric } from '../attendance/attendanceIngest.service.js';
  * second vendor's protocol is a new branch in `connectToDevice` rather than a
  * change spread across the codebase.
  *
- * It deliberately does NOT compute attendance. Punches are handed to the
- * existing `ingestBiometric`, which owns grouping, employee resolution and the
- * day recompute. A device sync and a device HTTP push must produce identical
- * attendance, and they do, because they run the same code.
+ * It deliberately does NOT compute attendance. Punches are handed to the event
+ * layer, which stores them, de-duplicates them and passes the new ones to
+ * `ingestBiometric` -- the same path an ADMS push takes. A pulled day and a
+ * pushed day must produce identical attendance, and they do, because they run
+ * the same code.
+ *
+ * ADMS_PUSH devices are the exception that proves the rule: they call in and
+ * are never called, so nothing here opens a connection to one. Their side
+ * lives in `admsReceiver.service.js`.
  */
+
+// Kept importable from here, where they have always been.
+export { mapPunchDirection, systemContext, ZK_PUNCH_TYPES };
 
 /** Nothing here waits on a device longer than this. */
 const CONNECT_TIMEOUT_MS = 10_000;
@@ -33,39 +47,6 @@ const CONNECT_TIMEOUT_MS = 10_000;
  * genuinely wants the older logs can widen this by back-dating `lastSyncAt`.
  */
 const FIRST_SYNC_WINDOW_DAYS = 7;
-
-/**
- * ZKTeco punch types, as the device records them.
- *
- * The break and overtime pairs collapse onto IN and OUT: attendance here is
- * first-punch-to-last-punch for the day, so a break-out is an exit and a
- * break-in is an entry, and modelling them as a third state would mean
- * teaching the whole attendance engine about a distinction it does not use.
- */
-export const ZK_PUNCH_TYPES = {
-  0: 'IN', // Check-In
-  1: 'OUT', // Check-Out
-  2: 'OUT', // Break-Out
-  3: 'IN', // Break-In
-  4: 'IN', // Overtime-In
-  5: 'OUT', // Overtime-Out
-};
-
-/**
- * A device punch type mapped to the direction the attendance model stores.
- *
- * Anything unrecognised -- and anything absent -- becomes UNKNOWN rather than
- * being guessed at. That is a safe answer here: `reducePunches` derives check-in
- * and check-out from the punch TIMES and reads the direction labels only to
- * detect a contradiction, so an unlabelled punch computes the same day as a
- * labelled one. Guessing would instead risk inventing the contradiction.
- */
-export const mapPunchDirection = (punchType) => {
-  if (punchType === null || punchType === undefined || punchType === '') return 'UNKNOWN';
-
-  const code = Number(punchType);
-  return Number.isFinite(code) ? (ZK_PUNCH_TYPES[code] ?? 'UNKNOWN') : 'UNKNOWN';
-};
 
 /* -------------------------------------------------------------------------- */
 /*                                 Connection                                 */
@@ -128,6 +109,67 @@ const isWebProtocol = (device) => device.protocol === 'ZK_WEB' || device.protoco
 /** A WDMS/BioTime server that terminals push to. Authenticated, aggregated. */
 const isWdmsProtocol = (device) => device.protocol === 'WDMS_API';
 
+/** A terminal that pushes to this server's `/iclock` receiver. Never polled. */
+export const isPushProtocol = (device) => device.protocol === 'ADMS_PUSH';
+
+/**
+ * Whether an ADMS terminal has been heard from recently enough to call online.
+ *
+ * Three missed heartbeats plus slack, so one dropped poll on a flaky office
+ * link does not flicker the indicator.
+ */
+export const isPushDeviceOnline = (device, { pollDelaySeconds = 30, now = new Date() } = {}) => {
+  const lastSeen = device.adms?.lastSeenAt;
+  if (!lastSeen) return false;
+  return now.getTime() - new Date(lastSeen).getTime() <= (pollDelaySeconds * 3 + 30) * 1000;
+};
+
+/**
+ * What a "connection test" means for a device nobody can call.
+ *
+ * The only honest answer is when it last called in. Nothing is sent to it --
+ * there is no address to send to -- and a test that reported success without
+ * ever having heard from the terminal would be a lie the whole feature exists
+ * to prevent.
+ */
+const pushDeviceStatus = (device, { pollDelaySeconds = 30 } = {}) => {
+  const state = device.adms ?? {};
+  const online = isPushDeviceOnline(device, { pollDelaySeconds });
+
+  if (!state.lastSeenAt) {
+    return {
+      connected: false,
+      protocol: device.protocol,
+      info: null,
+      error: `Serial ${device.serialNumber} has never contacted this server`,
+      suggestion:
+        'On the terminal, open Comm → Cloud Server Setting, set Server Mode to ADMS and point it at this ' +
+        'server (or at the office gateway). The serial number entered here must match the one in the ' +
+        "device's System Info exactly.",
+    };
+  }
+
+  return {
+    connected: online,
+    protocol: device.protocol,
+    info: {
+      serverType: 'ADMS',
+      serialNumber: device.serialNumber,
+      firmware: state.firmware ?? null,
+      platform: state.deviceModel ?? null,
+      pushVersion: state.pushVersion ?? null,
+      lastSeenAt: state.lastSeenAt,
+      lastSeenIp: state.lastSeenIp ?? null,
+      userCount: state.enrolments?.length || null,
+      logCount: null,
+    },
+    error: online ? null : `No contact since ${new Date(state.lastSeenAt).toISOString()}`,
+    suggestion: online
+      ? null
+      : 'The terminal has stopped calling in. Check its network cable or Wi-Fi, the office gateway if one is used, and the Cloud Server Setting on the device.',
+  };
+};
+
 /**
  * Why a LAN protocol failed, in terms of what to do about it.
  *
@@ -173,6 +215,10 @@ const protocolSuggestion = (device) => {
  * that silently does nothing.
  */
 export const connectToDevice = async (device) => {
+  if (isPushProtocol(device)) {
+    throw ApiError.badRequest('An ADMS_PUSH device calls this server; it cannot be connected to.');
+  }
+
   if (!isSocketProtocol(device)) {
     throw ApiError.badRequest(
       `${device.protocol} is an HTTP protocol and holds no socket. Use the HTTP client instead.`,
@@ -558,7 +604,26 @@ export const getDeviceInfo = async (device) => {
  * enrolments are deleted, which would silently break every mapping made
  * against it.
  */
-export const getDeviceUsers = async (device) => {
+export const getDeviceUsers = async (device, { tenantId = null } = {}) => {
+  /**
+   * An ADMS terminal is never read on demand. Its roster is what it last
+   * announced in an operation log -- plus, for a terminal that has not sent
+   * one yet, the IDs it has actually punched with, so nobody who is clocking
+   * in is missing from the mapping screen.
+   */
+  if (isPushProtocol(device)) {
+    const enrolled = new Map((device.adms?.enrolments ?? []).map((entry) => [entry.userId, entry]));
+    const seen = await seenDeviceUserIds(tenantId, device._id);
+
+    seen.forEach((userId) => {
+      if (!enrolled.has(userId)) enrolled.set(userId, { userId, name: null, privilege: null });
+    });
+
+    return [...enrolled.values()]
+      .map((entry) => ({ userId: entry.userId, name: entry.name ?? null, role: entry.privilege ?? null, cardNumber: null }))
+      .sort((a, b) => a.userId.localeCompare(b.userId, undefined, { numeric: true }));
+  }
+
   if (isWdmsProtocol(device)) {
     const token = await wdmsLogin(device);
     const employees = await wdmsGet(device, token, WDMS.employees);
@@ -602,7 +667,9 @@ export const getDeviceUsers = async (device) => {
  * off -- so the check that can tell them apart says so here rather than leaving
  * it to be worked out.
  */
-export const testConnection = async (device) => {
+export const testConnection = async (device, { pollDelaySeconds = 30 } = {}) => {
+  if (isPushProtocol(device)) return pushDeviceStatus(device, { pollDelaySeconds });
+
   try {
     const info = await getDeviceInfo(device);
     return { connected: true, protocol: device.protocol, info, error: null, suggestion: null };
@@ -699,23 +766,6 @@ const recordSyncOutcome = async (tenantId, deviceId, fields) => {
 };
 
 /**
- * The request context a cron-triggered sync acts under.
- *
- * `ingestBiometric` reads `req.user.tenantId` and stamps `req.user.id` on the
- * rows it creates, so it needs a user of some kind. There is no logged-in
- * person behind a scheduled sync, so the id is null and the role says SYSTEM --
- * which is what the audit trail should show. Inventing a user id here would
- * attribute machine-made records to somebody who was asleep.
- */
-export const systemContext = (tenantId) => ({
-  user: { id: null, tenantId: tenantId ?? null, email: 'system@biometric-sync', role: 'SYSTEM' },
-  // `recordAudit` reaches for these; they are optional-chained, but a stub
-  // keeps the shape honest for anything that is not.
-  ip: null,
-  get: () => null,
-});
-
-/**
  * Pulls a device's logs and hands the new ones to the attendance engine.
  *
  * Idempotent in the way that matters: `lastSyncAt` is a high-water mark on the
@@ -723,13 +773,19 @@ export const systemContext = (tenantId) => ({
  * only on the strength of punches actually taken, which is why a device whose
  * clock is behind the server's does not lose the punches in between.
  *
- * Unmapped device user IDs are reported, never guessed at. A terminal that has
- * a new enrolment nobody has mapped yet must not silently drop that person's
- * attendance -- the count comes back so the screen can say so.
+ * Unmapped device user IDs are reported, never guessed at -- and no longer
+ * dropped either: every punch read is stored as an event, so one that arrives
+ * before its enrolment is mapped is imported by Reprocess once it is. A retry
+ * or a back-dated mark is equally safe, because the event store will not take
+ * the same punch twice.
  *
- * @returns {{ success, punchesFound, punchesSynced, daysUpdated, unmappedUserIds, unknownEmployeeCodes, errors }}
+ * @returns {{ success, punchesFound, punchesSynced, daysUpdated, duplicates, held, unmappedUserIds, unknownEmployeeCodes, errors }}
  */
 export const syncAttendanceLogs = async (device, tenantId, actorReq = null) => {
+  if (isPushProtocol(device)) {
+    throw ApiError.badRequest('An ADMS_PUSH device sends its own punches; there is nothing to pull.');
+  }
+
   const req = actorReq ?? systemContext(tenantId);
   const startedAt = new Date();
 
@@ -739,6 +795,8 @@ export const syncAttendanceLogs = async (device, tenantId, actorReq = null) => {
     success: false,
     punchesFound: 0,
     punchesSynced: 0,
+    duplicates: 0,
+    held: 0,
     daysUpdated: 0,
     unmappedUserIds: [],
     unknownEmployeeCodes: [],
@@ -767,51 +825,28 @@ export const syncAttendanceLogs = async (device, tenantId, actorReq = null) => {
 
     const fresh = logs.filter((log) => log.timestamp > since);
 
-    const mappings = new Map(
-      (device.userMappings ?? []).map((entry) => [String(entry.deviceUserId), entry.employeeCode]),
-    );
-
-    const unmapped = new Set();
-    const punches = [];
-
-    fresh.forEach((log) => {
-      const employeeCode = mappings.get(log.deviceUserId);
-
-      if (!employeeCode) {
-        unmapped.add(log.deviceUserId);
-        return;
-      }
-
-      punches.push({
-        employeeCode,
-        timestamp: log.timestamp,
-        direction: mapPunchDirection(log.punchType),
-      });
-    });
-
-    result.unmappedUserIds = [...unmapped];
-
-    if (punches.length) {
+    if (fresh.length) {
       /**
-       * The one call that writes attendance. Everything above is transport and
-       * translation; the grouping, the employee lookup and the day recompute
-       * all belong to the ingest service and are not repeated here.
+       * The one call that writes. Everything above is transport and
+       * translation; storing, de-duplicating, mapping and the day recompute
+       * all belong to the event layer and the ingest service beneath it.
        */
-      const ingested = await ingestBiometric(
-        {
-          deviceId: device.serialNumber || String(device._id),
-          punches,
-          // The audit entry points at the device, because on a scheduled sync
-          // there is no user to point it at.
-          auditEntityId: device._id,
-        },
+      const recorded = await recordAndApply({
+        tenantId,
+        device,
+        transport: device.protocol,
+        kind: 'PULL',
+        logs: fresh,
         req,
-      );
+      });
 
-      result.punchesSynced = punches.length;
-      result.daysUpdated = ingested.daysUpdated;
-      result.unknownEmployeeCodes = ingested.unknownEmployeeCodes ?? [];
-      result.errors.push(...(ingested.failures ?? []).map((failure) => failure.error));
+      result.punchesSynced = recorded.imported;
+      result.duplicates = recorded.duplicate;
+      result.held = recorded.held;
+      result.daysUpdated = recorded.daysUpdated;
+      result.unmappedUserIds = recorded.unmappedUserIds;
+      result.unknownEmployeeCodes = recorded.unknownEmployeeCodes ?? [];
+      result.errors.push(...recorded.errors);
     }
 
     /**
@@ -819,9 +854,9 @@ export const syncAttendanceLogs = async (device, tenantId, actorReq = null) => {
      * be mapped.
      *
      * Holding it back for an unmapped punch would re-read the same rejected
-     * logs on every run forever. The unmapped IDs are reported instead, and
-     * once a mapping exists an administrator can back-date the mark to pick up
-     * what was missed.
+     * logs on every run forever. Nothing is lost by advancing it: an unmapped
+     * punch is stored as an UNMAPPED event, and Reprocess imports it once a
+     * mapping exists.
      */
     const newest = fresh.reduce(
       (latest, log) => (log.timestamp > latest ? log.timestamp : latest),
@@ -910,6 +945,8 @@ export default {
   clearDeviceLogs,
   mapPunchDirection,
   systemContext,
+  isPushProtocol,
+  isPushDeviceOnline,
   fetchFromDevice,
   parseAttendanceLines,
   parseUserLines,

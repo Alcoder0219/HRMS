@@ -79,6 +79,18 @@ const adminService = {
   mapDeviceUsers: (deviceId, mappings) =>
     axiosClient.post(url(`/biometric/devices/${deviceId}/map`), { mappings }),
 
+  // The integration's health, and one device's counters, events and logs.
+  biometricIntegrationStatus: () => axiosClient.get(url('/biometric/status')),
+  biometricDeviceStatus: (deviceId) => axiosClient.get(url(`/biometric/devices/${deviceId}/status`)),
+  biometricDeviceEvents: (deviceId, params) =>
+    axiosClient.get(url(`/biometric/devices/${deviceId}/events`), { params }),
+  biometricDeviceLogs: (deviceId, params) =>
+    axiosClient.get(url(`/biometric/devices/${deviceId}/logs`), { params }),
+  reprocessBiometricDevice: (deviceId, payload) =>
+    axiosClient.post(url(`/biometric/devices/${deviceId}/reprocess`), payload),
+  queueBiometricCommand: (deviceId, payload) =>
+    axiosClient.post(url(`/biometric/devices/${deviceId}/commands`), payload),
+
   /* --------------------------------------------------- backup, restore -- */
   backupPreview: () => axiosClient.get(url('/backup/preview')),
   downloadBackup: () => axiosClient.get(url('/backup'), { responseType: 'blob' }),

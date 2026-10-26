@@ -13,6 +13,8 @@
 !.env.example
 *.pem
 *.key
+# The biometric gateway's config holds the shared token.
+biometric-gateway/gateway.env
 
 # ------------------------------------------------- cloud credentials (GCP) --
 # Service-account key files. A committed key is a standing credential to the

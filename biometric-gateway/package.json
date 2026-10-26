@@ -1,0 +1,14 @@
+{
+  "name": "hrms-biometric-gateway",
+  "version": "1.0.0",
+  "description": "Forwards a ZKTeco terminal's ADMS push from the office LAN to the HRMS over HTTPS",
+  "private": true,
+  "type": "module",
+  "main": "gateway.js",
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "scripts": {
+    "start": "node gateway.js"
+  }
+}

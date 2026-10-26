@@ -32,6 +32,8 @@ export { default as AttendancePolicy } from './attendance/attendancePolicy.model
 export { default as Holiday } from './attendance/holiday.model.js';
 export { default as Regularization } from './attendance/regularization.model.js';
 export { default as CompOff } from './attendance/compOff.model.js';
+export { default as BiometricEvent } from './attendance/biometricEvent.model.js';
+export { default as BiometricSyncLog } from './attendance/biometricSyncLog.model.js';
 
 /**
  * Registered here as much as anywhere: `compOff.leaveRequestId` has carried a

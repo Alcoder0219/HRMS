@@ -33,6 +33,10 @@ attachments
 logs
 *.log
 
+# --------------------------------------------------------------------- tests
+# Run in development and CI, never in the container.
+tests
+
 # ------------------------------------------------------------------ git/meta
 .git
 .gitignore

@@ -265,6 +265,50 @@ router.get(
   controller.listBiometricDevices,
 );
 
+// The integration's health: receiver configuration, link state of every
+// device, unregistered serials calling in, and the time-zone check.
+router.get(
+  '/biometric/status',
+  requirePermission(RESOURCES.TENANT, ACTIONS.READ),
+  controller.biometricIntegrationStatus,
+);
+
+router.get(
+  '/biometric/devices/:deviceId/status',
+  requirePermission(RESOURCES.TENANT, ACTIONS.READ),
+  validate({ params: schemas.deviceIdParamSchema }),
+  controller.biometricDeviceStatus,
+);
+
+router.get(
+  '/biometric/devices/:deviceId/events',
+  requirePermission(RESOURCES.TENANT, ACTIONS.READ),
+  validate({ params: schemas.deviceIdParamSchema, query: schemas.deviceEventsQuerySchema }),
+  controller.biometricDeviceEvents,
+);
+
+router.get(
+  '/biometric/devices/:deviceId/logs',
+  requirePermission(RESOURCES.TENANT, ACTIONS.READ),
+  validate({ params: schemas.deviceIdParamSchema, query: schemas.deviceLogsQuerySchema }),
+  controller.biometricDeviceLogs,
+);
+
+router.post(
+  '/biometric/devices/:deviceId/reprocess',
+  // Writes attendance -- and with includeHeld, over a human's correction.
+  requirePermission(RESOURCES.TENANT, ACTIONS.UPDATE),
+  validate({ params: schemas.deviceIdParamSchema, body: schemas.reprocessDeviceSchema }),
+  controller.reprocessBiometricDevice,
+);
+
+router.post(
+  '/biometric/devices/:deviceId/commands',
+  requirePermission(RESOURCES.TENANT, ACTIONS.UPDATE),
+  validate({ params: schemas.deviceIdParamSchema, body: schemas.deviceCommandSchema }),
+  controller.queueBiometricCommand,
+);
+
 router.post(
   '/biometric/devices',
   requirePermission(RESOURCES.TENANT, ACTIONS.UPDATE),

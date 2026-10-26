@@ -83,8 +83,9 @@ export const runDueSyncs = async () => {
       .lean();
 
     for (const settings of tenants) {
+      // ADMS_PUSH devices call in on their own; there is nothing to poll.
       const due = (settings.biometricDevices ?? []).filter(
-        (device) => device.isActive && device.autoSync && isDue(device, now),
+        (device) => device.protocol !== 'ADMS_PUSH' && device.isActive && device.autoSync && isDue(device, now),
       );
 
       for (const device of due) {

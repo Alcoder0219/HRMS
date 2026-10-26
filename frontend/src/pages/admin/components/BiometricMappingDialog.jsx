@@ -150,7 +150,17 @@ const BiometricMappingDialog = ({ open, device, onClose, onSaved }) => {
             onClick={fetchFromDevice}
             disabled={fetching}
           >
-            {fetching ? 'Reading device…' : fetched ? 'Refresh from device' : 'Fetch from device'}
+            {device?.protocol === 'ADMS_PUSH'
+              ? fetching
+                ? 'Loading…'
+                : fetched
+                  ? 'Reload'
+                  : 'Load reported users'
+              : fetching
+                ? 'Reading device…'
+                : fetched
+                  ? 'Refresh from device'
+                  : 'Fetch from device'}
           </Button>
 
           {fetched && (
@@ -168,8 +178,18 @@ const BiometricMappingDialog = ({ open, device, onClose, onSaved }) => {
 
         {!fetched && !fetching && (
           <Alert severity="info">
-            Read the terminal to list who is enrolled on it. This opens a connection to{' '}
-            {device?.ipAddress}:{device?.port}.
+            {device?.protocol === 'ADMS_PUSH' ? (
+              <>
+                An ADMS terminal cannot be read on demand. This lists the enrolments it has reported, every user ID it
+                has punched with, and the mappings already saved. To refresh its roster, use Activity → Request upload →
+                Request user list.
+              </>
+            ) : (
+              <>
+                Read the terminal to list who is enrolled on it. This opens a connection to {device?.ipAddress}:
+                {device?.port}.
+              </>
+            )}
           </Alert>
         )}
 
@@ -204,6 +224,9 @@ const BiometricMappingDialog = ({ open, device, onClose, onSaved }) => {
                 <TableRow>
                   <TableCell width={130}>Device user ID</TableCell>
                   <TableCell>Name on device</TableCell>
+                  <TableCell width={110} align="right">
+                    Waiting punches
+                  </TableCell>
                   <TableCell width={280}>Employee</TableCell>
                 </TableRow>
               </TableHead>
@@ -216,6 +239,14 @@ const BiometricMappingDialog = ({ open, device, onClose, onSaved }) => {
                       </Typography>
                     </TableCell>
                     <TableCell>{user.name ?? '—'}</TableCell>
+                    <TableCell align="right">
+                      {/* Stored punches that will import once this row is mapped and reprocessed. */}
+                      {user.unmappedPunches ? (
+                        <Chip size="small" color="warning" variant="outlined" label={user.unmappedPunches} />
+                      ) : (
+                        '—'
+                      )}
+                    </TableCell>
                     <TableCell>
                       <TextField
                         select

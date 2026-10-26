@@ -278,6 +278,48 @@ export const mapDeviceUsers = asyncHandler(async (req, res) =>
   ),
 );
 
+export const biometricIntegrationStatus = asyncHandler(async (req, res) =>
+  ApiResponse.ok(res, await biometricDeviceService.integrationStatus(req), 'Biometric integration status'),
+);
+
+export const biometricDeviceStatus = asyncHandler(async (req, res) =>
+  ApiResponse.ok(res, await biometricDeviceService.deviceStatus(req.params.deviceId, req), 'Device status'),
+);
+
+export const biometricDeviceEvents = asyncHandler(async (req, res) =>
+  ApiResponse.ok(
+    res,
+    await biometricDeviceService.deviceEvents(req.params.deviceId, req.validatedQuery ?? {}, req),
+    'Device events',
+  ),
+);
+
+export const biometricDeviceLogs = asyncHandler(async (req, res) =>
+  ApiResponse.ok(
+    res,
+    await biometricDeviceService.deviceLogs(req.params.deviceId, req.validatedQuery ?? {}, req),
+    'Sync logs',
+  ),
+);
+
+export const reprocessBiometricDevice = asyncHandler(async (req, res) => {
+  const result = await biometricDeviceService.reprocessDevice(req.params.deviceId, req.body, req);
+
+  return ApiResponse.ok(
+    res,
+    result,
+    `${result.imported} of ${result.received} stored punch(es) imported`,
+  );
+});
+
+export const queueBiometricCommand = asyncHandler(async (req, res) =>
+  ApiResponse.ok(
+    res,
+    await biometricDeviceService.queueCommand(req.params.deviceId, req.body, req),
+    'Request queued — the device collects it on its next poll',
+  ),
+);
+
 /* -------------------------------------------------------------------------- */
 /*                             Backup and restore                             */
 /* -------------------------------------------------------------------------- */
@@ -349,6 +391,12 @@ export default {
   removeBiometricDevice,
   testBiometricDevice,
   syncBiometricDevice,
+  biometricIntegrationStatus,
+  biometricDeviceStatus,
+  biometricDeviceEvents,
+  biometricDeviceLogs,
+  reprocessBiometricDevice,
+  queueBiometricCommand,
   fetchDeviceUsers,
   mapDeviceUsers,
 
