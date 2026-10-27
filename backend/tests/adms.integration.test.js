@@ -492,20 +492,30 @@ describe('ADMS receiver', { skip: !reachable && 'MongoDB is not reachable on loc
     assert.equal((await dayOf('EMP003', '2026-10-27')).punches.length, 1);
   });
 
-  test('WDMS: a rejected login reaches the mapping dialog as a readable 502, and pagination stays on the configured host', async () => {
+  test('WDMS: falls back to JWT for a non-superuser, reports refusals readably, and keeps pagination on the configured host', async () => {
     const http = await import('node:http');
     let acceptLogin = false;
 
-    // Stands in for an easy WDMS server behind a proxy: its `next` links name
-    // a host and port that are not the address the HRMS was given.
+    // Stands in for an easy WDMS server behind a proxy. As observed on the
+    // real one, the DRF token endpoint refuses a non-superuser outright, and
+    // the JWT endpoint is the one a company account can use. Its `next` links
+    // name a host and port that are not the address the HRMS was given.
     const wdms = http.createServer((req, res) => {
       res.setHeader('Content-Type', 'application/json');
       if (req.url === '/api-token-auth/') {
+        res.statusCode = 400;
+        return res.end(JSON.stringify({ non_field_errors: ['superuser required'] }));
+      }
+      if (req.url === '/jwt-api-token-auth/') {
         if (!acceptLogin) {
           res.statusCode = 400;
           return res.end(JSON.stringify({ non_field_errors: ['Unable to log in with provided credentials.'] }));
         }
         return res.end(JSON.stringify({ token: 'abc' }));
+      }
+      if (req.headers.authorization !== 'JWT abc') {
+        res.statusCode = 401;
+        return res.end(JSON.stringify({ detail: 'Authentication credentials were not provided.' }));
       }
       if (req.url.startsWith('/personnel/api/employees/')) {
         const second = req.url.includes('page=2');
@@ -541,6 +551,8 @@ describe('ADMS receiver', { skip: !reachable && 'MongoDB is not reachable on loc
         (error) => {
           assert.equal(error.statusCode, 502);
           assert.equal(error.isOperational, true);
+          // Both servers' answers, so the screen says which login was refused and why.
+          assert.match(error.message, /superuser required/);
           assert.match(error.message, /Unable to log in with provided credentials/);
           assert.ok(!error.message.includes('secret-password'));
           return true;
