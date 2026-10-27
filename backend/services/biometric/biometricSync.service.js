@@ -428,35 +428,52 @@ const WDMS = {
 };
 
 /**
- * Exchanges the stored credentials for an API token.
+ * The two ways a WDMS/BioTime build issues an API credential, tried in order.
  *
- * Not cached between syncs. A DRF token is long-lived, but caching it would
- * mean holding a credential in process memory across tenants for the sake of
- * one request per sync -- and a sync runs every few minutes, not every second.
+ * `/api-token-auth/` gives a DRF token, but some builds -- easy WDMS among
+ * them -- only issue it to a SUPERUSER, answering everyone else with
+ * "superuser required" even though their password is right. The JWT endpoint
+ * is the one those builds offer ordinary company accounts, and it expects the
+ * `JWT` scheme on every later request instead of `Token`.
+ */
+const WDMS_AUTH_METHODS = [
+  { path: WDMS.auth, scheme: 'Token' },
+  { path: '/jwt-api-token-auth/', scheme: 'JWT' },
+];
+
+/**
+ * Exchanges the stored credentials for an Authorization header value.
+ *
+ * Not cached between syncs. A token is long-lived, but caching it would mean
+ * holding a credential in process memory across tenants for the sake of one
+ * request per sync -- and a sync runs every few minutes, not every second.
+ *
+ * If every method is refused, the error carries each server's own wording,
+ * which distinguishes a wrong password from an account without API rights.
  */
 const wdmsLogin = async (device) => {
   if (!device.username || !device.password) {
     throw new Error('WDMS_API needs a username and password. Add them to the device.');
   }
 
-  const response = await fetch(`${httpBase(device)}${WDMS.auth}`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
-    body: JSON.stringify({ username: device.username, password: device.password }),
-    signal: AbortSignal.timeout(CONNECT_TIMEOUT_MS),
-  });
+  const refusals = [];
 
-  const payload = await response.json().catch(() => ({}));
+  for (const method of WDMS_AUTH_METHODS) {
+    const response = await fetch(`${httpBase(device)}${method.path}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+      body: JSON.stringify({ username: device.username, password: device.password }),
+      signal: AbortSignal.timeout(CONNECT_TIMEOUT_MS),
+    });
 
-  if (!response.ok || !payload.token) {
-    // The server's own wording, which distinguishes a wrong password from an
-    // account that is disabled -- and is more useful than anything invented.
-    const detail =
-      payload.non_field_errors?.join(' ') ?? payload.detail ?? `HTTP ${response.status}`;
-    throw new Error(`WDMS rejected the credentials: ${detail}`);
+    const payload = await response.json().catch(() => ({}));
+    if (response.ok && payload.token) return `${method.scheme} ${payload.token}`;
+
+    const detail = payload.non_field_errors?.join(' ') ?? payload.detail ?? `HTTP ${response.status}`;
+    refusals.push(`${method.path} said "${detail}"`);
   }
 
-  return payload.token;
+  throw new Error(`WDMS rejected the credentials: ${refusals.join('; ')}`);
 };
 
 /**
@@ -466,7 +483,7 @@ const wdmsLogin = async (device) => {
  * punches would otherwise be walked in full on a first sync, and the sync is
  * bounded by time anyway.
  */
-const wdmsGet = async (device, token, path, params = {}, { pageLimit = 50 } = {}) => {
+const wdmsGet = async (device, authorization, path, params = {}, { pageLimit = 50 } = {}) => {
   const results = [];
   let url = new URL(`${httpBase(device)}${path}`);
 
@@ -476,7 +493,7 @@ const wdmsGet = async (device, token, path, params = {}, { pageLimit = 50 } = {}
 
   for (let page = 0; page < pageLimit && url; page += 1) {
     const response = await fetch(url, {
-      headers: { Authorization: `Token ${token}`, Accept: 'application/json' },
+      headers: { Authorization: authorization, Accept: 'application/json' },
       signal: AbortSignal.timeout(CONNECT_TIMEOUT_MS * 2),
     });
 
