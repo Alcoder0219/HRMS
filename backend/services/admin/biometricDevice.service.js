@@ -397,7 +397,27 @@ export const deviceUsers = async (deviceId, req) => {
   const tenantId = tenantOf(req);
   const { device } = await loadDevice(tenantId, deviceId, { withSecrets: true });
 
-  const users = await biometricSync.getDeviceUsers(device, { tenantId });
+  /**
+   * A device or WDMS server that cannot be read is an answer, not a crash.
+   *
+   * The transport throws plain Errors -- wrong credentials, an API the account
+   * may not use, a timeout -- and the error handler hides any non-ApiError
+   * behind "Internal server error" in production. That left the mapping dialog
+   * with nothing to act on. A 502 carries the upstream's own reason instead.
+   */
+  let users;
+  try {
+    users = await biometricSync.getDeviceUsers(device, { tenantId });
+  } catch (error) {
+    if (error instanceof ApiError) throw error;
+
+    logger.warn('Could not read users from biometric device', {
+      device: device.name,
+      protocol: device.protocol,
+      error: error.message,
+    });
+    throw new ApiError(502, `Could not read the user list from ${device.name}: ${error.message}`);
+  }
   const mapped = new Map((device.userMappings ?? []).map((entry) => [entry.deviceUserId, entry.employeeCode]));
 
   /**

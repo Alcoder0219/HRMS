@@ -492,6 +492,69 @@ describe('ADMS receiver', { skip: !reachable && 'MongoDB is not reachable on loc
     assert.equal((await dayOf('EMP003', '2026-10-27')).punches.length, 1);
   });
 
+  test('WDMS: a rejected login reaches the mapping dialog as a readable 502, and pagination stays on the configured host', async () => {
+    const http = await import('node:http');
+    let acceptLogin = false;
+
+    // Stands in for an easy WDMS server behind a proxy: its `next` links name
+    // a host and port that are not the address the HRMS was given.
+    const wdms = http.createServer((req, res) => {
+      res.setHeader('Content-Type', 'application/json');
+      if (req.url === '/api-token-auth/') {
+        if (!acceptLogin) {
+          res.statusCode = 400;
+          return res.end(JSON.stringify({ non_field_errors: ['Unable to log in with provided credentials.'] }));
+        }
+        return res.end(JSON.stringify({ token: 'abc' }));
+      }
+      if (req.url.startsWith('/personnel/api/employees/')) {
+        const second = req.url.includes('page=2');
+        return res.end(
+          JSON.stringify({
+            count: 2,
+            next: second ? null : 'http://internal-wdms:8000/personnel/api/employees/?page=2&page_size=100',
+            results: [second ? { emp_code: '502', first_name: 'Page', last_name: 'Two' } : { emp_code: '501', first_name: 'Page', last_name: 'One' }],
+          }),
+        );
+      }
+      res.statusCode = 404;
+      return res.end('{}');
+    });
+    await new Promise((resolve) => wdms.listen(0, '127.0.0.1', resolve));
+
+    const settings = await AppSettings.findOne({ tenantId: null });
+    settings.biometricDevices.push({
+      name: 'Cloud WDMS',
+      protocol: 'WDMS_API',
+      ipAddress: '127.0.0.1',
+      port: wdms.address().port,
+      username: 'api',
+      password: 'secret-password',
+      autoSync: false,
+    });
+    await settings.save();
+    const wdmsId = String(settings.biometricDevices.at(-1)._id);
+
+    try {
+      await assert.rejects(
+        () => deviceService.deviceUsers(wdmsId, adminReq),
+        (error) => {
+          assert.equal(error.statusCode, 502);
+          assert.equal(error.isOperational, true);
+          assert.match(error.message, /Unable to log in with provided credentials/);
+          assert.ok(!error.message.includes('secret-password'));
+          return true;
+        },
+      );
+
+      acceptLogin = true;
+      const result = await deviceService.deviceUsers(wdmsId, adminReq);
+      assert.deepEqual(result.users.map((user) => user.userId), ['501', '502']);
+    } finally {
+      await new Promise((resolve) => wdms.close(resolve));
+    }
+  });
+
   test('refuses an inactive device', async () => {
     await AppSettings.updateOne({ 'biometricDevices._id': deviceId }, { $set: { 'biometricDevices.$.isActive': false } });
     const response = await call(`/iclock/getrequest?SN=${SERIAL}`);
