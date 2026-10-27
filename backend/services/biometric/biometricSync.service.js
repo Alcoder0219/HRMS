@@ -491,7 +491,21 @@ const wdmsGet = async (device, token, path, params = {}, { pageLimit = 50 } = {}
     if (Array.isArray(payload)) return payload;
 
     results.push(...(payload.results ?? []));
-    url = payload.next ? new URL(payload.next) : null;
+
+    /**
+     * Only the path and query of `next` are trusted.
+     *
+     * Django builds that link from the Host header it saw, and behind a
+     * reverse proxy that can be a different port, scheme or internal name
+     * from the address configured here -- following it as-is fails after the
+     * first page. The page always goes to the address the device row names.
+     */
+    if (payload.next) {
+      const next = new URL(payload.next, httpBase(device));
+      url = new URL(`${next.pathname}${next.search}`, httpBase(device));
+    } else {
+      url = null;
+    }
   }
 
   return results;
@@ -626,7 +640,8 @@ export const getDeviceUsers = async (device, { tenantId = null } = {}) => {
 
   if (isWdmsProtocol(device)) {
     const token = await wdmsLogin(device);
-    const employees = await wdmsGet(device, token, WDMS.employees);
+    // 100 a page: the DRF default of 10 is 25 round trips for 242 people.
+    const employees = await wdmsGet(device, token, WDMS.employees, { page_size: 100 });
 
     return employees
       .map((row) => ({
