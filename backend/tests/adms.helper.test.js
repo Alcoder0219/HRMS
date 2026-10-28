@@ -8,6 +8,7 @@ import {
   parseDeviceCmdBody,
   parseDeviceTime,
   parseOperlogBody,
+  parseReceiverAddress,
   renderCommand,
   ADMS_COMMANDS,
 } from '../helpers/adms.helper.js';
@@ -44,6 +45,46 @@ describe('parseDeviceTime', () => {
     assert.equal(parseDeviceTime('2026-02-31 08:00:00'), null);
     assert.equal(parseDeviceTime('2026-10-26 25:00:00', 'UTC'), null);
     assert.equal(parseDeviceTime('yesterday', 'UTC'), null);
+  });
+});
+
+describe('parseDeviceTime in Asia/Kolkata', () => {
+  test('reads an IST wall-clock punch as the right instant, including the half-hour offset', () => {
+    // 09:00 IST (UTC+5:30, no DST) is 03:30 UTC.
+    assert.equal(parseDeviceTime('2026-10-28 09:00:00', 'Asia/Kolkata').toISOString(), '2026-10-28T03:30:00.000Z');
+    // Just after IST midnight is still the previous UTC day.
+    assert.equal(parseDeviceTime('2026-10-28 00:10:00', 'Asia/Kolkata').toISOString(), '2026-10-27T18:40:00.000Z');
+  });
+});
+
+describe('parseReceiverAddress', () => {
+  test('accepts a bare host, host:port, or a URL', () => {
+    assert.deepEqual(parseReceiverAddress('34.45.67.52'), { serverAddress: '34.45.67.52', serverPort: 8081, https: false });
+    assert.deepEqual(parseReceiverAddress('34.45.67.52:9090'), { serverAddress: '34.45.67.52', serverPort: 9090, https: false });
+    assert.deepEqual(parseReceiverAddress('http://34.45.67.52:8081'), { serverAddress: '34.45.67.52', serverPort: 8081, https: false });
+    assert.deepEqual(parseReceiverAddress('https://hrms-backend-1.asia-south1.run.app'), {
+      serverAddress: 'hrms-backend-1.asia-south1.run.app',
+      serverPort: 443,
+      https: true,
+    });
+  });
+
+  test('uses the separate port and HTTPS settings as defaults for a bare host only', () => {
+    assert.deepEqual(parseReceiverAddress('adms.example.com', { defaultPort: 443, defaultHttps: true }), {
+      serverAddress: 'adms.example.com',
+      serverPort: 443,
+      https: true,
+    });
+    // A scheme in the value wins over the default.
+    assert.equal(parseReceiverAddress('http://adms.example.com', { defaultHttps: true }).https, false);
+  });
+
+  test('refuses a path, credentials, other schemes and junk', () => {
+    assert.throws(() => parseReceiverAddress('http://34.45.67.52:8081/iclock'), /only a scheme, host and port/);
+    assert.throws(() => parseReceiverAddress('http://user:pass@34.45.67.52'), /only a scheme, host and port/);
+    assert.throws(() => parseReceiverAddress('ftp://34.45.67.52'), /http/);
+    assert.throws(() => parseReceiverAddress('not a host'), /not a host name/);
+    assert.throws(() => parseReceiverAddress(''), /empty/);
   });
 });
 

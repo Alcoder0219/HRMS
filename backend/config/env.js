@@ -1,6 +1,7 @@
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import dotenv from 'dotenv';
+import { parseReceiverAddress } from '../helpers/adms.helper.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -47,6 +48,30 @@ const readList = (key, fallback) =>
     .split(',')
     .map((item) => item.trim())
     .filter(Boolean);
+
+/**
+ * ADMS_DEVICE_SERVER_ADDRESS, as a host or a URL. See `parseReceiverAddress`.
+ *
+ * A port or scheme written in the URL wins over ADMS_DEVICE_SERVER_PORT and
+ * ADMS_DEVICE_HTTPS, which remain the defaults for a bare host. A malformed
+ * value fails the boot like any other bad variable, rather than putting a
+ * wrong address on the screen someone copies onto the terminal.
+ */
+const readReceiverAddress = () => {
+  const value = process.env.ADMS_DEVICE_SERVER_ADDRESS;
+  const defaults = {
+    defaultPort: readInt('ADMS_DEVICE_SERVER_PORT', 8081),
+    defaultHttps: readBool('ADMS_DEVICE_HTTPS', false),
+  };
+
+  if (!value) return { serverAddress: null, serverPort: defaults.defaultPort, https: defaults.defaultHttps };
+
+  try {
+    return parseReceiverAddress(value, defaults);
+  } catch (error) {
+    throw new Error(`[config] ADMS_DEVICE_SERVER_ADDRESS ${error.message}`);
+  }
+};
 
 const nodeEnv = read('NODE_ENV', 'development');
 const isProduction = nodeEnv === 'production';
@@ -249,9 +274,11 @@ export const env = {
      * office PC -- which is not this API's own URL whenever a gateway is in
      * front of it. Display only; nothing here routes a request.
      */
-    deviceServerAddress: process.env.ADMS_DEVICE_SERVER_ADDRESS || null,
-    deviceServerPort: readInt('ADMS_DEVICE_SERVER_PORT', 8081),
-    deviceServerHttps: readBool('ADMS_DEVICE_HTTPS', false),
+    ...(({ serverAddress, serverPort, https }) => ({
+      deviceServerAddress: serverAddress,
+      deviceServerPort: serverPort,
+      deviceServerHttps: https,
+    }))(readReceiverAddress()),
     pollDelaySeconds: readInt('ADMS_POLL_DELAY_SECONDS', 30),
     errorDelaySeconds: readInt('ADMS_ERROR_DELAY_SECONDS', 60),
     // Room for a terminal's catch-up batch after a long outage. Too small and
