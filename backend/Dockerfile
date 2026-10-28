@@ -47,6 +47,12 @@ ENV ATTACHMENTS_DIR=/app/data/attachments \
 
 WORKDIR /app
 
+# The IANA zone database, so TZ (e.g. Asia/Kolkata on Cloud Run) is honoured
+# by the OS as well as by Node's bundled ICU. Attendance days and shift times
+# are evaluated in the process's local zone; without this, a TZ the image
+# cannot resolve silently falls back to UTC.
+RUN apk add --no-cache tzdata
+
 # Directories the app writes to at runtime, owned by the user that runs it.
 # `node` (uid 1000) ships with the image; running as root is an unnecessary
 # escalation path in a container that only serves HTTP.
