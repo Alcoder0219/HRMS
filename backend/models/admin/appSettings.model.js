@@ -325,6 +325,26 @@ const biometricDeviceSchema = new Schema(
 );
 
 /**
+ * The address an ADMS terminal must be told to call.
+ *
+ * A property of where the receiver (or the gateway in front of it) was
+ * deployed -- a VM's public IP, say -- which the HRMS cannot discover by
+ * itself. Stored so an administrator can enter it without a redeploy; the
+ * ADMS_DEVICE_SERVER_ADDRESS environment variable, when set, takes precedence.
+ * Display only: nothing routes by it.
+ */
+const admsReceiverSchema = new Schema(
+  {
+    serverAddress: { type: String, trim: true, maxlength: 253, default: null },
+    serverPort: { type: Number, min: 1, max: 65535, default: 8081 },
+    https: { type: Boolean, default: false },
+    updatedAt: { type: Date, default: null },
+    updatedBy: { type: Schema.Types.ObjectId, ref: 'User', default: null },
+  },
+  { _id: false },
+);
+
+/**
  * Everything an administrator configures, as one document per tenant.
  *
  * One document rather than three collections: company profile, mail and
@@ -341,6 +361,7 @@ const appSettingsSchema = new Schema(
     email: { type: emailConfigSchema, default: () => ({}) },
     notifications: { type: notificationSettingsSchema, default: () => ({}) },
     biometricDevices: { type: [biometricDeviceSchema], default: [] },
+    admsReceiver: { type: admsReceiverSchema, default: () => ({}) },
 
     // Set while a restore is running so a second one cannot start alongside it.
     maintenanceMode: { type: Boolean, default: false },

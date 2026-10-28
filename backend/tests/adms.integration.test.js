@@ -651,6 +651,101 @@ describe('ADMS receiver', { skip: !reachable && 'MongoDB is not reachable on loc
     assert.equal(row.punches.held, 1);
   });
 
+  /* ------------------------------------------------ receiver address, form */
+
+  test('stores the receiver address an administrator enters, and reports it for the terminal', async () => {
+    const before = await deviceService.integrationStatus(adminReq);
+    assert.equal(before.receiver.deviceSettings.serverAddress, null, 'never guessed when nothing is configured');
+    assert.equal(before.receiver.deviceSettings.editable, true);
+
+    const saved = await deviceService.updateReceiverSettings({ url: 'http://34.45.67.52:8081' }, adminReq);
+    assert.deepEqual(
+      {
+        serverAddress: saved.serverAddress,
+        serverPort: saved.serverPort,
+        https: saved.https,
+        url: saved.url,
+        source: saved.source,
+        enableDomainName: saved.enableDomainName,
+      },
+      { serverAddress: '34.45.67.52', serverPort: 8081, https: false, url: 'http://34.45.67.52:8081', source: 'SETTINGS', enableDomainName: false },
+    );
+
+    const after = await deviceService.integrationStatus(adminReq);
+    assert.equal(after.receiver.deviceSettings.url, 'http://34.45.67.52:8081');
+
+    const named = await deviceService.updateReceiverSettings({ url: 'https://adms.example.com' }, adminReq);
+    assert.equal(named.serverPort, 443);
+    assert.equal(named.https, true);
+    assert.equal(named.enableDomainName, true);
+
+    await assert.rejects(() => deviceService.updateReceiverSettings({ url: 'http://34.45.67.52:8081/iclock' }, adminReq), /only the scheme/);
+
+    const cleared = await deviceService.updateReceiverSettings({ url: null }, adminReq);
+    assert.equal(cleared.serverAddress, null);
+
+    await deviceService.updateReceiverSettings({ url: 'http://34.45.67.52:8081' }, adminReq);
+  });
+
+  test('the receiver URL validator accepts http(s) only', async () => {
+    const { receiverSettingsSchema } = await import('../validators/admin/admin.validator.js');
+    assert.equal(receiverSettingsSchema.validate({ url: 'http://34.45.67.52:8081' }).error, undefined);
+    assert.equal(receiverSettingsSchema.validate({ url: null }).error, undefined);
+    assert.ok(receiverSettingsSchema.validate({ url: 'ftp://34.45.67.52' }).error);
+    assert.ok(receiverSettingsSchema.validate({ url: 'not a url' }).error);
+  });
+
+  test('registers an ADMS device by serial alone, upper-cased, and refuses the same serial twice', async () => {
+    const { createBiometricDeviceSchema } = await import('../validators/admin/admin.validator.js');
+
+    // The form's payload: no LAN address, no SDK port.
+    const payload = {
+      name: 'Second MB360',
+      protocol: 'ADMS_PUSH',
+      port: 8081,
+      serialNumber: 'ueed999000001',
+      location: 'Warehouse',
+      notes: null,
+      isActive: true,
+      acceptPunchesFrom: '2026-10-20T00:00:00.000Z',
+    };
+    const { value, error } = createBiometricDeviceSchema.validate(payload, { stripUnknown: true, convert: true });
+    assert.equal(error, undefined);
+
+    const added = await deviceService.addDevice(value, adminReq);
+    assert.equal(added.serialNumber, 'UEED999000001');
+    assert.equal(added.ipAddress, null);
+    assert.equal(added.autoSync, false);
+    assert.equal(added.location, 'Warehouse');
+
+    await assert.rejects(
+      () => deviceService.addDevice({ ...value, name: 'Duplicate', serialNumber: 'UEED999000001' }, adminReq),
+      /already registered/,
+    );
+
+    const missingSerial = createBiometricDeviceSchema.validate({ name: 'No serial', protocol: 'ADMS_PUSH', port: 8081 });
+    assert.ok(missingSerial.error, 'an ADMS device cannot be saved without its serial');
+
+    // The SDK protocols still require the address they connect to.
+    const sdkWithoutIp = createBiometricDeviceSchema.validate({ name: 'LAN', protocol: 'ZK_UDP', port: 4370 });
+    assert.ok(sdkWithoutIp.error);
+
+    await deviceService.removeDevice(String(added._id), adminReq);
+  });
+
+  test('a getrequest poll is a heartbeat, never a punch', async () => {
+    const events = await BiometricEvent.countDocuments({});
+    const days = await Attendance.countDocuments({});
+
+    for (let i = 0; i < 3; i += 1) {
+      const poll = await call(`/iclock/getrequest?SN=${SERIAL}&INFO=Ver 6.60,242,237,15000,192.168.1.122`);
+      assert.equal(poll.status, 200);
+    }
+
+    assert.equal(await BiometricEvent.countDocuments({}), events);
+    assert.equal(await Attendance.countDocuments({}), days);
+  });
+
   test('refuses an inactive device', async () => {
     await AppSettings.updateOne({ 'biometricDevices._id': deviceId }, { $set: { 'biometricDevices.$.isActive': false } });
     const response = await call(`/iclock/getrequest?SN=${SERIAL}`);

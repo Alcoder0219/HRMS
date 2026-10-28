@@ -107,7 +107,7 @@ If the office's public IP changes (a dynamic broadband line), the firewall rule 
 
 ### 0.4 The MB360: no change needed
 
-It already points at the VM. For reference, **Comm → Cloud Server Setting**: Server Mode `ADMS`, Enable Domain Name `OFF`, Server Address `34.45.67.52`, Server Port `8081`, Enable Proxy Server `OFF`, HTTPS `OFF`. The device form in the HRMS shows the same values once `ADMS_DEVICE_SERVER_ADDRESS` is set.
+It already points at the VM. For reference, **Comm → Cloud Server Setting**: Server Mode `ADMS`, Enable Domain Name `OFF`, Server Address `34.45.67.52`, Server Port `8081`, Enable Proxy Server `OFF`, HTTPS `OFF`. The device form in the HRMS shows the same values once the receiver address is known. Enter `http://34.45.67.52:8081` once under **Add device → ZKTeco ADMS push → Receiver URL → Save address** (needs tenant-settings rights; audited). Alternatively, set `ADMS_DEVICE_SERVER_ADDRESS` on Cloud Run, which then takes precedence and locks the field.
 
 ### 0.5 Register the device and map employees
 

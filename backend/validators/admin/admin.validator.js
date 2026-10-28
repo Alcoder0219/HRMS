@@ -348,6 +348,20 @@ export const reprocessDeviceSchema = Joi.object({
   to: Joi.date().iso().min(Joi.ref('from')),
 });
 
+/**
+ * Where the terminal must be pointed: `http(s)://host:port`, or null to clear.
+ * The service rejects a path or credentials in it.
+ */
+export const receiverSettingsSchema = Joi.object({
+  url: Joi.string()
+    .trim()
+    .max(300)
+    .uri({ scheme: ['http', 'https'] })
+    .allow(null, '')
+    .required()
+    .messages({ 'string.uriCustomScheme': 'Enter a URL such as http://34.45.67.52:8081' }),
+});
+
 export const deviceCommandSchema = Joi.object({
   type: Joi.string().valid('QUERY_ATTLOG', 'QUERY_USERINFO', 'INFO').required(),
   from: Joi.date().iso().when('type', { is: 'QUERY_ATTLOG', then: Joi.required() }),
@@ -403,4 +417,5 @@ export default {
   deviceLogsQuerySchema,
   reprocessDeviceSchema,
   deviceCommandSchema,
+  receiverSettingsSchema,
 };
