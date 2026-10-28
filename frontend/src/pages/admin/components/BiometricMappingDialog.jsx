@@ -2,7 +2,9 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import Alert from '@mui/material/Alert';
 import Box from '@mui/material/Box';
 import Button from '@mui/material/Button';
+import Checkbox from '@mui/material/Checkbox';
 import Chip from '@mui/material/Chip';
+import FormControlLabel from '@mui/material/FormControlLabel';
 import MenuItem from '@mui/material/MenuItem';
 import Stack from '@mui/material/Stack';
 import Table from '@mui/material/Table';
@@ -46,6 +48,7 @@ const BiometricMappingDialog = ({ open, device, onClose, onSaved }) => {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState(null);
   const [fetched, setFetched] = useState(false);
+  const [importWaiting, setImportWaiting] = useState(true);
 
   useEffect(() => {
     if (!open) return;
@@ -104,7 +107,22 @@ const BiometricMappingDialog = ({ open, device, onClose, onSaved }) => {
         }));
 
       await adminService.mapDeviceUsers(device._id, mappings);
-      onSaved(`${mappings.length} mapping(s) saved for ${device.name}`);
+
+      /**
+       * Punches that were waiting for these mappings are imported straight
+       * away -- the reason anyone opens this dialog. Unmapped and failed events
+       * only: held punches over corrected days are never applied from here.
+       */
+      let imported = null;
+      if (importWaiting) {
+        const response = await adminService.reprocessBiometricDevice(device._id, {});
+        imported = response.data?.imported ?? 0;
+      }
+
+      onSaved(
+        `${mappings.length} mapping(s) saved for ${device.name}` +
+          (imported !== null ? `; ${imported} waiting punch(es) imported into attendance` : ''),
+      );
     } catch (rejection) {
       setError(rejection?.message ?? 'The mappings could not be saved');
     } finally {
@@ -132,7 +150,7 @@ const BiometricMappingDialog = ({ open, device, onClose, onSaved }) => {
     <FormDialog
       open={open}
       title={`Map users — ${device?.name ?? 'device'}`}
-      subtitle="Match each enrolment on the terminal to an employee. Unmapped enrolments are read and discarded."
+      subtitle="Match each enrolment on the terminal to an employee. Punches from unmapped enrolments are kept and imported once mapped."
       error={error}
       submitting={saving}
       submitLabel="Save mappings"
@@ -194,6 +212,20 @@ const BiometricMappingDialog = ({ open, device, onClose, onSaved }) => {
         )}
 
         {fetching && <LoadingState message="Reading enrolments from the device…" minHeight={160} />}
+
+        {fetched && users.some((user) => user.unmappedPunches > 0) && (
+          <FormControlLabel
+            control={
+              <Checkbox size="small" checked={importWaiting} onChange={(event) => setImportWaiting(event.target.checked)} />
+            }
+            label={
+              <Typography variant="body2">
+                After saving, import the {users.reduce((sum, user) => sum + (user.unmappedPunches ?? 0), 0)} waiting
+                punch(es) of newly mapped users
+              </Typography>
+            }
+          />
+        )}
 
         {duplicates.size > 0 && (
           <Alert severity="error">

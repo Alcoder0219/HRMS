@@ -567,6 +567,90 @@ describe('ADMS receiver', { skip: !reachable && 'MongoDB is not reachable on loc
     }
   });
 
+  /* ------------------------------------ the requests the MB360 was seen making */
+
+  test('answers ping and the options post, and records the terminal’s own address from the gateway', async () => {
+    await AppSettings.updateOne({ 'biometricDevices._id': deviceId }, { $set: { 'biometricDevices.$.adms.lastSeenAt': null } });
+
+    const ping = await call(`/iclock/ping?SN=${SERIAL}`, { headers: { 'X-ADMS-Device-IP': '203.0.113.9' } });
+    assert.equal(ping.status, 200);
+    assert.equal(ping.text, 'OK');
+
+    const options = await call(`/iclock/cdata?SN=${SERIAL}&table=options`, {
+      method: 'POST',
+      body: '~DeviceName=MB360,FirmVer=Ver 6.60,IPAddress=192.168.1.122',
+    });
+    assert.equal(options.text, 'OK');
+
+    const device = await loadDevice();
+    assert.ok(device.adms.lastSeenAt, 'a ping counts as contact');
+    assert.equal(device.adms.lastSeenIp, '203.0.113.9');
+  });
+
+  test('ignores a device-address header that arrives without the gateway token', async () => {
+    const forged = await call(`/iclock/ping?SN=${SERIAL}`, { token: null, headers: { 'X-ADMS-Device-IP': '6.6.6.6' } });
+    assert.equal(forged.status, 401);
+  });
+
+  test('reads the long ATTLOG lines newer firmware sends, several per upload, with an unset punch state', async () => {
+    // PIN, time, state, verify, workcode, then reserved / mask / temperature
+    // columns. 255 is what a terminal records when no punch-state key was pressed.
+    const body = [
+      '101\t2026-10-27 08:58:31\t255\t15\t0\t0\t0\t0\t0\t0',
+      '101\t2026-10-27 13:02:10\t255\t15\t0\t0\t0\t0\t0\t0',
+      '101\t2026-10-27 17:45:02\t255\t1\t0\t0\t0\t0\t0\t0',
+      '',
+    ].join('\n');
+
+    const response = await call(`/iclock/cdata?SN=${SERIAL}&table=ATTLOG&Stamp=9999`, { method: 'POST', body });
+    assert.equal(response.text, 'OK: 3');
+
+    const day = await dayOf('EMP001', '2026-10-27');
+    assert.equal(day.punches.length, 3);
+    assert.ok(day.punches.every((punch) => punch.direction === 'UNKNOWN'));
+    assert.equal(day.checkInAt.toISOString(), '2026-10-27T05:58:31.000Z');
+    assert.equal(day.checkOutAt.toISOString(), '2026-10-27T14:45:02.000Z');
+    assert.equal(day.status, 'PRESENT');
+  });
+
+  test('a database failure is reported to the terminal, and its retry imports once', async () => {
+    const original = BiometricEvent.bulkWrite;
+    BiometricEvent.bulkWrite = async () => {
+      throw new Error('connection reset by peer');
+    };
+
+    const line = ['101\t2026-10-28 09:00:00\t0\t1\t0'];
+    try {
+      const failed = await attlog(line);
+      // Not OK: the terminal keeps the batch and sends it again after ErrorDelay.
+      assert.equal(failed.status, 500);
+      assert.equal(failed.text, 'ERROR');
+    } finally {
+      BiometricEvent.bulkWrite = original;
+    }
+
+    const retried = await attlog(line);
+    assert.equal(retried.text, 'OK: 1');
+    const again = await attlog(line);
+    assert.equal(again.text, 'OK: 1');
+
+    assert.equal(await BiometricEvent.countDocuments({ deviceId, punchTime: new Date('2026-10-28T06:00:00Z') }), 1);
+    assert.equal((await dayOf('EMP001', '2026-10-28')).punches.length, 1);
+  });
+
+  test('stores location and notes, and lists per-device punch counters', async () => {
+    await deviceService.updateDevice(String(deviceId), { location: 'Camel Oil – main gate', notes: 'Pushes via VM gateway' }, adminReq);
+
+    const list = await deviceService.listDevices(adminReq);
+    const row = list.find((device) => String(device._id) === String(deviceId));
+
+    assert.equal(row.location, 'Camel Oil – main gate');
+    assert.equal(row.notes, 'Pushes via VM gateway');
+    assert.ok(row.punches.received >= row.punches.imported);
+    assert.ok(row.punches.imported > 0);
+    assert.equal(row.punches.held, 1);
+  });
+
   test('refuses an inactive device', async () => {
     await AppSettings.updateOne({ 'biometricDevices._id': deviceId }, { $set: { 'biometricDevices.$.isActive': false } });
     const response = await call(`/iclock/getrequest?SN=${SERIAL}`);

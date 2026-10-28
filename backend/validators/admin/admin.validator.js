@@ -229,6 +229,8 @@ const deviceHost = Joi.alternatives()
 
 const deviceBody = {
   name: Joi.string().trim().min(2).max(100),
+  location: Joi.string().trim().max(120).allow('', null),
+  notes: Joi.string().trim().max(500).allow('', null),
   ipAddress: deviceHost,
   port: Joi.number().integer().min(1).max(65535),
   protocol: Joi.string().valid('ZK_UDP', 'ZK_TCP', 'ZK_WEB', 'GENERIC_API', 'WDMS_API', 'ADMS_PUSH'),

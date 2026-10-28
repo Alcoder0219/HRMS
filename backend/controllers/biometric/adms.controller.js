@@ -20,7 +20,8 @@ const handle = (work) => async (req, res) => {
   const input = {
     query: req.query ?? {},
     body: typeof req.body === 'string' ? req.body : '',
-    ip: req.admsClientIp ?? null,
+    // The terminal's address -- the gateway's report of it when one is in front.
+    ip: req.admsDeviceIp ?? req.admsClientIp ?? null,
   };
 
   try {

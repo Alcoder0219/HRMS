@@ -78,6 +78,8 @@ const present = (device) => ({
   port: device.port,
   protocol: device.protocol,
   serialNumber: device.serialNumber,
+  location: device.location ?? null,
+  notes: device.notes ?? null,
   acceptPunchesFrom: device.acceptPunchesFrom ?? null,
 
   /**
@@ -126,9 +128,17 @@ const present = (device) => ({
   updatedAt: device.updatedAt,
 });
 
+const EMPTY_COUNTS = { received: 0, imported: 0, unmapped: 0, held: 0, ignored: 0, failed: 0 };
+
+/** Each device with its punch counters, so the list needs no request per row. */
 export const listDevices = async (req) => {
-  const settings = await load(tenantOf(req));
-  return settings.biometricDevices.map(present);
+  const tenantId = tenantOf(req);
+  const [settings, counts] = await Promise.all([load(tenantId), biometricEvents.countsByDevice(tenantId)]);
+
+  return settings.biometricDevices.map((device) => ({
+    ...present(device),
+    punches: counts.get(String(device._id)) ?? EMPTY_COUNTS,
+  }));
 };
 
 /**
@@ -755,6 +765,14 @@ export const integrationStatus = async (req) => {
       gatewayTokenConfigured: Boolean(env.adms.gatewayToken),
       allowedIpCount: env.adms.allowedIps.length,
       pollDelaySeconds: env.adms.pollDelaySeconds,
+      // The values to enter on the terminal itself.
+      deviceSettings: {
+        serverMode: 'ADMS',
+        serverAddress: env.adms.deviceServerAddress,
+        serverPort: env.adms.deviceServerPort,
+        https: env.adms.deviceServerHttps,
+        enableDomainName: Boolean(env.adms.deviceServerAddress && !/^[\d.]+$/.test(env.adms.deviceServerAddress)),
+      },
     },
     time: timeZoneCheck(settings.company?.timezone ?? null),
     unregisteredDevices: env.adms.enabled ? listUnregisteredSerials() : [],

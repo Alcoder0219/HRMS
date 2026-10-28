@@ -132,6 +132,17 @@ export const admsNetworkGuard = (req, res, next) => {
     return reply(res, 403, 'FORBIDDEN');
   }
 
+  /**
+   * Where the TERMINAL is, as opposed to where the request came from.
+   *
+   * Behind a gateway, the caller is the gateway; the gateway reports the
+   * terminal's own address in X-ADMS-Device-IP. Believed only when the token
+   * has just been checked -- without one, anyone could write any address into
+   * "last seen from". Used for display and logs, never for an access decision.
+   */
+  const reported = normalise(req.get('x-adms-device-ip'));
+  req.admsDeviceIp = env.adms.gatewayToken && net.isIP(reported) ? reported : ip;
+
   return next();
 };
 

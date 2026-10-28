@@ -1,0 +1,42 @@
+# systemd unit for the HRMS biometric gateway on a Linux VM.
+#
+#   sudo cp hrms-biometric-gateway.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now hrms-biometric-gateway
+#   journalctl -u hrms-biometric-gateway -f
+#
+# Expects the gateway in /opt/hrms-biometric-gateway with its gateway.env
+# beside it, owned by root and readable only by the service user. See
+# docs/BIOMETRIC_MB360.md, "Cloud VM receiver".
+
+[Unit]
+Description=HRMS biometric gateway (ZKTeco ADMS -> HRMS)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=hrmsgw
+Group=hrmsgw
+WorkingDirectory=/opt/hrms-biometric-gateway
+ExecStart=/usr/bin/node /opt/hrms-biometric-gateway/gateway.js
+Restart=always
+RestartSec=5
+
+# The gateway only needs to listen on an unprivileged port and make outbound
+# HTTPS calls. Everything else is taken away.
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_INET AF_INET6
+RestrictNamespaces=true
+LockPersonality=true
+MemoryMax=256M
+
+[Install]
+WantedBy=multi-user.target
