@@ -35,8 +35,12 @@ import employeeService from '@services/modules/employee.service.js';
  * quietly omit whoever was enrolled this morning.
  */
 
-/** Employees are fetched once per dialog open; a tenant has hundreds, not millions. */
-const EMPLOYEE_LIMIT = 500;
+/**
+ * Employees are fetched once per dialog open; a tenant has hundreds, not millions.
+ * 200 is the employee list's maximum page size (`listEmployeesSchema`): anything
+ * larger is rejected with a 422, which left the dropdown with no employees at all.
+ */
+const EMPLOYEE_LIMIT = 200;
 
 const BiometricMappingDialog = ({ open, device, onClose, onSaved }) => {
   const [users, setUsers] = useState([]);
