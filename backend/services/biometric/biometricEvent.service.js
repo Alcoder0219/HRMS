@@ -587,6 +587,34 @@ export const unmappedUsers = async (tenantId, deviceId) =>
     { $project: { _id: 0, deviceUserId: '$_id', punches: 1, firstPunchAt: 1, lastPunchAt: 1 } },
   ]);
 
+/**
+ * Event counters for every device of a tenant, in one aggregation.
+ *
+ * Feeds the device LIST, where a row per device needs its totals without a
+ * status request per row. Keyed by device id.
+ */
+export const countsByDevice = async (tenantId) => {
+  const rows = await BiometricEvent.aggregate([
+    { $match: { tenantId: tenantId ?? null } },
+    { $group: { _id: { deviceId: '$deviceId', status: '$status' }, count: { $sum: 1 } } },
+  ]);
+
+  const byDevice = new Map();
+  rows.forEach(({ _id, count }) => {
+    const key = String(_id.deviceId);
+    const entry = byDevice.get(key) ?? { received: 0, imported: 0, unmapped: 0, held: 0, ignored: 0, failed: 0 };
+    entry.received += count;
+    if (_id.status === STATUS.IMPORTED) entry.imported += count;
+    else if (_id.status === STATUS.UNMAPPED) entry.unmapped += count;
+    else if (_id.status === STATUS.HELD) entry.held += count;
+    else if (_id.status === STATUS.IGNORED) entry.ignored += count;
+    else entry.failed += count;
+    byDevice.set(key, entry);
+  });
+
+  return byDevice;
+};
+
 /** Device user IDs seen in events, for an ADMS device that has not reported its roster. */
 export const seenDeviceUserIds = async (tenantId, deviceId) =>
   BiometricEvent.distinct('deviceUserId', { tenantId: tenantId ?? null, deviceId: toObjectId(deviceId) });
@@ -599,6 +627,7 @@ export default {
   listLogs,
   unmappedUsers,
   seenDeviceUserIds,
+  countsByDevice,
   mapPunchDirection,
   systemContext,
   deviceKeyOf,

@@ -1,8 +1,9 @@
 #!/usr/bin/env node
 /**
- * HRMS biometric gateway -- runs on an always-on machine in the office.
+ * HRMS biometric gateway -- runs on an always-on machine in the office, or on
+ * a small cloud VM with a fixed public address.
  *
- *   MB360 (LAN, plain HTTP) ──▶ this gateway ──HTTPS + token──▶ HRMS /iclock
+ *   MB360 (plain HTTP) ──▶ this gateway ──HTTPS + token──▶ HRMS /iclock
  *
  * A ZKTeco terminal in ADMS mode speaks plain HTTP and carries no credential.
  * Pointing it straight at the internet means trusting its TLS support (often
@@ -11,11 +12,21 @@
  * only ever talks to a machine on its own LAN, and the HRMS only accepts
  * requests that arrive over HTTPS carrying a secret the terminal never holds.
  *
+ * It holds no database credential and stores nothing. Durability comes from
+ * the terminal itself: it keeps every punch until the HRMS acknowledges it, so
+ * when the HRMS or its database is down the gateway relays the failure and the
+ * terminal simply sends the same batch again later -- which the HRMS
+ * de-duplicates.
+ *
  * What it does, and nothing more:
- *   - accepts connections ONLY from the terminal addresses listed
+ *   - accepts connections ONLY from the terminal addresses listed -- exact
+ *     addresses or IPv4 CIDR ranges; on a cloud VM that is the office's
+ *     PUBLIC address, since the terminal reaches it through the office router
  *   - forwards ONLY the /iclock/ paths, GET and POST, with a size cap
  *   - adds X-ADMS-Gateway-Token, and strips any forwarded-for or token header
  *     the caller tried to supply
+ *   - tells the HRMS which address the terminal called from
+ *     (X-ADMS-Device-IP), which the HRMS believes only alongside the token
  *   - relays the HRMS's plain-text reply and status code back unchanged, so
  *     the terminal's own retry logic keeps working
  *   - never logs a request body
@@ -67,7 +78,32 @@ if (!config.upstream.startsWith('https://') && !config.allowInsecureUpstream) {
   fail('UPSTREAM_URL must be https:// -- the token would otherwise cross the internet in clear text');
 }
 if (config.token.length < 24) fail('GATEWAY_TOKEN must be set to the same long random value as ADMS_GATEWAY_TOKEN on the HRMS');
-if (!config.allowedDevices.length) fail('ALLOWED_DEVICE_IPS is required: the LAN address(es) of the terminal(s)');
+if (!config.allowedDevices.length) {
+  fail('ALLOWED_DEVICE_IPS is required: the terminal address(es) -- LAN on an office PC, the office public IP on a cloud VM');
+}
+
+/* --------------------------------------------------------------- allowlist */
+
+const ipv4ToInt = (address) => address.split('.').reduce((total, octet) => total * 256 + Number(octet), 0);
+const isIpv4 = (value) => /^(\d{1,3})(\.\d{1,3}){3}$/.test(value);
+
+/**
+ * An exact address, an IPv4 CIDR range, or `*`.
+ *
+ * `*` accepts any caller and must be written deliberately. It is for an office
+ * whose public address changes, where the cloud firewall cannot pin it either;
+ * the HRMS then relies on the registered serial number alone, which is weaker.
+ */
+const allowed = (address) =>
+  config.allowedDevices.some((rule) => {
+    if (rule === '*') return true;
+    const [range, bitsText] = rule.split('/');
+    if (bitsText === undefined) return address === range;
+    const bits = Number(bitsText);
+    if (!isIpv4(address) || !isIpv4(range) || !Number.isInteger(bits) || bits < 0 || bits > 32) return false;
+    const block = 2 ** (32 - bits);
+    return Math.floor(ipv4ToInt(address) / block) === Math.floor(ipv4ToInt(range) / block);
+  });
 
 /* ------------------------------------------------------------------ server */
 
@@ -85,7 +121,13 @@ const server = http.createServer((req, res) => {
   const from = clientAddress(req);
   const url = new URL(req.url, 'http://gateway.local');
 
-  if (!config.allowedDevices.includes(from)) {
+  // Liveness for systemd or a monitor on the same machine. Never forwarded,
+  // and answered only locally so it reveals nothing to the internet.
+  if (url.pathname === '/healthz' && (from === '127.0.0.1' || from === '::1')) {
+    return reply(res, 200, 'ok');
+  }
+
+  if (!allowed(from)) {
     log('Refused: address not allowed', { from, path: url.pathname });
     return reply(res, 403, 'FORBIDDEN');
   }
@@ -124,6 +166,8 @@ const server = http.createServer((req, res) => {
           'Content-Type': req.headers['content-type'] || 'text/plain',
           'User-Agent': req.headers['user-agent'] || 'iClock',
           'X-ADMS-Gateway-Token': config.token,
+          // Where the terminal called from, for the HRMS's "last seen from".
+          'X-ADMS-Device-IP': from,
         },
         body: req.method === 'POST' ? Buffer.concat(chunks) : undefined,
         signal: AbortSignal.timeout(config.timeoutMs),
@@ -133,14 +177,19 @@ const server = http.createServer((req, res) => {
       const text = await upstream.text();
       reply(res, upstream.status, text);
 
-      log('Forwarded', {
-        from,
-        path: url.pathname,
-        table: url.searchParams.get('table') || undefined,
-        status: upstream.status,
-        bytes: size,
-        ms: Date.now() - started,
-      });
+      // Heartbeats arrive every few seconds; logging each one would drown the
+      // uploads that matter. Failures and data-bearing requests are always logged.
+      const heartbeat = /\/(getrequest|ping)$/.test(url.pathname);
+      if (!heartbeat || upstream.status !== 200 || process.env.LOG_HEARTBEATS === 'true') {
+        log('Forwarded', {
+          from,
+          path: url.pathname,
+          table: url.searchParams.get('table') || undefined,
+          status: upstream.status,
+          bytes: size,
+          ms: Date.now() - started,
+        });
+      }
     } catch (error) {
       // A 502 keeps the punches on the terminal: it retries after ErrorDelay.
       log('Upstream unreachable', { from, path: url.pathname, error: error.message });

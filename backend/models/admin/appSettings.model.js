@@ -211,6 +211,10 @@ const admsStateSchema = new Schema(
 const biometricDeviceSchema = new Schema(
   {
     name: { type: String, required: true, trim: true, maxlength: 100 },
+    // Where the terminal is and anything worth knowing about it. Free text for
+    // the administrator; nothing reads it.
+    location: { type: String, trim: true, maxlength: 120, default: null },
+    notes: { type: String, trim: true, maxlength: 500, default: null },
     /**
      * Not required for ADMS_PUSH: that terminal calls in from whatever address
      * the office router gives it, and is identified by its serial instead.

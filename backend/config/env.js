@@ -243,6 +243,15 @@ export const env = {
      * the two paths have different hop counts. 1 is right for Cloud Run.
      */
     proxyHops: readInt('ADMS_PROXY_HOPS', 1),
+    /**
+     * What to type into the terminal's Cloud Server Setting, shown read-only
+     * on the device form. The address the TERMINAL calls -- a gateway VM or an
+     * office PC -- which is not this API's own URL whenever a gateway is in
+     * front of it. Display only; nothing here routes a request.
+     */
+    deviceServerAddress: process.env.ADMS_DEVICE_SERVER_ADDRESS || null,
+    deviceServerPort: readInt('ADMS_DEVICE_SERVER_PORT', 8081),
+    deviceServerHttps: readBool('ADMS_DEVICE_HTTPS', false),
     pollDelaySeconds: readInt('ADMS_POLL_DELAY_SECONDS', 30),
     errorDelaySeconds: readInt('ADMS_ERROR_DELAY_SECONDS', 60),
     // Room for a terminal's catch-up batch after a long outage. Too small and

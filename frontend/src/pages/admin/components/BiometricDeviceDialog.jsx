@@ -3,11 +3,15 @@ import Alert from '@mui/material/Alert';
 import FormControlLabel from '@mui/material/FormControlLabel';
 import Grid from '@mui/material/Grid';
 import MenuItem from '@mui/material/MenuItem';
+import Stack from '@mui/material/Stack';
 import Switch from '@mui/material/Switch';
 import TextField from '@mui/material/TextField';
 import Typography from '@mui/material/Typography';
 
 import FormDialog from '@components/common/FormDialog.jsx';
+import { formatDateTime } from '@utils/format.js';
+
+import { ConnectionChip } from './BiometricActivityDialog.jsx';
 
 /**
  * Add or revise one attendance terminal.
@@ -27,14 +31,22 @@ import FormDialog from '@components/common/FormDialog.jsx';
  */
 const PROTOCOLS = [
   {
+    // First, and the default: the only transport that works for a terminal on
+    // an office network talking to a cloud-hosted HRMS without credentials
+    // from a third party.
+    value: 'ADMS_PUSH',
+    label: 'ZKTeco ADMS push — terminal sends punches to this HRMS',
+    help: 'The terminal’s Cloud Server Setting (Server Mode: ADMS) points at the receiver below. Nothing is polled and no LAN address is needed; the device is identified by its serial number.',
+  },
+  {
     value: 'ZK_UDP',
-    label: 'ZKTeco SDK — UDP',
-    help: 'The usual SDK transport on port 4370. Requires LAN access — does not work over the internet.',
+    label: 'ZKTeco SDK — UDP (LAN only)',
+    help: 'Port 4370. Works only when this HRMS server is on the same network as the terminal — not with a cloud-hosted HRMS.',
   },
   {
     value: 'ZK_TCP',
-    label: 'ZKTeco SDK — TCP',
-    help: 'TCP SDK transport on port 4370. Requires LAN access — does not work over the internet.',
+    label: 'ZKTeco SDK — TCP (LAN only)',
+    help: 'Port 4370. Works only when this HRMS server is on the same network as the terminal — not with a cloud-hosted HRMS.',
   },
   {
     value: 'ZK_WEB',
@@ -51,11 +63,6 @@ const PROTOCOLS = [
     label: 'ZKTeco WDMS / BioTime server',
     help: 'A server that terminals push to, not a terminal itself. Works over the internet; needs a username and password.',
   },
-  {
-    value: 'ADMS_PUSH',
-    label: 'ZKTeco ADMS push — terminal calls this HRMS',
-    help: 'The terminal’s Cloud Server setting (Server Mode: ADMS) points at this HRMS or the office gateway. Nothing is polled; the device is recognised by its serial number.',
-  },
 ];
 
 /** Socket protocols answer on 4370; every HTTP one on 8081. */
@@ -69,9 +76,11 @@ const MASK = '********';
 
 const EMPTY = {
   name: '',
+  location: '',
+  notes: '',
   ipAddress: '',
-  port: '4370',
-  protocol: 'ZK_UDP',
+  port: '8081',
+  protocol: 'ADMS_PUSH',
   serialNumber: '',
   username: '',
   password: '',
@@ -86,7 +95,68 @@ const EMPTY = {
  * `prefill` seeds a NEW device -- the settings screen passes a serial that
  * called in unregistered, so registering it is one click rather than retyping.
  */
-const BiometricDeviceDialog = ({ open, device, prefill = null, submitting, error, onSubmit, onClose }) => {
+/**
+ * What to enter on the terminal, and -- for a saved device -- whether it has.
+ *
+ * Read-only: the values come from the server's configuration, because the
+ * address a terminal must call is a property of the deployment (a gateway VM's
+ * public IP), not something to retype per device. Connection status is the
+ * receiver's own record of the last request, not a probe made from here --
+ * nobody can call an ADMS terminal.
+ */
+const TerminalSettings = ({ settings, device }) => {
+  const row = (label, value) => (
+    <Stack direction="row" justifyContent="space-between" spacing={2}>
+      <Typography variant="caption" color="text.secondary">
+        {label}
+      </Typography>
+      <Typography variant="caption" fontFamily="monospace" fontWeight={600}>
+        {value}
+      </Typography>
+    </Stack>
+  );
+
+  return (
+    <Alert severity="info" variant="outlined" icon={false}>
+      <Typography variant="body2" fontWeight={600} gutterBottom>
+        On the terminal: Comm → Cloud Server Setting
+      </Typography>
+
+      {settings?.serverAddress ? (
+        <Stack spacing={0.25} sx={{ minWidth: 260 }}>
+          {row('Server Mode', settings.serverMode)}
+          {row('Enable Domain Name', settings.enableDomainName ? 'ON' : 'OFF')}
+          {row('Server Address', settings.serverAddress)}
+          {row('Server Port', settings.serverPort)}
+          {row('Enable Proxy Server', 'OFF')}
+          {row('HTTPS', settings.https ? 'ON' : 'OFF')}
+        </Stack>
+      ) : (
+        <Typography variant="caption" color="text.secondary">
+          The receiver address is not configured on the server (ADMS_DEVICE_SERVER_ADDRESS). Ask the administrator
+          who deployed the receiver for the address and port to enter.
+        </Typography>
+      )}
+
+      {device?.protocol === 'ADMS_PUSH' && (
+        <Stack direction="row" spacing={1} alignItems="center" sx={{ mt: 1.5 }}>
+          <ConnectionChip device={device} />
+          <Typography variant="caption" color="text.secondary">
+            {device.adms?.lastSeenAt
+              ? `Last seen ${formatDateTime(device.adms.lastSeenAt)}${device.adms.lastSeenIp ? ` from ${device.adms.lastSeenIp}` : ''}`
+              : 'Has not contacted the receiver yet'}
+          </Typography>
+        </Stack>
+      )}
+    </Alert>
+  );
+};
+
+/**
+ * `deviceSettings` is the receiver's terminal-facing configuration, from the
+ * integration status endpoint.
+ */
+const BiometricDeviceDialog = ({ open, device, prefill = null, deviceSettings = null, submitting, error, onSubmit, onClose }) => {
   const [form, setForm] = useState(EMPTY);
 
   useEffect(() => {
@@ -96,6 +166,8 @@ const BiometricDeviceDialog = ({ open, device, prefill = null, submitting, error
       device
         ? {
             name: device.name ?? '',
+            location: device.location ?? '',
+            notes: device.notes ?? '',
             ipAddress: device.ipAddress ?? '',
             port: String(device.port ?? 4370),
             protocol: device.protocol ?? 'ZK_UDP',
@@ -150,6 +222,8 @@ const BiometricDeviceDialog = ({ open, device, prefill = null, submitting, error
   const handleSubmit = () =>
     onSubmit({
       name: form.name.trim(),
+      location: form.location.trim() || null,
+      notes: form.notes.trim() || null,
       ...(isPush ? {} : { ipAddress: form.ipAddress.trim() }),
       port: Number(form.port) || DEFAULT_PORT[form.protocol],
       protocol: form.protocol,
@@ -188,7 +262,11 @@ const BiometricDeviceDialog = ({ open, device, prefill = null, submitting, error
     <FormDialog
       open={open}
       title={device ? `Edit ${device.name}` : 'Add biometric device'}
-      subtitle="The terminal is polled on its own interval and its punches feed straight into attendance"
+      subtitle={
+        isPush
+          ? 'The terminal sends each punch to the HRMS; it is recognised by its serial number'
+          : 'The terminal is polled on its own interval and its punches feed straight into attendance'
+      }
       error={error}
       submitting={submitting}
       submitLabel={device ? 'Save device' : 'Add device'}
@@ -212,6 +290,24 @@ const BiometricDeviceDialog = ({ open, device, prefill = null, submitting, error
             onChange={set('name')}
             helperText="How it is identified on this screen — for example “Main gate”"
           />
+        </Grid>
+
+        <Grid size={12}>
+          <TextField
+            select
+            label="Protocol"
+            size="small"
+            fullWidth
+            value={form.protocol}
+            onChange={setProtocol}
+            helperText={chosen?.help}
+          >
+            {PROTOCOLS.map((protocol) => (
+              <MenuItem key={protocol.value} value={protocol.value}>
+                {protocol.label}
+              </MenuItem>
+            ))}
+          </TextField>
         </Grid>
 
         {!isPush && (
@@ -242,24 +338,6 @@ const BiometricDeviceDialog = ({ open, device, prefill = null, submitting, error
             </Grid>
           </>
         )}
-
-        <Grid size={12}>
-          <TextField
-            select
-            label="Protocol"
-            size="small"
-            fullWidth
-            value={form.protocol}
-            onChange={setProtocol}
-            helperText={chosen?.help}
-          >
-            {PROTOCOLS.map((protocol) => (
-              <MenuItem key={protocol.value} value={protocol.value}>
-                {protocol.label}
-              </MenuItem>
-            ))}
-          </TextField>
-        </Grid>
 
         {needsCredentials && (
           <>
@@ -316,11 +394,7 @@ const BiometricDeviceDialog = ({ open, device, prefill = null, submitting, error
 
         {isPush && (
           <Grid size={12}>
-            <Alert severity="info" variant="outlined">
-              The terminal must reach this HRMS — directly over HTTPS, or through the office gateway. Punches
-              are accepted only from a serial number registered here, and only through the gateway token or
-              office IP allowlist configured on the server.
-            </Alert>
+            <TerminalSettings settings={deviceSettings} device={device} />
           </Grid>
         )}
 
@@ -354,6 +428,21 @@ const BiometricDeviceDialog = ({ open, device, prefill = null, submitting, error
             />
           </Grid>
         )}
+
+        <Grid size={{ xs: 12, sm: 6 }}>
+          <TextField
+            label="Location (optional)"
+            size="small"
+            fullWidth
+            value={form.location}
+            onChange={set('location')}
+            placeholder="Camel Oil office — main gate"
+          />
+        </Grid>
+
+        <Grid size={{ xs: 12, sm: 6 }}>
+          <TextField label="Notes (optional)" size="small" fullWidth value={form.notes} onChange={set('notes')} />
+        </Grid>
 
         <Grid size={{ xs: 12, sm: 6 }}>
           <FormControlLabel

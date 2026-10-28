@@ -16,6 +16,8 @@ import Stack from '@mui/material/Stack';
 import Tooltip from '@mui/material/Tooltip';
 import Typography from '@mui/material/Typography';
 import AddIcon from '@mui/icons-material/AddOutlined';
+import BlockIcon from '@mui/icons-material/BlockOutlined';
+import PlayIcon from '@mui/icons-material/PlayCircleOutlined';
 import DeleteIcon from '@mui/icons-material/DeleteOutlined';
 import EditIcon from '@mui/icons-material/EditOutlined';
 import InsightsIcon from '@mui/icons-material/InsightsOutlined';
@@ -186,6 +188,20 @@ const BiometricDevicesSection = () => {
     }
   };
 
+  const handleToggleActive = async (device) => {
+    setBusy({ deviceId: device._id, action: 'toggle' });
+
+    try {
+      await adminService.updateBiometricDevice(device._id, { isActive: !device.isActive });
+      setToast({ severity: 'success', message: `${device.name} ${device.isActive ? 'disabled' : 'enabled'}` });
+      load();
+    } catch (rejection) {
+      setToast({ severity: 'error', message: rejection?.message ?? 'The device could not be updated' });
+    } finally {
+      setBusy(IDLE);
+    }
+  };
+
   const handleDelete = async () => {
     const device = deleting;
     setDeleting(null);
@@ -211,9 +227,14 @@ const BiometricDevicesSection = () => {
       render: (row) => (
         <Box>
           <Typography variant="body2">{row.name}</Typography>
-          <Typography variant="caption" color="text.secondary" fontFamily="monospace">
+          <Typography variant="caption" color="text.secondary" fontFamily="monospace" display="block">
             {row.protocol === 'ADMS_PUSH' ? `SN ${row.serialNumber}` : `${row.ipAddress}:${row.port}`}
           </Typography>
+          {row.location && (
+            <Typography variant="caption" color="text.secondary">
+              {row.location}
+            </Typography>
+          )}
         </Box>
       ),
     },
@@ -289,7 +310,38 @@ const BiometricDevicesSection = () => {
       key: 'lastSyncStatus',
       // A push device is judged by its heartbeat, a pull device by its last sync.
       label: 'Connection',
-      render: (row) => <ConnectionChip device={row} />,
+      render: (row) => (
+        <Box>
+          <ConnectionChip device={row} />
+          {row.protocol === 'ADMS_PUSH' && (
+            <Typography variant="caption" color="text.secondary" display="block" sx={{ mt: 0.5 }}>
+              {row.adms?.lastSeenAt ? `Seen ${formatRelative(row.adms.lastSeenAt)}` : 'Not seen yet'}
+            </Typography>
+          )}
+        </Box>
+      ),
+    },
+    {
+      key: 'punches',
+      label: 'Punches',
+      render: (row) => {
+        const punches = row.punches ?? {};
+        return (
+          <Tooltip
+            title={`${punches.received ?? 0} received · ${punches.imported ?? 0} imported · ${punches.unmapped ?? 0} unmapped · ${punches.held ?? 0} held · ${punches.failed ?? 0} failed`}
+          >
+            <Stack direction="row" spacing={0.5} alignItems="center">
+              <Typography variant="body2">
+                {punches.imported ?? 0}/{punches.received ?? 0}
+              </Typography>
+              {punches.unmapped > 0 && (
+                <Chip size="small" color="warning" variant="outlined" label={`${punches.unmapped} unmapped`} />
+              )}
+              {punches.failed > 0 && <Chip size="small" color="error" variant="outlined" label={`${punches.failed} failed`} />}
+            </Stack>
+          </Tooltip>
+        );
+      },
     },
     {
       key: 'actions',
@@ -359,6 +411,27 @@ const BiometricDevicesSection = () => {
                 }}
               >
                 <EditIcon fontSize="small" />
+              </Button>
+            </span>
+          </Tooltip>
+
+          {/* Disabling stops a push device being served and a pull device being
+              polled; its history and mappings are kept, unlike Remove. */}
+          <Tooltip title={row.isActive ? 'Disable — stop accepting punches from it' : 'Enable'}>
+            <span>
+              <Button
+                size="small"
+                color={row.isActive ? 'warning' : 'success'}
+                disabled={!canEdit || busy.deviceId === row._id}
+                onClick={() => handleToggleActive(row)}
+              >
+                {isBusy(row._id, 'toggle') ? (
+                  <CircularProgress size={14} />
+                ) : row.isActive ? (
+                  <BlockIcon fontSize="small" />
+                ) : (
+                  <PlayIcon fontSize="small" />
+                )}
               </Button>
             </span>
           </Tooltip>
@@ -466,6 +539,7 @@ const BiometricDevicesSection = () => {
         open={formOpen}
         device={editing}
         prefill={prefill}
+        deviceSettings={integration?.receiver?.deviceSettings ?? null}
         submitting={saving}
         error={formError}
         onSubmit={handleSaveDevice}

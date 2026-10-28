@@ -2,7 +2,133 @@
 
 How the ZKTeco MB360 at the office gets its punches into the HRMS Attendance module, how to set it up, and how to tell whether it is working.
 
-> **Status:** the HRMS side is built and tested against simulated device traffic. **No real MB360 has talked to it yet.** The device is not "connected" until the end-to-end test in [§6](#6-testing-the-connection) passes on the real terminal.
+> **Status (28 Oct 2026):** the HRMS side is built and tested against simulated device traffic. The MB360 (serial `UEED245000038`) is already pushing ADMS requests to a logging receiver on the GCP VM `34.45.67.52:8081`. **No real punch has reached HRMS attendance yet.** The device is not "connected" until the check in [§0.6](#06-verify-the-first-real-punch) passes.
+
+---
+
+## 0. Current deployment: GCP VM gateway → HRMS (easy WDMS is not used)
+
+```
+MB360 ──HTTP :8081──▶ GCP VM 34.45.67.52            ──HTTPS + token──▶ Cloud Run hrms-backend /iclock ──▶ MongoDB Atlas
+(office)              biometric-gateway (systemd)                        (serial check, raw events,
+                      no database access, no data stored                  dedup, mapping, attendance rules)
+```
+
+**Why the VM forwards instead of writing to MongoDB.** The HRMS backend already contains the full ADMS receiver: serial validation, raw punch storage behind a unique index, user mapping, the hold rule for locked or corrected days, and the existing attendance engine. A receiver that wrote to MongoDB itself would duplicate that logic in a second language. The VM therefore holds only a shared token, and the attendance rules run in exactly one place.
+
+**Durability.** If Cloud Run or Atlas is down, the receiver answers `ERROR` (HTTP 500) or the gateway answers 502. Either way the terminal does not get its acknowledgement, keeps the batch, and resends it after `ErrorDelay`. The event store de-duplicates the resend. Nothing is queued on the VM, so nothing can be lost there.
+
+### 0.1 Cloud Run (`hrms-backend`)
+
+Set these under **Variables & Secrets**, or with `gcloud`:
+
+```bash
+TOKEN=$(openssl rand -hex 32)   # keep this; the VM needs the same value
+gcloud run services update hrms-backend --region asia-south1 --update-env-vars \
+ADMS_ENABLED=true,ADMS_GATEWAY_TOKEN=$TOKEN,ADMS_ALLOWED_IPS=34.45.67.52,\
+ADMS_DEVICE_SERVER_ADDRESS=34.45.67.52,ADMS_DEVICE_SERVER_PORT=8081,ADMS_DEVICE_HTTPS=false,\
+TZ=Asia/Kolkata,BIOMETRIC_DEVICE_TIMEZONE=Asia/Kolkata
+```
+
+- `ADMS_ALLOWED_IPS=34.45.67.52` means only the VM may call the receiver, and it must also present the token.
+- `TZ` and `BIOMETRIC_DEVICE_TIMEZONE`: the Company Profile timezone is currently `Asia/Kolkata`. Before relying on these values, confirm that the **device clock** is also on Indian time. See §0.6, step 4.
+- Run the index migration once, from a machine Atlas allows:
+  ```bash
+  cd backend && MONGODB_URI="<production URI>" NODE_ENV=production JWT_ACCESS_SECRET=x JWT_REFRESH_SECRET=x npm run migrate:biometric
+  ```
+
+### 0.2 The VM: replace the Flask logger with the gateway
+
+`receiver.py` answers `OK` to everything and stores nothing. **Every punch the MB360 sent to it was acknowledged and discarded**, and the device will not resend those punches by itself (see §0.6, step 5). It also runs on Flask's development server. Stop it before starting the gateway, because both use port 8081.
+
+From your PC (repository root), copy the gateway to the VM:
+
+```bash
+gcloud compute scp biometric-gateway/gateway.js biometric-gateway/package.json \
+  biometric-gateway/gateway.env.example biometric-gateway/hrms-biometric-gateway.service \
+  VM_NAME:/tmp/ --zone ZONE
+```
+
+On the VM:
+
+```bash
+# 1. Stop the Flask logger (however it was started)
+pkill -f receiver.py || true
+sudo systemctl disable --now mb360-adms 2>/dev/null || true   # only if you made a unit for it
+
+# 2. Node.js (Debian 12 ships Node 18, which is enough)
+sudo apt-get update && sudo apt-get install -y nodejs
+node --version            # must print v18 or later
+
+# 3. Install as an unprivileged service
+sudo useradd --system --no-create-home --shell /usr/sbin/nologin hrmsgw
+sudo mkdir -p /opt/hrms-biometric-gateway
+sudo cp /tmp/gateway.js /tmp/package.json /tmp/gateway.env.example /opt/hrms-biometric-gateway/
+sudo cp /opt/hrms-biometric-gateway/gateway.env.example /opt/hrms-biometric-gateway/gateway.env
+sudo nano /opt/hrms-biometric-gateway/gateway.env
+#    UPSTREAM_URL=https://<hrms-backend URL>     (no path, no trailing slash)
+#    GATEWAY_TOKEN=<the same $TOKEN as Cloud Run>
+#    ALLOWED_DEVICE_IPS=<office PUBLIC IP>       (the source address in your receiver.py logs)
+sudo chown -R root:hrmsgw /opt/hrms-biometric-gateway
+sudo chmod 640 /opt/hrms-biometric-gateway/gateway.env
+
+# 4. Start it, and on every boot
+sudo cp /tmp/hrms-biometric-gateway.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now hrms-biometric-gateway
+curl -s http://127.0.0.1:8081/healthz          # -> ok
+journalctl -u hrms-biometric-gateway -f        # live log
+```
+
+If you don't know the office's public IP yet, start with it unset and read it from the log. The gateway logs `Refused: address not allowed` with the caller's `from` address. Put that address in `ALLOWED_DEVICE_IPS`, then `sudo systemctl restart hrms-biometric-gateway`.
+
+### 0.3 VM network: firewall and static IP
+
+```bash
+# What is open today, and which tags the VM carries
+gcloud compute firewall-rules list --format="table(name,direction,sourceRanges.list(),allowed[].map().firewall_rule().list(),targetTags.list())"
+gcloud compute instances describe VM_NAME --zone ZONE --format="value(tags.items)"
+
+# Allow 8081 from the office only
+gcloud compute instances add-tags VM_NAME --zone ZONE --tags mb360-receiver
+gcloud compute firewall-rules create allow-mb360-adms --direction INGRESS --action ALLOW \
+  --rules tcp:8081 --source-ranges OFFICE_PUBLIC_IP/32 --target-tags mb360-receiver
+
+# Then remove whichever existing rule opens 8081 to 0.0.0.0/0
+gcloud compute firewall-rules delete OLD_RULE_NAME
+
+# Keep 34.45.67.52 if the VM restarts (promote the ephemeral IP to static)
+gcloud compute addresses create mb360-receiver-ip --addresses 34.45.67.52 --region REGION
+```
+
+If the office's public IP changes (a dynamic broadband line), the firewall rule and `ALLOWED_DEVICE_IPS` both break when it does. In that case either get a static IP from the ISP, or use a CIDR range covering the ISP's pool. Use `0.0.0.0/0` together with `ALLOWED_DEVICE_IPS=*` only as a last resort: the registered serial number is then the only check.
+
+**HTTPS:** the leg from the terminal to the VM is plain HTTP across the internet. It carries device user IDs and punch times, with no passwords and no biometric data. The VM-to-HRMS leg is HTTPS. Encrypting the first leg needs a domain name, a TLS certificate on the VM, and MB360 firmware that accepts it. None of that is in place or verified; restricting the firewall to the office IP is the mitigation for now.
+
+### 0.4 The MB360: no change needed
+
+It already points at the VM. For reference, **Comm → Cloud Server Setting**: Server Mode `ADMS`, Enable Domain Name `OFF`, Server Address `34.45.67.52`, Server Port `8081`, Enable Proxy Server `OFF`, HTTPS `OFF`. The device form in the HRMS shows the same values once `ADMS_DEVICE_SERVER_ADDRESS` is set.
+
+### 0.5 Register the device and map employees
+
+1. **Administration → System Settings → Biometric devices.** Delete the old `Camel Oil MB360` row (protocol `WDMS_API`, which has no data).
+2. **Add device:**
+   - Protocol: **ZKTeco ADMS push**
+   - Serial: `UEED245000038`
+   - Accept punches from: the date the MB360 was first pointed at the VM, so the punches Flask discarded can be recovered (step 5 below)
+   - Location: optional
+3. Within a minute the row shows **Online** and "Seen just now". If it shows "Never connected" instead, read §6 Troubleshooting.
+4. **Map:** click **Load reported users**. This lists the IDs the device has reported or punched with. To get the full roster of 242 people, use **Activity → Request upload → Request user list** first. Choose each person's HRMS employee, keep **"After saving, import the waiting punches"** ticked, and save. One device user ID can only be mapped to one employee.
+
+### 0.6 Verify the first real punch
+
+1. Have a mapped employee punch on the MB360.
+2. **Activity → Events:** the punch appears within seconds as **Imported**. Check that **Device clock** matches the time on the device's screen.
+3. **Attendance → Register** for today: the employee has a check-in with source BIOMETRIC.
+4. **Timezone:** the *Punch time* column (shown in your browser's timezone) must match the time the person actually punched. If it is off by a fixed number of hours, the device clock and `BIOMETRIC_DEVICE_TIMEZONE` disagree. Fix the device clock (System → Date Time) or the variable.
+5. **Recover what Flask discarded:** **Activity → Request upload** for the dates since the device was pointed at the VM. Whether this MB360's firmware honours the request is unverified; the result is shown in the same tab (return code `0` = done, `-1` = nothing in range or unsupported). Re-sent punches are de-duplicated. If the firmware refuses, export those days from the device's USB menu and use **Attendance → Biometric Import**.
+
+Only after steps 1–4 succeed is the device connected.
 
 ---
 
