@@ -1,0 +1,3 @@
+# The gateway is deployed to Linux VMs; a systemd unit with CRLF line endings
+# fails to load. Keep these files LF on every checkout.
+biometric-gateway/** text eol=lf
