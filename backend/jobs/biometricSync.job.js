@@ -75,11 +75,17 @@ export const runDueSyncs = async () => {
     const tenants = await AppSettings.find({
       biometricDevices: { $elemMatch: { isActive: true, autoSync: true } },
     })
-      // `+biometricDevices.password` is not optional here: a WDMS server has to
-      // be logged into on every pull, and without the credential every
-      // scheduled sync of one would fail on authentication while a manual sync
-      // from the screen -- which does select it -- worked perfectly.
-      .select('tenantId biometricDevices +biometricDevices.password')
+      // The device password is not optional here: a WDMS server has to be
+      // logged into on every pull, and without the credential every scheduled
+      // sync of one would fail on authentication while a manual sync from the
+      // screen -- which does select it -- worked perfectly.
+      //
+      // Including `biometricDevices` as a whole already returns the
+      // `select: false` password with it. Do not add
+      // `+biometricDevices.password` beside it: MongoDB 4.4+ rejects a parent
+      // and its own child in one projection ("Path collision at
+      // biometricDevices.password") and the whole sweep fails on every tick.
+      .select('tenantId biometricDevices')
       .lean();
 
     for (const settings of tenants) {
