@@ -540,6 +540,8 @@ const BiometricDevicesSection = () => {
         device={editing}
         prefill={prefill}
         deviceSettings={integration?.receiver?.deviceSettings ?? null}
+        canEditReceiver={canEdit}
+        onReceiverSaved={load}
         submitting={saving}
         error={formError}
         onSubmit={handleSaveDevice}

@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import Alert from '@mui/material/Alert';
+import Button from '@mui/material/Button';
 import FormControlLabel from '@mui/material/FormControlLabel';
 import Grid from '@mui/material/Grid';
 import MenuItem from '@mui/material/MenuItem';
@@ -9,6 +10,7 @@ import TextField from '@mui/material/TextField';
 import Typography from '@mui/material/Typography';
 
 import FormDialog from '@components/common/FormDialog.jsx';
+import adminService from '@services/modules/admin.service.js';
 import { formatDateTime } from '@utils/format.js';
 
 import { ConnectionChip } from './BiometricActivityDialog.jsx';
@@ -104,7 +106,33 @@ const EMPTY = {
  * receiver's own record of the last request, not a probe made from here --
  * nobody can call an ADMS terminal.
  */
-const TerminalSettings = ({ settings, device }) => {
+const TerminalSettings = ({ settings, device, canEditReceiver = false, onReceiverSaved = null }) => {
+  const [editing, setEditing] = useState(false);
+  const [receiverUrl, setReceiverUrl] = useState('');
+  const [saving, setSaving] = useState(false);
+  const [receiverError, setReceiverError] = useState(null);
+
+  const editable = canEditReceiver && settings?.editable !== false;
+
+  /**
+   * Saved on its own, at once -- not with the device. The address belongs to
+   * the deployment, every ADMS terminal shares it, and cancelling the device
+   * form should not lose it.
+   */
+  const saveReceiver = async () => {
+    setSaving(true);
+    setReceiverError(null);
+    try {
+      await adminService.updateBiometricReceiver(receiverUrl.trim() || null);
+      setEditing(false);
+      onReceiverSaved?.();
+    } catch (rejection) {
+      setReceiverError(rejection?.message ?? 'The receiver address could not be saved');
+    } finally {
+      setSaving(false);
+    }
+  };
+
   const row = (label, value) => (
     <Stack direction="row" justifyContent="space-between" spacing={2}>
       <Typography variant="caption" color="text.secondary">
@@ -122,7 +150,7 @@ const TerminalSettings = ({ settings, device }) => {
         On the terminal: Comm → Cloud Server Setting
       </Typography>
 
-      {settings?.serverAddress ? (
+      {settings?.serverAddress && !editing ? (
         <Stack spacing={0.25} sx={{ minWidth: 260 }}>
           {row('Server Mode', settings.serverMode)}
           {row('Enable Domain Name', settings.enableDomainName ? 'ON' : 'OFF')}
@@ -130,11 +158,55 @@ const TerminalSettings = ({ settings, device }) => {
           {row('Server Port', settings.serverPort)}
           {row('Enable Proxy Server', 'OFF')}
           {row('HTTPS', settings.https ? 'ON' : 'OFF')}
+          <Stack direction="row" spacing={1} alignItems="center" sx={{ pt: 0.5 }}>
+            <Typography variant="caption" color="text.secondary">
+              Receiver {settings.url}
+              {settings.source === 'ENVIRONMENT' ? ' — set on the server' : ''}
+            </Typography>
+            {editable && (
+              <Button
+                size="small"
+                onClick={() => {
+                  setReceiverUrl(settings.url ?? '');
+                  setEditing(true);
+                }}
+              >
+                Change
+              </Button>
+            )}
+          </Stack>
+        </Stack>
+      ) : editable ? (
+        <Stack spacing={1} sx={{ mt: 0.5 }}>
+          <Typography variant="caption" color="text.secondary">
+            Enter the public address the terminal can reach — the receiver or the gateway VM in front of it, exactly as
+            the terminal calls it.
+          </Typography>
+          <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1}>
+            <TextField
+              label="Receiver URL"
+              size="small"
+              fullWidth
+              placeholder="http://34.45.67.52:8081"
+              value={receiverUrl}
+              onChange={(event) => setReceiverUrl(event.target.value)}
+              error={Boolean(receiverError)}
+              helperText={receiverError ?? 'Scheme, address and port only. Saved for every ADMS device.'}
+            />
+            <Button variant="outlined" size="small" disabled={saving || !receiverUrl.trim()} onClick={saveReceiver}>
+              {saving ? 'Saving…' : 'Save address'}
+            </Button>
+            {settings?.serverAddress && (
+              <Button size="small" disabled={saving} onClick={() => setEditing(false)}>
+                Cancel
+              </Button>
+            )}
+          </Stack>
         </Stack>
       ) : (
         <Typography variant="caption" color="text.secondary">
-          The receiver address is not configured on the server (ADMS_DEVICE_SERVER_ADDRESS). Ask the administrator
-          who deployed the receiver for the address and port to enter.
+          No receiver address is configured yet. An administrator with settings rights can enter it here, or it can be
+          set on the server with ADMS_DEVICE_SERVER_ADDRESS.
         </Typography>
       )}
 
@@ -156,7 +228,18 @@ const TerminalSettings = ({ settings, device }) => {
  * `deviceSettings` is the receiver's terminal-facing configuration, from the
  * integration status endpoint.
  */
-const BiometricDeviceDialog = ({ open, device, prefill = null, deviceSettings = null, submitting, error, onSubmit, onClose }) => {
+const BiometricDeviceDialog = ({
+  open,
+  device,
+  prefill = null,
+  deviceSettings = null,
+  canEditReceiver = false,
+  onReceiverSaved = null,
+  submitting,
+  error,
+  onSubmit,
+  onClose,
+}) => {
   const [form, setForm] = useState(EMPTY);
 
   useEffect(() => {
@@ -394,7 +477,12 @@ const BiometricDeviceDialog = ({ open, device, prefill = null, deviceSettings = 
 
         {isPush && (
           <Grid size={12}>
-            <TerminalSettings settings={deviceSettings} device={device} />
+            <TerminalSettings
+              settings={deviceSettings}
+              device={device}
+              canEditReceiver={canEditReceiver}
+              onReceiverSaved={onReceiverSaved}
+            />
           </Grid>
         )}
 

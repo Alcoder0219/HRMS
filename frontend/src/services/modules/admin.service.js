@@ -81,6 +81,8 @@ const adminService = {
 
   // The integration's health, and one device's counters, events and logs.
   biometricIntegrationStatus: () => axiosClient.get(url('/biometric/status')),
+  // Where terminals must be pointed; `url` null clears it.
+  updateBiometricReceiver: (receiverUrl) => axiosClient.put(url('/biometric/receiver'), { url: receiverUrl }),
   biometricDeviceStatus: (deviceId) => axiosClient.get(url(`/biometric/devices/${deviceId}/status`)),
   biometricDeviceEvents: (deviceId, params) =>
     axiosClient.get(url(`/biometric/devices/${deviceId}/events`), { params }),

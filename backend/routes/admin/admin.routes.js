@@ -273,6 +273,14 @@ router.get(
   controller.biometricIntegrationStatus,
 );
 
+// Where terminals must be pointed. Device administration, so tenant:update.
+router.put(
+  '/biometric/receiver',
+  requirePermission(RESOURCES.TENANT, ACTIONS.UPDATE),
+  validate({ body: schemas.receiverSettingsSchema }),
+  controller.updateBiometricReceiver,
+);
+
 router.get(
   '/biometric/devices/:deviceId/status',
   requirePermission(RESOURCES.TENANT, ACTIONS.READ),

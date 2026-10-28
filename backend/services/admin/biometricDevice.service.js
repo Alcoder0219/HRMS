@@ -753,6 +753,92 @@ const timeZoneCheck = (companyTimeZone) => {
   return { serverTimeZone: server, serverUtcOffsetMinutes: serverOffset, deviceTimeZone: deviceZone, companyTimeZone, warnings };
 };
 
+/**
+ * The values to enter on the terminal's Cloud Server Setting, and where they
+ * came from.
+ *
+ * The environment wins when it names an address: an operator who pinned the
+ * receiver in the deployment should not be overridden from a settings screen.
+ * Otherwise the address an administrator stored is used. With neither, the
+ * address is null and the screen says so -- it is never guessed, because a
+ * wrong address shown as fact sends someone to reconfigure a device wrongly.
+ */
+export const resolveDeviceSettings = (settings) => {
+  const fromEnv = env.adms.deviceServerAddress;
+  const stored = settings?.admsReceiver ?? {};
+
+  const source = fromEnv ? 'ENVIRONMENT' : stored.serverAddress ? 'SETTINGS' : null;
+  const serverAddress = fromEnv ?? stored.serverAddress ?? null;
+  const serverPort = fromEnv ? env.adms.deviceServerPort : (stored.serverPort ?? 8081);
+  const https = fromEnv ? env.adms.deviceServerHttps : Boolean(stored.https);
+
+  return {
+    serverMode: 'ADMS',
+    serverAddress,
+    serverPort,
+    https,
+    // A name needs the device's "Enable Domain Name"; a bare IPv4 address does not.
+    enableDomainName: Boolean(serverAddress && !/^[\d.]+$/.test(serverAddress)),
+    url: serverAddress ? `${https ? 'https' : 'http'}://${serverAddress}:${serverPort}` : null,
+    source,
+    // An environment-pinned address cannot be changed from the screen.
+    editable: !fromEnv,
+    updatedAt: source === 'SETTINGS' ? (stored.updatedAt ?? null) : null,
+  };
+};
+
+/**
+ * Stores the receiver address from a URL such as `http://34.45.67.52:8081`,
+ * or clears it with null.
+ *
+ * Only the scheme, host and port are kept -- a terminal is given a host and a
+ * port and calls a fixed `/iclock` path, so a path here could only mislead.
+ */
+export const updateReceiverSettings = async ({ url }, req) => {
+  if (env.adms.deviceServerAddress) {
+    throw ApiError.conflict(
+      'The receiver address is set by ADMS_DEVICE_SERVER_ADDRESS on the server and cannot be changed here',
+    );
+  }
+
+  const settings = await load(tenantOf(req));
+  const before = resolveDeviceSettings(settings).url;
+
+  if (url) {
+    const parsed = new URL(url);
+    if (parsed.pathname !== '/' || parsed.search || parsed.username || parsed.password) {
+      throw ApiError.badRequest('Enter only the scheme, address and port, e.g. http://34.45.67.52:8081');
+    }
+
+    const https = parsed.protocol === 'https:';
+    settings.admsReceiver = {
+      serverAddress: parsed.hostname,
+      serverPort: Number(parsed.port) || (https ? 443 : 80),
+      https,
+      updatedAt: new Date(),
+      updatedBy: req.user?.id ?? null,
+    };
+  } else {
+    settings.admsReceiver = { serverAddress: null, serverPort: 8081, https: false, updatedAt: new Date(), updatedBy: req.user?.id ?? null };
+  }
+
+  settings.updatedBy = req.user?.id ?? null;
+  await settings.save();
+
+  const after = resolveDeviceSettings(settings);
+
+  await recordAudit({
+    req,
+    entity: 'BiometricReceiver',
+    entityId: settings._id,
+    entityLabel: 'ADMS receiver address',
+    action: AUDIT_ACTIONS.UPDATE,
+    changes: [{ field: 'url', from: before, to: after.url }],
+  });
+
+  return after;
+};
+
 /** The receiver's configuration and every device's link state, for the settings screen. */
 export const integrationStatus = async (req) => {
   const settings = await load(tenantOf(req));
@@ -766,13 +852,7 @@ export const integrationStatus = async (req) => {
       allowedIpCount: env.adms.allowedIps.length,
       pollDelaySeconds: env.adms.pollDelaySeconds,
       // The values to enter on the terminal itself.
-      deviceSettings: {
-        serverMode: 'ADMS',
-        serverAddress: env.adms.deviceServerAddress,
-        serverPort: env.adms.deviceServerPort,
-        https: env.adms.deviceServerHttps,
-        enableDomainName: Boolean(env.adms.deviceServerAddress && !/^[\d.]+$/.test(env.adms.deviceServerAddress)),
-      },
+      deviceSettings: resolveDeviceSettings(settings),
     },
     time: timeZoneCheck(settings.company?.timezone ?? null),
     unregisteredDevices: env.adms.enabled ? listUnregisteredSerials() : [],
@@ -805,4 +885,5 @@ export default {
   reprocessDevice,
   queueCommand,
   integrationStatus,
+  updateReceiverSettings,
 };

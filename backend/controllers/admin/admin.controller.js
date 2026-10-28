@@ -282,6 +282,10 @@ export const biometricIntegrationStatus = asyncHandler(async (req, res) =>
   ApiResponse.ok(res, await biometricDeviceService.integrationStatus(req), 'Biometric integration status'),
 );
 
+export const updateBiometricReceiver = asyncHandler(async (req, res) =>
+  ApiResponse.ok(res, await biometricDeviceService.updateReceiverSettings(req.body, req), 'Receiver address saved'),
+);
+
 export const biometricDeviceStatus = asyncHandler(async (req, res) =>
   ApiResponse.ok(res, await biometricDeviceService.deviceStatus(req.params.deviceId, req), 'Device status'),
 );
@@ -392,6 +396,7 @@ export default {
   testBiometricDevice,
   syncBiometricDevice,
   biometricIntegrationStatus,
+  updateBiometricReceiver,
   biometricDeviceStatus,
   biometricDeviceEvents,
   biometricDeviceLogs,
