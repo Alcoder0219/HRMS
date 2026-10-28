@@ -54,6 +54,43 @@ const FUTURE_TOLERANCE_MS = 24 * 60 * 60 * 1000;
 
 export const isValidSerial = (value) => SERIAL_PATTERN.test(String(value ?? ''));
 
+/**
+ * The address a terminal is told to call, from either form people write it in.
+ *
+ *   34.45.67.52            host only -- port and scheme from the defaults
+ *   34.45.67.52:8081       host and port
+ *   http://34.45.67.52:8081, https://hrms-backend-xxxx.run.app
+ *
+ * A terminal is configured with a host, a port and an HTTPS switch, and calls
+ * a fixed /iclock path itself -- so a path, query or credentials here could
+ * only mislead whoever copies the values onto the device, and are refused.
+ *
+ * @returns {{ serverAddress: string, serverPort: number, https: boolean }}
+ * @throws  {Error} with a message naming what is wrong
+ */
+export const parseReceiverAddress = (text, { defaultPort = 8081, defaultHttps = false } = {}) => {
+  const raw = String(text ?? '').trim();
+  if (!raw) throw new Error('is empty');
+
+  const hasScheme = /^[a-z]+:\/\//i.test(raw);
+  let url;
+  try {
+    url = new URL(hasScheme ? raw : `${defaultHttps ? 'https' : 'http'}://${raw}`);
+  } catch {
+    throw new Error(`"${raw}" is not a host name, IP address or URL`);
+  }
+
+  if (!['http:', 'https:'].includes(url.protocol)) throw new Error('must use http:// or https://');
+  if ((url.pathname && url.pathname !== '/') || url.search || url.hash || url.username || url.password) {
+    throw new Error('must be only a scheme, host and port -- the terminal adds /iclock itself');
+  }
+
+  const https = hasScheme ? url.protocol === 'https:' : defaultHttps;
+  const serverPort = url.port ? Number(url.port) : hasScheme ? (https ? 443 : 80) : defaultPort;
+
+  return { serverAddress: url.hostname, serverPort, https };
+};
+
 /* -------------------------------------------------------------------------- */
 /*                               Device clock                                 */
 /* -------------------------------------------------------------------------- */
@@ -424,6 +461,7 @@ export const buildDedupKey = ({ tenantId, deviceKey, deviceUserId, timestamp }) 
 
 export default {
   isValidSerial,
+  parseReceiverAddress,
   assertTimeZone,
   timeZoneOffsetMinutes,
   parseDeviceTime,

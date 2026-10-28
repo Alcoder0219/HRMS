@@ -746,6 +746,38 @@ describe('ADMS receiver', { skip: !reachable && 'MongoDB is not reachable on loc
     assert.equal(await Attendance.countDocuments({}), days);
   });
 
+  /* --------------------------- the exact requests captured from UEED245000038 */
+
+  test('answers the MB360’s captured handshake, including PushOptionsFlag, with options rather than a bare OK', async () => {
+    const response = await call(`/iclock/cdata?SN=${SERIAL}&options=all&language=69&pushver=2.4.1&PushOptionsFlag=1`);
+
+    assert.equal(response.status, 200);
+    const lines = response.text.split('\n');
+    assert.equal(lines[0], `GET OPTION FROM: ${SERIAL}`);
+    for (const option of ['ATTLOGStamp=', 'OPERLOGStamp=', 'ErrorDelay=', 'Delay=', 'TransFlag=', 'Realtime=1']) {
+      assert.ok(lines.some((line) => line.startsWith(option)), option);
+    }
+    assert.notEqual(response.text, 'OK');
+  });
+
+  test('takes the captured OPERLOG upload with Stamp=9999', async () => {
+    const response = await call(`/iclock/cdata?SN=${SERIAL}&table=OPERLOG&Stamp=9999`, {
+      method: 'POST',
+      body: 'OPLOG 4\t0\t2026-10-28 08:00:00\t0\t0\t0\t0',
+    });
+    assert.equal(response.status, 200);
+    assert.equal(response.text, 'OK');
+    // An operation log is not attendance.
+    assert.equal(await BiometricEvent.countDocuments({ punchTime: new Date('2026-10-28T05:00:00Z') }), 0);
+  });
+
+  test('reports the receiver on /health without exposing any device', async () => {
+    const response = await fetch(`${base}/health`);
+    const body = await response.json();
+    assert.equal(body.biometricReceiver, 'enabled');
+    assert.ok(!JSON.stringify(body).includes(SERIAL));
+  });
+
   test('refuses an inactive device', async () => {
     await AppSettings.updateOne({ 'biometricDevices._id': deviceId }, { $set: { 'biometricDevices.$.isActive': false } });
     const response = await call(`/iclock/getrequest?SN=${SERIAL}`);

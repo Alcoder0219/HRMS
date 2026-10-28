@@ -14,6 +14,7 @@ import notFound from './middlewares/notFound.js';
 import errorHandler from './middlewares/errorHandler.js';
 import routes from './routes/index.js';
 import admsRoutes from './routes/adms/adms.routes.js';
+import { admsSecurityMode } from './middlewares/admsGuard.js';
 
 const app = express();
 
@@ -72,9 +73,12 @@ app.get('/health', (_req, res) => {
     environment: env.nodeEnv,
     uptime: Math.round(process.uptime()),
     database: dbStates[mongoose.connection.readyState] ?? 'unknown',
-    // Whether the ADMS receiver is switched on -- nothing about its devices,
-    // which is what the authenticated integration status endpoint is for.
-    biometricReceiver: env.adms.enabled ? 'enabled' : 'disabled',
+    // Whether the ADMS receiver will actually serve a device -- nothing about
+    // the devices themselves, which is what the authenticated integration
+    // status endpoint is for. "misconfigured" is enabled in production with
+    // no gateway token or IP allowlist, where every device gets a 503; calling
+    // that "enabled" would make a dead receiver look healthy.
+    biometricReceiver: !env.adms.enabled ? 'disabled' : admsSecurityMode() === 'MISCONFIGURED' ? 'misconfigured' : 'enabled',
     timestamp: new Date().toISOString(),
   });
 });

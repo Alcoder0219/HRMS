@@ -7,7 +7,7 @@ import logger from '../../config/logger.js';
 import { ACTIONS, AUDIT_ACTIONS, RESOURCES } from '../../utils/constants.js';
 import { recordAudit, diffObjects } from '../../helpers/audit.helper.js';
 import { can } from '../../helpers/permission.helper.js';
-import { ADMS_COMMANDS, timeZoneOffsetMinutes } from '../../helpers/adms.helper.js';
+import { ADMS_COMMANDS, parseReceiverAddress, timeZoneOffsetMinutes } from '../../helpers/adms.helper.js';
 import { admsSecurityMode } from '../../middlewares/admsGuard.js';
 import biometricSync from '../biometric/biometricSync.service.js';
 import biometricEvents from '../biometric/biometricEvent.service.js';
@@ -805,19 +805,16 @@ export const updateReceiverSettings = async ({ url }, req) => {
   const before = resolveDeviceSettings(settings).url;
 
   if (url) {
-    const parsed = new URL(url);
-    if (parsed.pathname !== '/' || parsed.search || parsed.username || parsed.password) {
+    // The same rules ADMS_DEVICE_SERVER_ADDRESS is read by, so the screen and
+    // the environment cannot disagree about what a valid address is.
+    let parsed;
+    try {
+      parsed = parseReceiverAddress(url);
+    } catch {
       throw ApiError.badRequest('Enter only the scheme, address and port, e.g. http://34.45.67.52:8081');
     }
 
-    const https = parsed.protocol === 'https:';
-    settings.admsReceiver = {
-      serverAddress: parsed.hostname,
-      serverPort: Number(parsed.port) || (https ? 443 : 80),
-      https,
-      updatedAt: new Date(),
-      updatedBy: req.user?.id ?? null,
-    };
+    settings.admsReceiver = { ...parsed, updatedAt: new Date(), updatedBy: req.user?.id ?? null };
   } else {
     settings.admsReceiver = { serverAddress: null, serverPort: 8081, https: false, updatedAt: new Date(), updatedBy: req.user?.id ?? null };
   }
