@@ -732,7 +732,8 @@ const serverTimeZone = () => Intl.DateTimeFormat().resolvedOptions().timeZone ??
  */
 const timeZoneCheck = (companyTimeZone) => {
   const server = serverTimeZone();
-  const serverOffset = -new Date().getTimezoneOffset();
+  // `|| 0` so UTC reports 0 rather than JavaScript's negative zero.
+  const serverOffset = -new Date().getTimezoneOffset() || 0;
   const deviceZone = env.biometricTimeZone ?? server;
 
   let companyOffset = null;

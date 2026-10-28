@@ -16,6 +16,7 @@
     "create:superadmin": "node scripts/createSuperAdmin.js",
     "recompute:overtime": "node scripts/recomputeAttendanceOvertime.js",
     "migrate:biometric": "node scripts/migrateBiometricIntegration.js",
+    "migrate:day-keys": "node scripts/migrateDayKeysToTimezone.js",
     "//test": "The integration suite needs a LOCAL MongoDB (MONGODB_TEST_URI, default 127.0.0.1) and drops its own throwaway database; it is skipped when none is reachable",
     "test": "node --test \"tests/*.test.js\""
   },

@@ -199,7 +199,19 @@ Production runs with `autoIndex` off. This builds the unique index that makes du
 
 The attendance engine evaluates shift times (`09:00`), lateness, and the day boundary in the **server's** local zone. It always has; this integration does not change it. Cloud Run runs in **UTC** unless `TZ` is set, which would grade a 09:00 shift as starting at 12:00 East Africa Time.
 
-**Administration → System Settings → Biometric devices** shows a warning when the server zone and the company zone (Company Profile → timezone) differ. Setting `TZ=Africa/Dar_es_Salaam` changes how *every* attendance source is graded from then on. Check a few recent days in the register after setting it.
+**Administration → System Settings → Biometric devices** shows a warning when the server zone and the company zone (Company Profile → timezone) differ. It compares UTC offsets, so it clears by itself once the server really runs in the company's zone. Setting `TZ` changes how *every* attendance source is graded from then on.
+
+**Existing data must move with it.** Days are keyed by midnight in the server's zone, and exact lookups match that key. Rows written under UTC sit at `00:00Z`; in Asia/Kolkata the same day is keyed at `18:30Z` the evening before. Right after the revision with `TZ` is live, and before anyone edits attendance, run:
+
+```bash
+cd backend
+TZ=Asia/Kolkata MONGODB_URI="<production URI>" npm run migrate:day-keys -- --timezone=Asia/Kolkata          # preview
+TZ=Asia/Kolkata MONGODB_URI="<production URI>" npm run migrate:day-keys -- --timezone=Asia/Kolkata --apply  # write
+```
+
+The migration moves only the day keys in `attendances.date`, `compoffs.earnedOn` and `regularizations.date`, to the same calendar date. No figure is recomputed and no timestamp changes. If a row already exists at the new key for the same employee, both rows are left alone and reported. A second run finds nothing.
+
+Figures computed under UTC (lateness against a 09:00 shift evaluated as 14:30 IST, for example) stay as they were. Recomputing past days is a separate decision for whoever owns payroll.
 
 ## 4. Office gateway (option B)
 
