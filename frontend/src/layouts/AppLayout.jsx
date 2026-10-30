@@ -37,6 +37,7 @@ import { toggleThemeMode, selectThemeMode, selectCurrency } from '@redux/slices/
 import { NAV_GROUPS } from '@config/navigation.js';
 import { initials } from '@utils/format.js';
 import { PATHS } from '@routes/paths.js';
+import amsonsLogo from '@assets/amsons-logo.jpeg';
 
 const DRAWER_WIDTH = 264;
 
@@ -143,9 +144,12 @@ const AppLayout = () => {
   const drawer = (
     <Box sx={{ height: '100%', display: 'flex', flexDirection: 'column' }}>
       <Toolbar sx={{ px: 3 }}>
-        <Typography variant="h5" color="primary" fontWeight={700} letterSpacing="-0.02em">
-          HRMS
-        </Typography>
+        <Box
+          component="img"
+          src={amsonsLogo}
+          alt="Amsons Group"
+          sx={{ display: 'block', height: 48, width: 'auto', maxWidth: '100%', objectFit: 'contain', borderRadius: 1 }}
+        />
       </Toolbar>
 
       <Divider />
