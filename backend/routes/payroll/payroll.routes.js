@@ -3,6 +3,7 @@ import { Router } from 'express';
 import controller from '../../controllers/payroll/payroll.controller.js';
 import settlementController from '../../controllers/payroll/settlement.controller.js';
 import validate from '../../middlewares/validate.js';
+import { spreadsheetUpload } from '../../config/multer.js';
 import { requirePermission, requireScope } from '../../middlewares/authorize.js';
 import { ACTIONS, SCOPES } from '../../utils/constants.js';
 
@@ -346,6 +347,16 @@ router.post(
   requirePermission(ACTIONS.CREATE),
   validate(settlementSchemas.createAssetSchema),
   settlementController.createAsset,
+);
+
+// Bulk import. Declared before `/assets/:id`, which would capture "import".
+router.get('/assets/import/template', requirePermission(ACTIONS.CREATE), settlementController.downloadAssetTemplate);
+
+router.post(
+  '/assets/import',
+  requirePermission(ACTIONS.CREATE),
+  spreadsheetUpload.single('file'),
+  settlementController.importAssets,
 );
 
 router.get(

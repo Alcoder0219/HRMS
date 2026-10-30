@@ -44,6 +44,7 @@ const ImportDialog = ({
   title = 'Import',
   templateName = 'import-template.xlsx',
   description = null,
+  importLabel = null,
   onTemplate,
   onImport,
   onClose,
@@ -238,7 +239,9 @@ const ImportDialog = ({
             disabled={!validated || busy || result.valid === 0}
             variant="contained"
           >
-            Import {validated ? `${result.valid} row(s)` : ''}
+            {importLabel
+              ? `${importLabel}${validated ? ` (${result.valid})` : ''}`
+              : `Import ${validated ? `${result.valid} row(s)` : ''}`}
           </Button>
         )}
       </DialogActions>

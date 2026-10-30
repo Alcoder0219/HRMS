@@ -2,6 +2,8 @@ import asyncHandler from '../../utils/asyncHandler.js';
 import ApiResponse from '../../utils/ApiResponse.js';
 import settlementService from '../../services/payroll/settlement.service.js';
 import assetService from '../../services/employee/asset.service.js';
+import assetImportService from '../../services/employee/assetImport.service.js';
+import ApiError from '../../utils/ApiError.js';
 import payrollRepository from '../../repositories/payroll/payroll.repository.js';
 import { buildSettlementPdf } from '../../helpers/pdf.helper.js';
 import { CURRENCY } from '../../utils/constants.js';
@@ -137,6 +139,32 @@ export const markAssetLost = asyncHandler(async (req, res) =>
   ApiResponse.ok(res, await assetService.markAssetLost(req.params.id, req.body, req), 'Asset marked as lost'),
 );
 
+export const downloadAssetTemplate = asyncHandler(async (_req, res) => {
+  const buffer = await assetImportService.buildAssetImportTemplate();
+
+  res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+  res.setHeader('Content-Disposition', 'attachment; filename="asset-import-template.xlsx"');
+
+  return res.status(200).send(Buffer.from(buffer));
+});
+
+export const importAssets = asyncHandler(async (req, res) => {
+  if (!req.file) throw ApiError.badRequest('No file was uploaded');
+
+  // Multipart fields arrive as strings and bypass the validator.
+  const dryRun = req.body?.dryRun === 'true' || req.body?.dryRun === true;
+
+  const result = await assetImportService.importAssets(req.file.buffer, { dryRun }, req);
+
+  return ApiResponse.ok(
+    res,
+    result,
+    dryRun
+      ? `Validation complete: ${result.valid} row(s) ready, ${result.failed} with errors`
+      : `Imported ${result.imported} asset(s), ${result.failed} row(s) with errors`,
+  );
+});
+
 export default {
   create,
   recalculate,
@@ -157,4 +185,6 @@ export default {
   assignAsset,
   returnAsset,
   markAssetLost,
+  downloadAssetTemplate,
+  importAssets,
 };
