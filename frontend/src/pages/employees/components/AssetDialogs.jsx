@@ -5,6 +5,7 @@ import TextField from '@mui/material/TextField';
 import Typography from '@mui/material/Typography';
 
 import FormDialog from '@components/common/FormDialog.jsx';
+import ImportDialog from '@components/common/ImportDialog.jsx';
 import EmployeePicker from '@components/common/EmployeePicker.jsx';
 import CurrencyAdornment from '@components/common/CurrencyAdornment.jsx';
 import payrollService from '@services/modules/payroll.service.js';
@@ -466,4 +467,32 @@ export const AssetLostDialog = ({ open, asset, onClose, onSaved }) => {
   );
 };
 
-export default { AssetFormDialog, AssetAssignDialog, AssetReturnDialog, AssetLostDialog };
+/**
+ * Bulk import into the register: the shared validate-then-import dialog with
+ * the asset template and endpoint. Every row goes through the same server-side
+ * create (and, with Issue To, issue) as the dialogs above.
+ */
+export const AssetImportDialog = ({ open, onClose, onImported }) => (
+  <ImportDialog
+    open={open}
+    title="Import assets"
+    templateName="asset-import-template.xlsx"
+    importLabel="Import assets"
+    description={
+      <>
+        Download the template and fill in the <strong>Assets</strong> sheet, one asset per row. Only{' '}
+        <strong>Name</strong> is required. Category and Condition must be one of the listed values, and Asset
+        Code (blank to generate) and Serial Number must not already exist. Put an Employee Code in{' '}
+        <strong>Issue To</strong> to issue the asset straight away; otherwise it is added in stock. The{' '}
+        <strong>Instructions</strong> sheet lists every rule and an example. Validate first: rows with errors
+        are listed by row number and are not imported.
+      </>
+    }
+    onTemplate={() => payrollService.downloadAssetTemplate()}
+    onImport={(file, dryRun) => payrollService.importAssets(file, dryRun)}
+    onClose={onClose}
+    onImported={onImported}
+  />
+);
+
+export default { AssetFormDialog, AssetAssignDialog, AssetReturnDialog, AssetLostDialog, AssetImportDialog };

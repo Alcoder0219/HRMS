@@ -81,6 +81,13 @@ const payrollService = {
   assignAsset: (id, payload) => axiosClient.post(url(`/assets/${id}/assign`), payload),
   returnAsset: (id, payload) => axiosClient.post(url(`/assets/${id}/return`), payload),
   markAssetLost: (id, payload) => axiosClient.post(url(`/assets/${id}/lost`), payload),
+  downloadAssetTemplate: () => axiosClient.get(url('/assets/import/template'), { responseType: 'blob' }),
+  importAssets: (file, dryRun = false) => {
+    const form = new FormData();
+    form.append('file', file);
+    form.append('dryRun', String(dryRun));
+    return axiosClient.post(url('/assets/import'), form);
+  },
 
   /* ------------------------------------------------------------ settings -- */
   settings: () => axiosClient.get(url('/settings')),

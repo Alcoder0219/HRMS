@@ -14,6 +14,7 @@ import Tooltip from '@mui/material/Tooltip';
 import Typography from '@mui/material/Typography';
 import SearchIcon from '@mui/icons-material/SearchOutlined';
 import AddIcon from '@mui/icons-material/AddOutlined';
+import UploadIcon from '@mui/icons-material/UploadFileOutlined';
 import ClearIcon from '@mui/icons-material/ClearOutlined';
 import ViewIcon from '@mui/icons-material/VisibilityOutlined';
 import AssignIcon from '@mui/icons-material/AssignmentIndOutlined';
@@ -35,6 +36,7 @@ import {
   AssetFormDialog,
   AssetAssignDialog,
   AssetReturnDialog,
+  AssetImportDialog,
   ASSET_CATEGORIES,
 } from './components/AssetDialogs.jsx';
 import { formatCurrency, formatDate, humanize } from '@utils/format.js';
@@ -241,7 +243,7 @@ const EmployeeAssetsPage = () => {
           { label: 'Assets' },
         ]}
         actions={
-          <Stack direction="row" spacing={1} data-print="hide">
+          <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap data-print="hide">
             <ExportMenu
               columns={columns}
               rows={rows}
@@ -249,6 +251,11 @@ const EmployeeAssetsPage = () => {
               totalCount={table.total}
               onError={(message) => setNotice({ severity: 'error', message })}
             />
+            {canCreate && (
+              <Button variant="outlined" startIcon={<UploadIcon />} onClick={() => setDialog({ type: 'import' })}>
+                Import Excel
+              </Button>
+            )}
             {canCreate && (
               <Button variant="contained" startIcon={<AddIcon />} onClick={() => setDialog({ type: 'create' })}>
                 Add asset
@@ -376,6 +383,12 @@ const EmployeeAssetsPage = () => {
       />
 
       <AssetFormDialog open={dialog?.type === 'create'} onClose={() => setDialog(null)} onSaved={handleSaved} />
+      <AssetImportDialog
+        open={dialog?.type === 'import'}
+        onClose={() => setDialog(null)}
+        // The dialog stays open on its summary; the register refreshes behind it.
+        onImported={() => load()}
+      />
       <AssetAssignDialog
         open={dialog?.type === 'assign'}
         asset={dialog?.asset}
