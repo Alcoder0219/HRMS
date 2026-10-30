@@ -30,6 +30,7 @@ import {
 } from '@redux/slices/attendanceSlice.js';
 import attendanceService from '@services/modules/attendance.service.js';
 import { formatDate, formatDateTime, humanize } from '@utils/format.js';
+import { formatAttendanceTime, toAttendanceClock } from '@utils/attendanceTime.js';
 import { PATHS } from '@routes/paths.js';
 
 const STATUS_COLOR = {
@@ -39,8 +40,7 @@ const STATUS_COLOR = {
   CANCELLED: 'default',
 };
 
-const timeOf = (value) =>
-  value ? new Date(value).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '—';
+const timeOf = formatAttendanceTime;
 
 const RegularizationPage = () => {
   const dispatch = useAppDispatch();
@@ -150,7 +150,7 @@ const RegularizationPage = () => {
           <TableBody>
             {regularizations.map((request) => (
               <TableRow key={request._id} hover>
-                <TableCell>{formatDate(request.date)}</TableCell>
+                <TableCell>{formatDate(toAttendanceClock(request.date))}</TableCell>
 
                 {tab === 0 && (
                   <TableCell>

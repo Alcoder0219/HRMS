@@ -31,6 +31,7 @@ import {
   selectAttendance,
 } from '@redux/slices/attendanceSlice.js';
 import { formatDate, formatDateTime } from '@utils/format.js';
+import { formatAttendanceTime, toAttendanceClock } from '@utils/attendanceTime.js';
 import { PATHS } from '@routes/paths.js';
 
 const WEEKDAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
@@ -77,8 +78,8 @@ const MyAttendancePage = () => {
         severity: 'success',
         message:
           result.direction === 'IN'
-            ? `Checked in at ${formatDateTime(result.record?.checkInAt)}`
-            : `Checked out at ${formatDateTime(result.record?.checkOutAt)}`,
+            ? `Checked in at ${formatDateTime(toAttendanceClock(result.record?.checkInAt))}`
+            : `Checked out at ${formatDateTime(toAttendanceClock(result.record?.checkOutAt))}`,
       });
       dispatch(fetchToday());
       dispatch(fetchCalendar(cursor));
@@ -98,7 +99,7 @@ const MyAttendancePage = () => {
   // Leading blanks so the first day lands under its weekday column.
   const leadingBlanks = useMemo(() => {
     if (!calendar?.days?.length) return 0;
-    return new Date(calendar.days[0].date).getDay();
+    return toAttendanceClock(calendar.days[0].date)?.getDay() ?? 0;
   }, [calendar]);
 
   const record = today?.record;
@@ -133,7 +134,7 @@ const MyAttendancePage = () => {
                   <Typography variant="overline" color="text.secondary">
                     Today
                   </Typography>
-                  <Typography variant="h4">{formatDate(new Date())}</Typography>
+                  <Typography variant="h4">{formatDate(toAttendanceClock(new Date()))}</Typography>
                 </Box>
                 <AttendanceStatusChip status={record?.status} />
               </Stack>
@@ -161,9 +162,7 @@ const MyAttendancePage = () => {
                     Check in
                   </Typography>
                   <Typography variant="h5">
-                    {record?.checkInAt
-                      ? new Date(record.checkInAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
-                      : '—'}
+                    {formatAttendanceTime(record?.checkInAt)}
                   </Typography>
                 </Box>
                 <Box>
@@ -171,9 +170,7 @@ const MyAttendancePage = () => {
                     Check out
                   </Typography>
                   <Typography variant="h5">
-                    {record?.checkOutAt
-                      ? new Date(record.checkOutAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
-                      : '—'}
+                    {formatAttendanceTime(record?.checkOutAt)}
                   </Typography>
                 </Box>
                 <Box>
@@ -294,7 +291,7 @@ const MyAttendancePage = () => {
           ))}
 
           {calendar?.days?.map((day) => {
-            const date = new Date(day.date);
+            const date = toAttendanceClock(day.date);
             const clickable = day.status && !['HOLIDAY', 'WEEKLY_OFF'].includes(day.status);
 
             return (

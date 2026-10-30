@@ -20,6 +20,7 @@ import { fetchMasters, selectMasters } from '@redux/slices/employeeSlice.js';
 import attendanceService from '@services/modules/attendance.service.js';
 import { downloadBlob } from '@services/modules/employee.service.js';
 import { formatDate, humanize } from '@utils/format.js';
+import { formatAttendanceTime, toAttendanceClock } from '@utils/attendanceTime.js';
 import { PATHS } from '@routes/paths.js';
 
 const MONTHS = Array.from({ length: 12 }, (_, index) => ({
@@ -35,8 +36,7 @@ const today = () => now.toISOString().slice(0, 10);
 
 const hours = (value) => (value ? `${value.toFixed(1)} h` : '—');
 
-const timeOf = (value) =>
-  value ? new Date(value).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '—';
+const timeOf = formatAttendanceTime;
 
 /** The minutes figure each day-report tab is actually about. */
 const minutesFor = (tab, row) =>
@@ -241,7 +241,7 @@ const AttendanceReportsPage = () => {
   ];
 
   const EXCEPTION_COLUMNS = [
-    { key: 'date', label: 'Date', render: (row) => formatDate(row.date) },
+    { key: 'date', label: 'Date', render: (row) => formatDate(toAttendanceClock(row.date)) },
     { key: 'employeeCode', label: 'Code' },
     { key: 'employeeId', label: 'Employee ID' },
     { key: 'fullName', label: 'Employee' },
@@ -274,7 +274,12 @@ const AttendanceReportsPage = () => {
    * only the minutes column that matters changes, which the tab decides.
    */
   const DAY_COLUMNS = [
-    { key: 'date', label: 'Date', exportValue: (row) => formatDate(row.date), render: (row) => formatDate(row.date) },
+    {
+      key: 'date',
+      label: 'Date',
+      exportValue: (row) => formatDate(toAttendanceClock(row.date)),
+      render: (row) => formatDate(toAttendanceClock(row.date)),
+    },
     { key: 'employeeCode', label: 'Code' },
     { key: 'employeeId', label: 'Employee ID' },
     {

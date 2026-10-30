@@ -24,6 +24,7 @@ import { useToast } from '@contexts/ToastContext.jsx';
 import attendanceService from '@services/modules/attendance.service.js';
 import { ATTENDANCE_STATUSES, toHoursMinutes } from '../attendanceConstants.js';
 import { employeeIdentifiers } from '@utils/dataGrid.js';
+import { fromAttendanceClock, toAttendanceClock } from '@utils/attendanceTime.js';
 
 /**
  * Manual attendance correction for one employee's month.
@@ -45,21 +46,22 @@ import { employeeIdentifiers } from '@utils/dataGrid.js';
  * this feature is not allowed to disturb.
  */
 
-/** `Date` to the `HH:mm` a time input expects, in the browser's timezone. */
+/**
+ * `Date` to the `HH:mm` a time input expects, on the attendance clock -- not
+ * the browser's, so the same punch reads the same wherever it is edited.
+ */
 const toTimeInput = (value) => {
-  if (!value) return '';
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return '';
+  const date = toAttendanceClock(value);
+  if (!date) return '';
   return `${String(date.getHours()).padStart(2, '0')}:${String(date.getMinutes()).padStart(2, '0')}`;
 };
 
-/** `HH:mm` back to a `Date` on the given day. */
+/** `HH:mm` back to the instant at that time, on the attendance clock, on the given day. */
 const fromTimeInput = (dayIso, time) => {
   if (!time) return null;
   const [hours, minutes] = time.split(':').map(Number);
-  const date = new Date(dayIso);
-  date.setHours(hours, minutes, 0, 0);
-  return date.toISOString();
+  const day = toAttendanceClock(dayIso);
+  return fromAttendanceClock(day.getFullYear(), day.getMonth() + 1, day.getDate(), hours, minutes).toISOString();
 };
 
 /** The company default, for an employee saved before duty hours existed. */
@@ -114,8 +116,8 @@ const isRestDayWork = (status, dateIso, weeklyOffDays) => {
   if (!WORKED_STATUSES.has(status)) return false;
   if (!Array.isArray(weeklyOffDays) || !weeklyOffDays.length) return false;
 
-  const date = new Date(dateIso);
-  return Number.isNaN(date.getTime()) ? false : weeklyOffDays.includes(date.getDay());
+  const date = toAttendanceClock(dateIso);
+  return date ? weeklyOffDays.includes(date.getDay()) : false;
 };
 
 /**
@@ -170,28 +172,28 @@ const EditAttendanceDialog = ({ open, employee, year, month, onClose, onSaved })
      */
     setRows([]);
 
-    const from = new Date(year, month - 1, 1);
-    const to = new Date(year, month, 0, 23, 59, 59);
+    // Plain calendar dates, which the server reads as exactly these days in
+    // its own zone. Browser-local instants shifted the range with the viewer.
+    const daysInMonth = new Date(year, month, 0).getDate();
+    const monthPart = String(month).padStart(2, '0');
 
     try {
       const response = await attendanceService.list({
         employeeId,
-        from: from.toISOString(),
-        to: to.toISOString(),
+        from: `${year}-${monthPart}-01`,
+        to: `${year}-${monthPart}-${String(daysInMonth).padStart(2, '0')}`,
         limit: 200,
         sortBy: 'date',
         sortOrder: 'asc',
       });
 
       const byDay = new Map(
-        (response.data ?? []).map((record) => [new Date(record.date).getDate(), record]),
+        (response.data ?? []).map((record) => [toAttendanceClock(record.date).getDate(), record]),
       );
 
       // Every day of the month is listed, including those with no record at
       // all -- an absence with no punch is exactly what a correction is for,
       // and it would be invisible if only stored days were shown.
-      const daysInMonth = new Date(year, month, 0).getDate();
-
       setRows(
         Array.from({ length: daysInMonth }, (_, index) => {
           const dayNumber = index + 1;
@@ -200,7 +202,8 @@ const EditAttendanceDialog = ({ open, employee, year, month, onClose, onSaved })
 
           return {
             dayNumber,
-            dateIso: date.toISOString(),
+            // Midnight on the attendance clock: the instant the server keys this day at.
+            dateIso: fromAttendanceClock(year, month, dayNumber).toISOString(),
             weekday: date.toLocaleDateString(['en-TZ', 'en-GB'], { weekday: 'short' }),
             status: record?.status ?? '',
             checkIn: toTimeInput(record?.checkInAt),
