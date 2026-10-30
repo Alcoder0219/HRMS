@@ -24,9 +24,25 @@ import DataTable from '@components/common/DataTable.jsx';
 import StatCard from '@components/common/StatCard.jsx';
 import attendanceService from '@services/modules/attendance.service.js';
 import { formatDateTime } from '@utils/format.js';
+import { fromAttendanceClock, toAttendanceClock } from '@utils/attendanceTime.js';
 import { PATHS } from '@routes/paths.js';
 
 const DIRECTIONS = ['UNKNOWN', 'IN', 'OUT'];
+
+const WALL_TIME = /^(\d{4})-(\d{2})-(\d{2})[T ](\d{2}):(\d{2})(?::(\d{2}))?$/;
+
+/**
+ * A device timestamp carries no zone, so `2026-08-06 09:04` is read on the
+ * attendance clock -- the same punch whichever country the file is pasted in.
+ * Anything with an explicit offset, or in another format, is read as before.
+ */
+const parsePunchTimestamp = (text) => {
+  const match = WALL_TIME.exec(text);
+  if (!match) return new Date(text);
+
+  const [year, month, day, hours, minutes, seconds] = match.slice(1).map((part) => Number(part ?? 0));
+  return fromAttendanceClock(year, month, day, hours, minutes, seconds);
+};
 
 const SAMPLE = `EMP0001, 2026-08-06 09:04, IN
 EMP0001, 2026-08-06 18:12, OUT
@@ -80,7 +96,7 @@ const BiometricImportPage = () => {
           return;
         }
 
-        const when = new Date(timestamp);
+        const when = parsePunchTimestamp(timestamp);
         if (Number.isNaN(when.getTime())) {
           errors.push({ line: lineNumber, raw: line, error: `"${timestamp}" is not a date the browser understands` });
           return;
@@ -141,7 +157,7 @@ const BiometricImportPage = () => {
   const previewColumns = [
     { key: 'line', label: 'Line', width: 70 },
     { key: 'employeeCode', label: 'Employee code' },
-    { key: 'timestamp', label: 'Punched at', render: (row) => formatDateTime(row.timestamp) },
+    { key: 'timestamp', label: 'Punched at', render: (row) => formatDateTime(toAttendanceClock(row.timestamp)) },
     {
       key: 'direction',
       label: 'Direction',

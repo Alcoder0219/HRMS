@@ -34,6 +34,7 @@ import {
   selectAttendance,
 } from '@redux/slices/attendanceSlice.js';
 import { formatDate } from '@utils/format.js';
+import { formatAttendanceTime, toAttendanceClock } from '@utils/attendanceTime.js';
 import { getRowId, displayName, toSortParams, employeeIdentifiers } from '@utils/dataGrid.js';
 import { PATHS } from '@routes/paths.js';
 
@@ -49,8 +50,7 @@ const STATUSES = [
   'WORK_FROM_HOME',
 ];
 
-const timeOf = (value) =>
-  value ? new Date(value).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '—';
+const timeOf = formatAttendanceTime;
 
 const minutesToHours = (minutes) =>
   !minutes ? '—' : `${Math.floor(minutes / 60)}h ${String(minutes % 60).padStart(2, '0')}m`;
@@ -83,7 +83,7 @@ const AttendanceRegisterPage = () => {
         field: 'date',
         headerName: 'Date',
         width: 120,
-        valueFormatter: (value) => formatDate(value),
+        valueFormatter: (value) => formatDate(toAttendanceClock(value)),
       },
       {
         field: 'employeeId',

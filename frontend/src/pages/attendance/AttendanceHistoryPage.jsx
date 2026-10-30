@@ -27,6 +27,7 @@ import AttendanceStatusChip from '@components/common/AttendanceStatusChip.jsx';
 import { EmptyState, LoadingState, ErrorState } from '@components/common/StateBlock.jsx';
 import attendanceService from '@services/modules/attendance.service.js';
 import { formatDate, humanize } from '@utils/format.js';
+import { formatAttendanceTime, toAttendanceClock } from '@utils/attendanceTime.js';
 import { getRowId, displayName, employeeIdentifiers } from '@utils/dataGrid.js';
 import { PATHS } from '@routes/paths.js';
 
@@ -53,8 +54,7 @@ const STATUS_STYLE = {
   WORK_FROM_HOME: { bg: 'primary.light', fg: 'primary.contrastText', code: 'WFH' },
 };
 
-const timeOf = (value) =>
-  value ? new Date(value).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '—';
+const timeOf = formatAttendanceTime;
 
 const hoursOf = (minutes) => (minutes ? `${Math.floor(minutes / 60)}h ${minutes % 60}m` : '—');
 
@@ -178,7 +178,7 @@ const AttendanceHistoryPage = () => {
   const weeks = useMemo(() => {
     if (!days.length) return [];
 
-    const first = new Date(days[0].date);
+    const first = toAttendanceClock(days[0].date);
     const leading = first.getDay();
 
     const cells = [...Array(leading).fill(null), ...days];
@@ -196,12 +196,12 @@ const AttendanceHistoryPage = () => {
       key: 'date',
       label: 'Date',
       width: 140,
-      exportValue: (row) => formatDate(row.date),
+      exportValue: (row) => formatDate(toAttendanceClock(row.date)),
       render: (row) => (
         <Box>
-          <Typography variant="body2">{formatDate(row.date)}</Typography>
+          <Typography variant="body2">{formatDate(toAttendanceClock(row.date))}</Typography>
           <Typography variant="caption" color="text.secondary">
-            {new Date(row.date).toLocaleDateString([], { weekday: 'short' })}
+            {toAttendanceClock(row.date)?.toLocaleDateString([], { weekday: 'short' })}
           </Typography>
         </Box>
       ),
@@ -436,7 +436,7 @@ const AttendanceHistoryPage = () => {
                               }}
                             >
                               <Typography variant="caption" sx={{ opacity: 0.8 }}>
-                                {new Date(day.date).getDate()}
+                                {toAttendanceClock(day.date)?.getDate()}
                               </Typography>
                               <Typography variant="body2" fontWeight={700}>
                                 {style.code}

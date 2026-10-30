@@ -10,7 +10,8 @@ import Stack from '@mui/material/Stack';
 import TextField from '@mui/material/TextField';
 
 import attendanceService from '@services/modules/attendance.service.js';
-import { formatDate, humanize } from '@utils/format.js';
+import { formatDate, humanize, toDateInput } from '@utils/format.js';
+import { toAttendanceClock } from '@utils/attendanceTime.js';
 
 const TYPES = [
   'MISSED_PUNCH',
@@ -51,7 +52,9 @@ const RegularizationDialog = ({ open, date, onClose, onSubmitted }) => {
     setBusy(true);
     setError(null);
 
-    const day = new Date(date).toISOString().slice(0, 10);
+    // The day on the attendance clock. A UTC slice would name the previous
+    // date, because days are keyed at midnight east of UTC.
+    const day = toDateInput(toAttendanceClock(date));
 
     try {
       await attendanceService.requestRegularization({
@@ -76,7 +79,7 @@ const RegularizationDialog = ({ open, date, onClose, onSubmitted }) => {
 
   return (
     <Dialog open={open} onClose={handleClose} maxWidth="xs" fullWidth>
-      <DialogTitle>Regularize {date ? formatDate(date) : ''}</DialogTitle>
+      <DialogTitle>Regularize {date ? formatDate(toAttendanceClock(date)) : ''}</DialogTitle>
 
       <DialogContent>
         <Stack spacing={2} sx={{ mt: 1 }}>
