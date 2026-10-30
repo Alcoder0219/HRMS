@@ -37,7 +37,7 @@ import { toggleThemeMode, selectThemeMode, selectCurrency } from '@redux/slices/
 import { NAV_GROUPS } from '@config/navigation.js';
 import { initials } from '@utils/format.js';
 import { PATHS } from '@routes/paths.js';
-import amsonsLogo from '@assets/amsons-logo.jpeg';
+import BrandMark from '@components/common/BrandMark.jsx';
 
 const DRAWER_WIDTH = 264;
 
@@ -143,13 +143,9 @@ const AppLayout = () => {
 
   const drawer = (
     <Box sx={{ height: '100%', display: 'flex', flexDirection: 'column' }}>
-      <Toolbar sx={{ px: 3 }}>
-        <Box
-          component="img"
-          src={amsonsLogo}
-          alt="Amsons Group"
-          sx={{ display: 'block', height: 48, width: 'auto', maxWidth: '100%', objectFit: 'contain', borderRadius: 1 }}
-        />
+      {/* Same height as the top bar, so the divider below lines up with its border. */}
+      <Toolbar sx={{ px: 2.5 }}>
+        <BrandMark variant="sidebar" />
       </Toolbar>
 
       <Divider />
@@ -235,6 +231,11 @@ const AppLayout = () => {
           >
             <MenuIcon />
           </IconButton>
+
+          {/* The sidebar is hidden below lg, so the brand rides in the top bar there. */}
+          <Box sx={{ display: { xs: 'flex', lg: 'none' }, minWidth: 0 }}>
+            <BrandMark variant="sidebar" compact />
+          </Box>
 
           <Box sx={{ flex: 1 }} />
 

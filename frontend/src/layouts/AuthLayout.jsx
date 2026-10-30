@@ -1,9 +1,8 @@
 import { Outlet } from 'react-router-dom';
 import Box from '@mui/material/Box';
 import Paper from '@mui/material/Paper';
-import Typography from '@mui/material/Typography';
 
-import amsonsLogo from '@assets/amsons-logo.jpeg';
+import BrandMark from '@components/common/BrandMark.jsx';
 
 /**
  * Shell for signed-out screens. Deliberately chrome-free -- no navigation, no
@@ -24,24 +23,7 @@ const AuthLayout = () => (
   >
     <Box sx={{ width: '100%', maxWidth: 440 }}>
       <Box sx={{ textAlign: 'center', mb: 3 }}>
-        <Box
-          component="img"
-          src={amsonsLogo}
-          alt="Amsons Group"
-          sx={{
-            display: 'block',
-            mx: 'auto',
-            mb: 1,
-            height: { xs: 96, sm: 120 },
-            width: 'auto',
-            maxWidth: '100%',
-            objectFit: 'contain',
-            borderRadius: 2,
-          }}
-        />
-        <Typography variant="body2" color="text.secondary">
-          Human Resource Management System
-        </Typography>
+        <BrandMark variant="login" />
       </Box>
 
       <Paper variant="outlined" sx={{ p: { xs: 3, sm: 4 }, borderRadius: 3 }}>
