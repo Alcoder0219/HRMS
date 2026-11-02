@@ -136,7 +136,10 @@ const grantAccess = async (employee, payload, req) => {
     status: payload.portalStatus ?? ACCOUNT_STATUS.ACTIVE,
     // Whoever set this password knows it, so it cannot be the one that stays.
     mustChangePassword: true,
-    isEmailVerified: false,
+    // Provisioned by an administrator who entered the address, and no link is
+    // sent from here: left unverified, the account could never sign in.
+    isEmailVerified: true,
+    emailVerifiedAt: new Date(),
     createdBy: req.user?.id ?? null,
   });
 
