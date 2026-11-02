@@ -163,6 +163,8 @@ export const createUser = async (payload, req) => {
     if (taken) throw ApiError.conflict('That employee already has a login account');
   }
 
+  const verified = payload.isEmailVerified ?? true;
+
   const user = await User.create({
     tenantId,
     email: payload.email,
@@ -177,7 +179,15 @@ export const createUser = async (payload, req) => {
     // An administrator setting someone's first password knows it, so the
     // account is required to replace it at first sign-in.
     mustChangePassword: payload.mustChangePassword ?? true,
-    isEmailVerified: payload.isEmailVerified ?? false,
+    /**
+     * Verified unless the administrator says otherwise. The address was entered
+     * by the person provisioning the account, and this path sends no
+     * verification link -- an unverified account created here could never sign
+     * in, because login refuses unverified emails. Self-registration, where the
+     * address is unproven, still starts PENDING and must verify.
+     */
+    isEmailVerified: verified,
+    emailVerifiedAt: verified ? new Date() : null,
     createdBy: req.user?.id ?? null,
   });
 
