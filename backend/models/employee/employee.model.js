@@ -77,6 +77,12 @@ const documentSchema = new Schema(
     filePath: { type: String, required: true },
     mimeType: { type: String, required: true },
     size: { type: Number, required: true },
+    // Set for an image, which lives in Cloudinary. `filePath` then holds the
+    // public ID. The URL is signed and works for whoever holds it, so it stays
+    // out of API responses: documents are streamed behind the API's own checks.
+    imageUrl: { type: String, default: null, select: false },
+    cloudinaryPublicId: { type: String, default: null },
+    imageFormat: { type: String, default: null },
     // Drives the expiring-documents report: passports, visas and licences all
     // lapse, and an HRMS that cannot warn about it is not doing its job.
     expiresAt: { type: Date, default: null },
@@ -404,6 +410,9 @@ const employeeSchema = new Schema(
           filePath: String,
           mimeType: String,
           size: Number,
+          imageUrl: String,
+          cloudinaryPublicId: String,
+          imageFormat: String,
           uploadedAt: { type: Date, default: Date.now },
         },
         { _id: false },

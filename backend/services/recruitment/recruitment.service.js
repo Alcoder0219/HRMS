@@ -18,6 +18,7 @@ import {
 } from '../../utils/constants.js';
 import { buildPagination, buildSort, buildSearch } from '../../utils/queryBuilder.js';
 import { recordAudit, diffObjects } from '../../helpers/audit.helper.js';
+import { deleteImage, discardOnFailure, imageReference } from '../storage/imageStorage.service.js';
 import employeeService from '../employee/employee.service.js';
 
 /**
@@ -387,21 +388,32 @@ export const moveStage = async (id, { stage, note }, req) => {
 
 /** Attaches an uploaded resume. Stored the same way employee documents are. */
 export const attachResume = async (id, file, req) => {
-  const candidate = await Candidate.findOne({ _id: id, tenantId: tenantOf(req) });
-  if (!candidate) throw ApiError.notFound('Candidate not found');
+  const { candidate, previousImage } = await discardOnFailure([file], async () => {
+    const found = await Candidate.findOne({ _id: id, tenantId: tenantOf(req) });
+    if (!found) throw ApiError.notFound('Candidate not found');
 
-  candidate.resume = {
-    fileName: file.originalname,
-    // Same subdirectory the employee documents use, so the static mount, the
-    // preview and the download all behave identically.
-    filePath: `/uploads/documents/${file.filename}`,
-    mimeType: file.mimetype,
-    size: file.size,
-    uploadedAt: new Date(),
-  };
-  candidate.updatedBy = req.user.id;
+    const previous = found.resume?.cloudinaryPublicId ?? null;
 
-  await candidate.save();
+    found.resume = {
+      fileName: file.originalname,
+      // A scanned resume is an image, so it is linked by its signed URL. Anything
+      // else stays in the subdirectory the employee documents use, so the static
+      // mount, the preview and the download all behave identically.
+      filePath: file.cloudinary?.imageUrl ?? `/uploads/documents/${file.filename}`,
+      mimeType: file.mimetype,
+      size: file.size,
+      ...imageReference(file),
+      uploadedAt: new Date(),
+    };
+    found.updatedBy = req.user.id;
+
+    await found.save();
+
+    return { candidate: found, previousImage: previous };
+  });
+
+  // Only now that the new one is recorded.
+  await deleteImage(previousImage);
 
   await recordAudit({
     req,

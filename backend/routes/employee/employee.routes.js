@@ -11,6 +11,7 @@ import {
   uploadMany,
   enforcePerTypeLimits,
 } from '../../middlewares/employeeUpload.js';
+import { storeImages } from '../../middlewares/imageUpload.js';
 import { ACTIONS } from '../../utils/constants.js';
 import schemas from '../../validators/employee/employee.validator.js';
 
@@ -137,6 +138,7 @@ router.post(
   requirePermission(ACTIONS.UPDATE),
   validate(schemas.idParamSchema),
   photoUpload.single('photo'),
+  storeImages,
   controller.uploadPhoto,
 );
 
@@ -145,6 +147,7 @@ router.post(
   requirePermission(ACTIONS.UPDATE),
   documentUpload.array('documents', 10),
   validate(schemas.uploadDocumentsSchema),
+  storeImages,
   controller.uploadDocuments,
 );
 
@@ -206,6 +209,7 @@ router.post(
   prepareEmployeeFolder,
   uploadMany,
   enforcePerTypeLimits,
+  storeImages,
   documentController.upload,
 );
 
@@ -216,6 +220,7 @@ router.put(
   prepareEmployeeFolder,
   uploadSingle,
   enforcePerTypeLimits,
+  storeImages,
   documentController.replace,
 );
 

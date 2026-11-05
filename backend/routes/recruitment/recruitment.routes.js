@@ -4,6 +4,7 @@ import controller from '../../controllers/recruitment/recruitment.controller.js'
 import validate from '../../middlewares/validate.js';
 import { requirePermission } from '../../middlewares/authorize.js';
 import { documentUpload } from '../../config/multer.js';
+import { storeImages } from '../../middlewares/imageUpload.js';
 import { ACTIONS } from '../../utils/constants.js';
 import schemas from '../../validators/recruitment/recruitment.validator.js';
 
@@ -85,6 +86,7 @@ router.post(
   requirePermission(ACTIONS.UPDATE),
   documentUpload.single('resume'),
   validate(schemas.idParamSchema),
+  storeImages,
   controller.uploadResume,
 );
 

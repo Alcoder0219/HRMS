@@ -238,6 +238,18 @@ export const env = {
   },
 
   /**
+   * Where every uploaded image is stored. Optional at boot so the API can start
+   * without it, but an image upload is refused until all three are set: there
+   * is no local fallback, because that would quietly put images back on a disk
+   * Cloud Run discards.
+   */
+  cloudinary: {
+    cloudName: read('CLOUDINARY_CLOUD_NAME', ''),
+    apiKey: read('CLOUDINARY_API_KEY', ''),
+    apiSecret: read('CLOUDINARY_API_SECRET', ''),
+  },
+
+  /**
    * The ADMS receiver: the `/iclock` endpoint a ZKTeco terminal's "Cloud
    * Server" setting pushes attendance to.
    *

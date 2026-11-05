@@ -68,6 +68,10 @@ const start = async () => {
     }
   }
 
+  if (!env.cloudinary.cloudName || !env.cloudinary.apiKey || !env.cloudinary.apiSecret) {
+    logger.error('Cloudinary is not configured -- image uploads will be refused until CLOUDINARY_* are set');
+  }
+
   if (env.adms.enabled) {
     const { admsSecurityMode } = await import('./middlewares/admsGuard.js');
     const { default: BiometricEvent } = await import('./models/attendance/biometricEvent.model.js');
