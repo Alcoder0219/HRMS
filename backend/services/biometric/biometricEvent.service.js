@@ -3,6 +3,7 @@ import mongoose from 'mongoose';
 import logger from '../../config/logger.js';
 import BiometricEvent, { BIOMETRIC_EVENT_STATUS as STATUS } from '../../models/attendance/biometricEvent.model.js';
 import BiometricSyncLog from '../../models/attendance/biometricSyncLog.model.js';
+import Employee from '../../models/employee/employee.model.js';
 import { buildDedupKey } from '../../helpers/adms.helper.js';
 import { ingestBiometric, PUNCH_OUTCOME } from '../attendance/attendanceIngest.service.js';
 
@@ -360,6 +361,67 @@ export const recordAndApply = async ({
 /*                                  Reprocess                                 */
 /* -------------------------------------------------------------------------- */
 
+/** Employees that imported events point at but that no longer exist at all. */
+const missingEmployeeIds = async (filter) => {
+  const referenced = await BiometricEvent.distinct('employeeId', { ...filter, status: STATUS.IMPORTED, employeeId: { $ne: null } });
+  if (!referenced.length) return [];
+
+  // Soft-deleted employees still exist and can be restored, so they are not missing.
+  const existing = await Employee.find({ _id: { $in: referenced } }).select('_id').lean();
+  const found = new Set(existing.map((employee) => String(employee._id)));
+  return referenced.filter((id) => !found.has(String(id)));
+};
+
+/**
+ * Which stored events a reprocess works through.
+ *
+ * Events waiting on someone who is STILL unmapped are left out. They cannot be
+ * applied, and on a terminal with many unmapped enrolments they filled the
+ * oldest-first window on every run, so punches of people who WERE mapped were
+ * never reached. Leaving them out also makes a capped run progress: everything
+ * it selects leaves the selection once handled.
+ *
+ * `includeOrphaned` adds IMPORTED events whose employee record no longer exists,
+ * for a device user ID that is mapped today. They are in attendance, but on a
+ * day row nobody can see. An employee who still exists keeps their punches even
+ * if the ID has since been remapped: moving those is a decision, not a repair.
+ */
+export const reprocessFilter = async ({
+  tenantId,
+  device,
+  includeHeld = false,
+  includeIgnored = false,
+  includeOrphaned = false,
+  from = null,
+  to = null,
+}) => {
+  const base = { tenantId: tenantId ?? null, deviceId: device._id };
+  if (from || to) {
+    base.punchTime = {};
+    if (from) base.punchTime.$gte = new Date(from);
+    if (to) base.punchTime.$lte = new Date(to);
+  }
+
+  const mappedIds = (device.userMappings ?? []).map((entry) => String(entry.deviceUserId));
+  const statuses = [STATUS.FAILED, STATUS.PENDING];
+  if (includeHeld) statuses.push(STATUS.HELD);
+  if (includeIgnored) statuses.push(STATUS.IGNORED);
+
+  const selection = [
+    { status: { $in: statuses } },
+    { status: STATUS.UNMAPPED, deviceUserId: { $in: mappedIds } },
+  ];
+
+  if (includeOrphaned) {
+    const missing = await missingEmployeeIds({ ...base, deviceUserId: { $in: mappedIds } });
+    if (missing.length) {
+      selection.push({ status: STATUS.IMPORTED, deviceUserId: { $in: mappedIds }, employeeId: { $in: missing } });
+    }
+  }
+
+  return { ...base, $or: selection };
+};
+
 /**
  * Re-applies stored events that did not make it into attendance.
  *
@@ -372,28 +434,23 @@ export const recordAndApply = async ({
  * HELD events are only included on request, and then go through with
  * `allowCorrectedDays`: the administrator has decided the punch should replace
  * a correction. Locked days stay held regardless; unlocking is a payroll act.
+ *
+ * `includeOrphaned` is for the reconciliation command only, never the screens:
+ * see `reprocessFilter`.
  */
 export const reprocessEvents = async ({
   tenantId,
   device,
   includeHeld = false,
   includeIgnored = false,
+  includeOrphaned = false,
   from = null,
   to = null,
   req,
 }) => {
   const startedAt = Date.now();
-  const statuses = [STATUS.UNMAPPED, STATUS.FAILED, STATUS.PENDING];
-  if (includeHeld) statuses.push(STATUS.HELD);
-  if (includeIgnored) statuses.push(STATUS.IGNORED);
 
-  const filter = { tenantId: tenantId ?? null, deviceId: device._id, status: { $in: statuses } };
-  if (from || to) {
-    filter.punchTime = {};
-    if (from) filter.punchTime.$gte = new Date(from);
-    if (to) filter.punchTime.$lte = new Date(to);
-  }
-
+  const filter = await reprocessFilter({ tenantId, device, includeHeld, includeIgnored, includeOrphaned, from, to });
   const events = await BiometricEvent.find(filter).sort({ punchTime: 1 }).limit(REPROCESS_LIMIT).lean();
 
   const mappings = new Map((device.userMappings ?? []).map((entry) => [String(entry.deviceUserId), entry.employeeCode]));
@@ -429,7 +486,6 @@ export const reprocessEvents = async ({
     );
   }
 
-  counts.unmapped = stillBlocked.filter((entry) => entry.status === STATUS.UNMAPPED).length;
   counts.ignored = stillBlocked.filter((entry) => entry.status === STATUS.IGNORED).length;
 
   const errors = [];
@@ -450,10 +506,18 @@ export const reprocessEvents = async ({
     counts.imported = applied.imported;
     counts.held = applied.held;
     counts.failed = applied.failed;
-    counts.unmapped += applied.unmapped;
     counts.daysUpdated = applied.daysUpdated;
     errors.push(...applied.errors);
   }
+
+  // Everyone still waiting, not only what this run looked at, so the figure
+  // keeps meaning what the screens say: punches of people not yet mapped.
+  counts.unmapped = await BiometricEvent.countDocuments({
+    tenantId: tenantId ?? null,
+    deviceId: device._id,
+    status: STATUS.UNMAPPED,
+    ...(filter.punchTime ? { punchTime: filter.punchTime } : {}),
+  });
 
   await writeLog({
     tenantId: tenantId ?? null,
@@ -622,6 +686,7 @@ export const seenDeviceUserIds = async (tenantId, deviceId) =>
 export default {
   recordAndApply,
   reprocessEvents,
+  reprocessFilter,
   deviceStats,
   listEvents,
   listLogs,

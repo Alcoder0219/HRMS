@@ -99,7 +99,7 @@ const loadShiftMap = async (employees) => {
  * and replace it with whatever the engine makes of the raw punches. The punch
  * is held instead, visibly, for someone with the authority to decide.
  */
-const holdReason = (existing, { allowCorrectedDays }) => {
+export const holdReason = (existing, { allowCorrectedDays }) => {
   if (!existing) return null;
   if (existing.isLocked) return 'The attendance period is locked for payroll';
   if (allowCorrectedDays) return null;
