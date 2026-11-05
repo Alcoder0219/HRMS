@@ -67,7 +67,8 @@ export const download = asyncHandler(async (req, res) => {
   const safeName = String(fileName).replace(/["\\]/g, '');
 
   res.setHeader('Content-Type', mimeType);
-  res.setHeader('Content-Length', size);
+  // Unknown for an image: it is streamed from storage as it arrives.
+  if (size) res.setHeader('Content-Length', size);
   res.setHeader('Content-Disposition', `${disposition}; filename="${safeName}"`);
   // These files are identity documents; a shared cache must not keep a copy.
   res.setHeader('Cache-Control', 'private, no-store');

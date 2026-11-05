@@ -305,6 +305,7 @@ The first deploy is necessarily circular: backend → frontend → update backen
 | `API_PREFIX` | `/api/v1` | Optional; must match `VITE_API_URL` |
 | `ATTACHMENTS_DIR` | `/app/data/attachments` | Image default. **Ephemeral** — see §15 |
 | `UPLOAD_DIR` | `/app/data/uploads` | Image default. **Ephemeral** — see §15 |
+| `CLOUDINARY_CLOUD_NAME`, `CLOUDINARY_API_KEY`, `CLOUDINARY_API_SECRET` | from the Cloudinary console | **Required for image uploads, and `CLOUDINARY_API_SECRET` is sensitive.** Every image goes to the `Amsons_Hrms` folder; without these, image uploads are refused rather than kept on the ephemeral disk |
 | `MAX_ACTIVE_SESSIONS`, `RATE_LIMIT_*`, `AUTH_RATE_LIMIT_*`, `BCRYPT_SALT_ROUNDS`, `JWT_*_EXPIRES_IN`, `JWT_ISSUER`, `JWT_AUDIENCE` | defaults are sane | Override only as needed |
 | `TZ` | `Africa/Dar_es_Salaam` | Shift times and the attendance day are evaluated in the server's zone; Cloud Run defaults to UTC. See [docs/BIOMETRIC_MB360.md §3.1](docs/BIOMETRIC_MB360.md#31-time-zone-which-affects-all-attendance-not-just-this-device) |
 | `ADMS_ENABLED`, `ADMS_GATEWAY_TOKEN`, `ADMS_ALLOWED_IPS`, `ADMS_DEVICE_SERVER_ADDRESS`, `ADMS_DEVICE_SERVER_PORT`, `ADMS_DEVICE_HTTPS`, `BIOMETRIC_DEVICE_TIMEZONE` | see the biometric guide | Only for a terminal pushing attendance (ZKTeco ADMS). `ADMS_GATEWAY_TOKEN` is **sensitive**. Run `npm run migrate:biometric` once before enabling. See [docs/BIOMETRIC_MB360.md](docs/BIOMETRIC_MB360.md) |

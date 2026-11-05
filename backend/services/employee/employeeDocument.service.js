@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 
 import employeeRepository from '../../repositories/employee/employee.repository.js';
+import Employee from '../../models/employee/employee.model.js';
 import User from '../../models/auth/user.model.js';
 import ApiError from '../../utils/ApiError.js';
 import { AUDIT_ACTIONS, DOCUMENT_TYPES } from '../../utils/constants.js';
@@ -12,15 +13,17 @@ import {
   removeStoredFile,
   resolveStoredPath,
 } from '../../helpers/employeeFiles.helper.js';
+import { deleteImage, discardOnFailure, imageReference, openImage } from '../storage/imageStorage.service.js';
 
 /**
  * Employee documents: the metadata half of the attachments feature.
  *
- * The bytes are written to disk by the upload middleware before this runs.
- * What lives here is the record of them -- employee, type, original name,
- * stored name, relative path, size, MIME type, when and by whom -- which is
- * all MongoDB ever holds. Nothing here reads or writes file contents except
- * the download stream, which opens a handle and hands it to Express.
+ * The bytes are stored by the upload middleware before this runs: images in
+ * Cloudinary, everything else on disk. What lives here is the record of them --
+ * employee, type, original name, stored name, path or image reference, size,
+ * MIME type, when and by whom -- which is all MongoDB ever holds. Nothing here
+ * reads or writes file contents except the download stream, which hands a
+ * stream to Express.
  *
  * Documents stay on the employee document as a subdocument array rather than
  * in a collection of their own: they are only ever read with their employee,
@@ -30,6 +33,12 @@ import {
  */
 
 const ENTITY = 'Employee';
+
+/** What `filePath` holds: the public ID of an image, or the path of a file on disk. */
+const storedPath = (file) => file.cloudinary?.cloudinaryPublicId ?? relativePath(file.path);
+
+const removeDocumentFile = (document) =>
+  document.cloudinaryPublicId ? deleteImage(document.cloudinaryPublicId) : removeStoredFile(document.filePath);
 
 /** The sections the Documents tab shows, in order, and how each behaves. */
 export const DOCUMENT_SECTIONS = [
@@ -257,6 +266,20 @@ export const openDocument = async (id, documentId, req) => {
   const document = (employee.documents ?? []).find((entry) => String(entry._id) === String(documentId));
   if (!document) throw ApiError.notFound('Document not found');
 
+  if (document.cloudinaryPublicId) {
+    // Fetched by this request, so a preview keeps its session, tenant and
+    // permission checks. `imageUrl` is never selected by default.
+    const stored = await Employee.findById(employee._id).select('+documents.imageUrl').lean();
+    const { imageUrl } = stored.documents.find((entry) => String(entry._id) === String(documentId));
+
+    return {
+      stream: await openImage(imageUrl),
+      fileName: document.title || document.fileName,
+      mimeType: document.mimeType,
+      size: null,
+    };
+  }
+
   const absolute = resolveStoredPath(document.filePath);
 
   if (!fs.existsSync(absolute)) {
@@ -283,49 +306,53 @@ export const openDocument = async (id, documentId, req) => {
  * Single-file sections replace rather than accumulate: an employee has one
  * photograph and one PAN card, and letting them stack would leave the tab
  * showing three PAN cards with no way to tell which is current. The previous
- * file is deleted from disk in the same step, so the folder matches the
- * database.
+ * file is deleted in the same step, so storage matches the database.
  */
 export const attachDocuments = async (id, files, req) => {
   if (!files?.length) throw ApiError.badRequest('No file was uploaded');
 
-  const employee = await loadEmployee(id, req);
-  const documentType = req.documentType;
+  const { employee, added, documentType, superseded } = await discardOnFailure(files, async () => {
+    const found = await loadEmployee(id, req);
+    const type = req.documentType;
 
-  const section = DOCUMENT_SECTIONS.find((entry) => entry.type === documentType);
-  const replacesExisting = section && !section.multiple;
+    const section = DOCUMENT_SECTIONS.find((entry) => entry.type === type);
 
-  const superseded = replacesExisting
-    ? (employee.documents ?? []).filter((document) => document.type === documentType)
-    : [];
+    const records = files.map((file) => ({
+      type,
+      title: file.originalname,
+      fileName: file.cloudinary ? file.originalname : file.filename,
+      filePath: storedPath(file),
+      mimeType: file.mimetype,
+      size: file.size,
+      ...imageReference(file),
+      uploadedBy: req.user.id,
+      uploadedAt: new Date(),
+    }));
 
-  const added = files.map((file) => ({
-    type: documentType,
-    title: file.originalname,
-    fileName: file.filename,
-    filePath: relativePath(file.path),
-    mimeType: file.mimetype,
-    size: file.size,
-    uploadedBy: req.user.id,
-    uploadedAt: new Date(),
-  }));
+    await employeeRepository.updateById(id, {
+      $push: { documents: { $each: records } },
+      $set: { updatedBy: req.user.id },
+    });
 
-  const update = {
-    $push: { documents: { $each: added } },
-    $set: { updatedBy: req.user.id },
-  };
+    return {
+      employee: found,
+      added: records,
+      documentType: type,
+      superseded:
+        section && !section.multiple ? (found.documents ?? []).filter((document) => document.type === type) : [],
+    };
+  });
 
+  // Mongo refuses $push and $pull on the same field in one update. The new
+  // record goes first: a failure between the two leaves both documents listed,
+  // which someone can tidy up, rather than neither.
   if (superseded.length) {
-    // Mongo refuses $push and $pull on the same field in one update, so the
-    // removal runs first and the insert second.
     await employeeRepository.updateById(id, {
       $pull: { documents: { _id: { $in: superseded.map((document) => document._id) } } },
     });
 
-    await Promise.all(superseded.map((document) => removeStoredFile(document.filePath)));
+    await Promise.all(superseded.map(removeDocumentFile));
   }
-
-  await employeeRepository.updateById(id, update);
 
   await recordAudit({
     req,
@@ -358,32 +385,38 @@ export const attachDocuments = async (id, files, req) => {
  * this removes the old record and its file.
  */
 export const replaceDocument = async (id, documentId, files, req) => {
-  const employee = await loadEmployee(id, req);
+  const { employee, existing, replacement } = await discardOnFailure(files, async () => {
+    const found = await loadEmployee(id, req);
 
-  const existing = (employee.documents ?? []).find((entry) => String(entry._id) === String(documentId));
-  if (!existing) throw ApiError.notFound('Document not found');
+    const current = (found.documents ?? []).find((entry) => String(entry._id) === String(documentId));
+    if (!current) throw ApiError.notFound('Document not found');
 
-  if (!files?.length) throw ApiError.badRequest('No replacement file was uploaded');
+    if (!files?.length) throw ApiError.badRequest('No replacement file was uploaded');
 
-  await employeeRepository.updateById(id, { $pull: { documents: { _id: existing._id } } });
-  await removeStoredFile(existing.filePath);
+    const file = files[0];
+    const record = {
+      type: current.type,
+      title: file.originalname,
+      fileName: file.cloudinary ? file.originalname : file.filename,
+      filePath: storedPath(file),
+      mimeType: file.mimetype,
+      size: file.size,
+      ...imageReference(file),
+      uploadedBy: req.user.id,
+      uploadedAt: new Date(),
+    };
 
-  const file = files[0];
-  const replacement = {
-    type: existing.type,
-    title: file.originalname,
-    fileName: file.filename,
-    filePath: relativePath(file.path),
-    mimeType: file.mimetype,
-    size: file.size,
-    uploadedBy: req.user.id,
-    uploadedAt: new Date(),
-  };
+    await employeeRepository.updateById(id, {
+      $push: { documents: record },
+      $set: { updatedBy: req.user.id },
+    });
 
-  await employeeRepository.updateById(id, {
-    $push: { documents: replacement },
-    $set: { updatedBy: req.user.id },
+    return { employee: found, existing: current, replacement: record };
   });
+
+  // The old record and file go only once the new one is safely recorded.
+  await employeeRepository.updateById(id, { $pull: { documents: { _id: existing._id } } });
+  await removeDocumentFile(existing);
 
   await recordAudit({
     req,
@@ -416,7 +449,7 @@ export const deleteDocument = async (id, documentId, req) => {
     $set: { updatedBy: req.user.id },
   });
 
-  const fileRemoved = await removeStoredFile(document.filePath);
+  const fileRemoved = await removeDocumentFile(document);
 
   await recordAudit({
     req,

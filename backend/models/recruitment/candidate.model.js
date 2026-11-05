@@ -54,6 +54,9 @@ const candidateSchema = new Schema(
       filePath: { type: String, default: null },
       mimeType: { type: String, default: null },
       size: { type: Number, default: 0 },
+      imageUrl: { type: String, default: null },
+      cloudinaryPublicId: { type: String, default: null },
+      imageFormat: { type: String, default: null },
       uploadedAt: { type: Date, default: null },
     },
 

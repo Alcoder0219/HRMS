@@ -26,6 +26,7 @@ import User from '../../models/auth/user.model.js';
 import { syncOvertimeAfterEmployeeChange } from '../attendance/overtimeRecompute.service.js';
 import { recordAudit, diffObjects } from '../../helpers/audit.helper.js';
 import { can, buildScopeFilter } from '../../helpers/permission.helper.js';
+import { deleteImage, discardOnFailure, imageReference } from '../storage/imageStorage.service.js';
 import {
   createEmployeeFolders,
   removeEmployeeFolder,
@@ -798,6 +799,11 @@ export const deleteEmployee = async (id, reason, req, { purgeAttachments = false
     // The metadata goes with the files. Leaving it would list documents whose
     // download endpoint could only ever answer "the stored file is missing".
     await employeeRepository.updateById(id, { $set: { documents: [] } });
+
+    // Images last: they are the part that cannot be got back.
+    const images = (employee.documents ?? []).map((document) => document.cloudinaryPublicId).filter(Boolean);
+    const removed = await Promise.all(images.map((publicId) => deleteImage(publicId)));
+    attachmentsRemoved = attachmentsRemoved || removed.some(Boolean);
   }
 
   await recordAudit({
@@ -853,21 +859,30 @@ export const restoreEmployee = async (id, req) => {
 /* -------------------------------------------------------------------------- */
 
 export const attachPhoto = async (id, file, req) => {
-  const employee = await employeeRepository.findById(id, { populate: false });
-  if (!employee) throw ApiError.notFound('Employee not found');
-  assertSameTenant(employee, req);
+  const { employee, updated } = await discardOnFailure([file], async () => {
+    const found = await employeeRepository.findById(id, { populate: false });
+    if (!found) throw ApiError.notFound('Employee not found');
+    assertSameTenant(found, req);
 
-  const photo = {
-    fileName: file.originalname,
-    filePath: `/uploads/avatars/${file.filename}`,
-    mimeType: file.mimetype,
-    size: file.size,
-    uploadedAt: new Date(),
-  };
+    const photo = {
+      fileName: file.originalname,
+      // `filePath` is what the avatar renders, and a photo needs no session to
+      // show, so it holds the signed URL.
+      filePath: file.cloudinary?.imageUrl ?? `/uploads/avatars/${file.filename}`,
+      mimeType: file.mimetype,
+      size: file.size,
+      ...imageReference(file),
+      uploadedAt: new Date(),
+    };
 
-  const updated = await employeeRepository.updateById(id, {
-    $set: { photo, updatedBy: req.user.id },
+    return {
+      employee: found,
+      updated: await employeeRepository.updateById(id, { $set: { photo, updatedBy: req.user.id } }),
+    };
   });
+
+  // Only now that the new one is recorded.
+  await deleteImage(employee.photo?.cloudinaryPublicId);
 
   await recordAudit({
     req,
@@ -882,25 +897,32 @@ export const attachPhoto = async (id, file, req) => {
 };
 
 export const attachDocuments = async (id, files, meta, req) => {
-  const employee = await employeeRepository.findById(id, { populate: false });
-  if (!employee) throw ApiError.notFound('Employee not found');
-  assertSameTenant(employee, req);
+  const { employee, documents, updated } = await discardOnFailure(files, async () => {
+    const found = await employeeRepository.findById(id, { populate: false });
+    if (!found) throw ApiError.notFound('Employee not found');
+    assertSameTenant(found, req);
 
-  const documents = files.map((file, index) => ({
-    type: meta?.types?.[index] ?? meta?.type ?? 'OTHER',
-    title: meta?.titles?.[index] ?? file.originalname,
-    fileName: file.originalname,
-    filePath: `/uploads/documents/${file.filename}`,
-    mimeType: file.mimetype,
-    size: file.size,
-    expiresAt: meta?.expiresAt?.[index] ?? null,
-    uploadedBy: req.user.id,
-    uploadedAt: new Date(),
-  }));
+    const added = files.map((file, index) => ({
+      type: meta?.types?.[index] ?? meta?.type ?? 'OTHER',
+      title: meta?.titles?.[index] ?? file.originalname,
+      fileName: file.originalname,
+      filePath: file.cloudinary?.cloudinaryPublicId ?? `/uploads/documents/${file.filename}`,
+      mimeType: file.mimetype,
+      size: file.size,
+      ...imageReference(file),
+      expiresAt: meta?.expiresAt?.[index] ?? null,
+      uploadedBy: req.user.id,
+      uploadedAt: new Date(),
+    }));
 
-  const updated = await employeeRepository.updateById(id, {
-    $push: { documents: { $each: documents } },
-    $set: { updatedBy: req.user.id },
+    return {
+      employee: found,
+      documents: added,
+      updated: await employeeRepository.updateById(id, {
+        $push: { documents: { $each: added } },
+        $set: { updatedBy: req.user.id },
+      }),
+    };
   });
 
   await recordAudit({
@@ -920,10 +942,14 @@ export const removeDocument = async (id, documentId, req) => {
   if (!employee) throw ApiError.notFound('Employee not found');
   assertSameTenant(employee, req);
 
+  const removed = (employee.documents ?? []).find((document) => String(document._id) === String(documentId));
+
   const updated = await employeeRepository.updateById(id, {
     $pull: { documents: { _id: documentId } },
     $set: { updatedBy: req.user.id },
   });
+
+  await deleteImage(removed?.cloudinaryPublicId);
 
   await recordAudit({
     req,
