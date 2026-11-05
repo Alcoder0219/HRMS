@@ -1,6 +1,7 @@
 import Shift from '../../models/organization/shift.model.js';
 import attendanceRepository from '../../repositories/attendance/attendance.repository.js';
-import { resolveWeeklyOffDays } from '../../helpers/manualAttendance.helper.js';
+import { startOfDay } from '../../helpers/attendanceRules.helper.js';
+import { isWeeklyOffDate, resolveWeeklyOffDays } from '../../helpers/manualAttendance.helper.js';
 
 /**
  * Which weekdays an employee rests on, read from the configuration that already
@@ -92,4 +93,71 @@ export const weeklyOffDaysByEmployee = async (employees = [], { tenantId = null 
   return result;
 };
 
-export default { weeklyOffDaysForEmployee, weeklyOffDaysByEmployee };
+/**
+ * The rest days in a month that have no attendance record.
+ *
+ * Attendance is only stored for days something happened, so an unworked Sunday
+ * has no row and a report reading rows alone shows it blank. These are shown as
+ * weekly offs at read time, exactly as the personal calendar does, and nothing
+ * is written.
+ *
+ * A record always wins, because it is what actually happened: a worked Sunday,
+ * leave or a correction stay as they are. A day that is a holiday for this
+ * employee is left to the holiday rules, and days before they joined or after
+ * they left are not theirs to rest on.
+ *
+ * `elapsed` counts only days that have happened: every rest day is displayed,
+ * but a total must not claim days that are still to come.
+ *
+ * @param {object}   input
+ * @param {Set}      input.recordedDays  Day numbers of the month that have a record
+ * @returns {{ days: Set<number>, elapsed: number }}
+ */
+export const unrecordedWeeklyOffs = ({
+  year,
+  month,
+  employee,
+  weeklyOffDays,
+  recordedDays,
+  holidays = [],
+  now = new Date(),
+}) => {
+  const lastDay = new Date(year, month, 0).getDate();
+  const joined = employee.joiningDate ? startOfDay(employee.joiningDate) : null;
+  const left = employee.lifecycle?.lastWorkingDate ? startOfDay(employee.lifecycle.lastWorkingDate) : null;
+  const departmentId = String(employee.departmentId?._id ?? employee.departmentId ?? '');
+  const today = startOfDay(now);
+
+  const holidayDays = new Set(
+    holidays
+      .filter(
+        (entry) =>
+          !entry.isOptional &&
+          // An empty department list means the holiday applies to everyone.
+          (!entry.departmentIds?.length || entry.departmentIds.some((id) => String(id) === departmentId)),
+      )
+      .map((entry) => startOfDay(entry.date).getTime()),
+  );
+
+  const days = new Set();
+  let elapsed = 0;
+
+  for (let dayNumber = 1; dayNumber <= lastDay; dayNumber += 1) {
+    // Built from the calendar date rather than a stored instant, so the weekday
+    // cannot shift with a time zone. Noon, because not every zone has a midnight
+    // on the day its clocks change.
+    const date = new Date(year, month - 1, dayNumber, 12);
+    const day = startOfDay(date);
+
+    if (recordedDays.has(dayNumber) || !isWeeklyOffDate(date, weeklyOffDays)) continue;
+    if (holidayDays.has(day.getTime())) continue;
+    if ((joined && day < joined) || (left && day > left)) continue;
+
+    days.add(dayNumber);
+    if (day <= today) elapsed += 1;
+  }
+
+  return { days, elapsed };
+};
+
+export default { weeklyOffDaysForEmployee, weeklyOffDaysByEmployee, unrecordedWeeklyOffs };
