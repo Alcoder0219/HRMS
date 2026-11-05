@@ -4,7 +4,7 @@ import attendanceRepository from '../../repositories/attendance/attendance.repos
 import Employee from '../../models/employee/employee.model.js';
 import { startOfDay } from '../../helpers/attendanceRules.helper.js';
 import { dutyMinutesFor } from '../../helpers/manualAttendance.helper.js';
-import { weeklyOffDaysByEmployee } from './weeklyOff.service.js';
+import { unrecordedWeeklyOffs, weeklyOffDaysByEmployee } from './weeklyOff.service.js';
 import { buildWorkbook } from '../../helpers/excel.helper.js';
 import { buildTablePdf } from '../../helpers/pdf.helper.js';
 import { recordAudit } from '../../helpers/audit.helper.js';
@@ -60,8 +60,10 @@ const scopedEmployees = async (req, filters = {}) => {
     // `tenantId` and the shift's `weeklyOffs` are here for the weekly-off
     // overtime rule: the register reports it and the edit dialog previews it,
     // and both need to know which weekday this employee actually rests on.
+    // `joiningDate` and `lifecycle` bound the weekly offs shown for days with no
+    // record: nobody rests before they joined or after they left.
     .select(
-      'employeeCode employeeId firstName lastName tenantId departmentId designationId unitId shiftId overtimeEligible standardDutyMinutes',
+      'employeeCode employeeId firstName lastName tenantId departmentId designationId unitId shiftId overtimeEligible standardDutyMinutes joiningDate lifecycle',
     )
     .populate([
       { path: 'departmentId', select: 'name code' },
@@ -71,6 +73,37 @@ const scopedEmployees = async (req, filters = {}) => {
     ])
     .sort({ employeeCode: 1 })
     .lean();
+};
+
+/**
+ * Each employee's weekly offs that have no record this month -- see
+ * `unrecordedWeeklyOffs`. Shared so the register, the summary and the grouped
+ * report cannot disagree about the same month.
+ */
+const weeklyOffsByEmployee = ({ year, month, employees, records, holidays, weeklyOffDays }) => {
+  const recordedDays = new Map();
+  records.forEach((record) => {
+    const key = String(record.employeeId);
+    if (!recordedDays.has(key)) recordedDays.set(key, new Set());
+    recordedDays.get(key).add(new Date(record.date).getDate());
+  });
+
+  return new Map(
+    employees.map((employee) => {
+      const key = String(employee._id);
+      return [
+        key,
+        unrecordedWeeklyOffs({
+          year,
+          month,
+          employee,
+          weeklyOffDays: weeklyOffDays.get(key) ?? [],
+          recordedDays: recordedDays.get(key) ?? new Set(),
+          holidays,
+        }),
+      ];
+    }),
+  );
 };
 
 /* -------------------------------------------------------------------------- */
@@ -120,8 +153,11 @@ export const monthlyRegister = async ({ year, month, departmentId, employeeId },
     byEmployee.get(key).set(new Date(record.date).getDate(), record);
   });
 
+  const weeklyOffs = weeklyOffsByEmployee({ year, month, employees, records, holidays, weeklyOffDays });
+
   const rows = employees.map((employee) => {
     const dayMap = byEmployee.get(String(employee._id)) ?? new Map();
+    const restDays = weeklyOffs.get(String(employee._id));
     const days = [];
     const totals = {
       present: 0,
@@ -139,11 +175,13 @@ export const monthlyRegister = async ({ year, month, departmentId, employeeId },
 
     for (let dayNumber = 1; dayNumber <= daysInMonth; dayNumber += 1) {
       const record = dayMap.get(dayNumber);
+      const restDay = restDays.days.has(dayNumber) ? ATTENDANCE_STATUS.WEEKLY_OFF : null;
+      const status = record?.status ?? restDay;
 
       days.push({
         day: dayNumber,
-        status: record?.status ?? null,
-        code: record ? (STATUS_CODE[record.status] ?? '-') : '-',
+        status,
+        code: status ? (STATUS_CODE[status] ?? '-') : '-',
         workedMinutes: record?.workedMinutes ?? 0,
         lateMinutes: record?.lateMinutes ?? 0,
         overtimeMinutes: record?.overtimeMinutes ?? 0,
@@ -189,6 +227,9 @@ export const monthlyRegister = async ({ year, month, departmentId, employeeId },
           break;
       }
     }
+
+    totals.weeklyOff += restDays.elapsed;
+    totals.payableDays += restDays.elapsed;
 
     return {
       employee: {
@@ -255,15 +296,22 @@ export const monthlySummary = async (
   const employees = await scopedEmployees(req, { departmentId });
   const employeeIds = employees.map((employee) => employee._id);
 
-  const aggregate = await attendanceRepository.monthlyAggregate({
-    employeeId: { $in: employeeIds },
-    date: { $gte: from, $lte: to },
-  });
+  const [aggregate, records, holidays, weeklyOffDays] = await Promise.all([
+    attendanceRepository.monthlyAggregate({
+      employeeId: { $in: employeeIds },
+      date: { $gte: from, $lte: to },
+    }),
+    attendanceRepository.findRawForRange({ employeeId: { $in: employeeIds }, date: { $gte: from, $lte: to } }),
+    attendanceRepository.findHolidays(req.user.tenantId ?? null, from, to),
+    weeklyOffDaysByEmployee(employees, { tenantId: req.user.tenantId ?? null }),
+  ]);
 
   const byEmployee = new Map(aggregate.map((row) => [String(row._id), row]));
+  const weeklyOffs = weeklyOffsByEmployee({ year, month, employees, records, holidays, weeklyOffDays });
 
   const rows = employees.map((employee) => {
-    const totals = byEmployee.get(String(employee._id)) ?? {};
+    const stored = byEmployee.get(String(employee._id)) ?? {};
+    const totals = { ...stored, weeklyOff: (stored.weeklyOff ?? 0) + weeklyOffs.get(String(employee._id)).elapsed };
 
     return {
       // `employeeId` now carries the employee's own ID, as it does in every
@@ -583,10 +631,14 @@ export const groupedReport = async ({ year, month, groupBy = 'department' }, req
 
   const byEmployee = new Map(employees.map((employee) => [String(employee._id), employee]));
 
-  const records = await attendanceRepository.findRawForRange({
-    employeeId: { $in: employees.map((employee) => employee._id) },
-    date: { $gte: from, $lte: to },
-  });
+  const [records, holidays, weeklyOffDays] = await Promise.all([
+    attendanceRepository.findRawForRange({
+      employeeId: { $in: employees.map((employee) => employee._id) },
+      date: { $gte: from, $lte: to },
+    }),
+    attendanceRepository.findHolidays(req.user.tenantId ?? null, from, to),
+    weeklyOffDaysByEmployee(employees, { tenantId: req.user.tenantId ?? null }),
+  ]);
 
   const groups = new Map();
   employees.forEach((employee) => {
@@ -619,6 +671,10 @@ export const groupedReport = async ({ year, month, groupBy = 'department' }, req
       case ATTENDANCE_STATUS.HOLIDAY: entry.holiday += 1; break;
       default: break;
     }
+  });
+
+  weeklyOffsByEmployee({ year, month, employees, records, holidays, weeklyOffDays }).forEach(({ elapsed }, key) => {
+    groups.get(groupOf(byEmployee.get(key))).weeklyOff += elapsed;
   });
 
   return {
