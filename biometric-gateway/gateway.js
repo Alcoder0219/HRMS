@@ -66,6 +66,14 @@ const config = {
   allowInsecureUpstream: process.env.ALLOW_INSECURE_UPSTREAM === 'true',
   maxBodyBytes: Number(process.env.MAX_BODY_KB || 1024) * 1024,
   timeoutMs: Number(process.env.UPSTREAM_TIMEOUT_SECONDS || 25) * 1000,
+  // Terminals (by serial number) whose replies carry no HTTP Date header. Empty
+  // by default, so every reply keeps its Date header exactly as before.
+  omitDateForSerials: new Set(
+    (process.env.NO_DATE_HEADER_SERIALS || '')
+      .split(',')
+      .map((entry) => entry.trim().toUpperCase())
+      .filter(Boolean),
+  ),
 };
 
 const fail = (message) => {
@@ -117,9 +125,27 @@ const reply = (res, status, text) => {
 
 const clientAddress = (req) => String(req.socket.remoteAddress || '').replace(/^::ffff:/i, '');
 
+/**
+ * Some ZKTeco firmware resets its own clock from the Date header of the
+ * server's reply, converting it with a zone of its own choosing. For a terminal
+ * listed in NO_DATE_HEADER_SERIALS the gateway sends no Date header at all, so
+ * there is nothing to set the clock from. Nothing else in the reply changes,
+ * and every other terminal and caller still gets the header. Every ADMS request
+ * names its terminal in the SN query parameter, which is what is matched here:
+ * terminals behind one office router share an address, so the address cannot
+ * tell them apart.
+ */
+const omitsDateHeader = (url) => {
+  if (!config.omitDateForSerials.size) return false;
+  const serial = (url.searchParams.get('SN') ?? url.searchParams.get('sn') ?? '').trim().toUpperCase();
+  return serial !== '' && config.omitDateForSerials.has(serial);
+};
+
 const server = http.createServer((req, res) => {
   const from = clientAddress(req);
   const url = new URL(req.url, 'http://gateway.local');
+  const noDate = omitsDateHeader(url);
+  if (noDate) res.sendDate = false;
 
   // Liveness for systemd or a monitor on the same machine. Never forwarded,
   // and answered only locally so it reveals nothing to the internet.
@@ -188,6 +214,7 @@ const server = http.createServer((req, res) => {
           status: upstream.status,
           bytes: size,
           ms: Date.now() - started,
+          ...(noDate ? { dateHeader: 'omitted' } : {}),
         });
       }
     } catch (error) {
@@ -203,6 +230,7 @@ server.listen(config.listenPort, config.listenHost, () => {
     listen: `${config.listenHost}:${config.listenPort}`,
     upstream: config.upstream,
     allowedDevices: config.allowedDevices,
+    ...(config.omitDateForSerials.size ? { noDateHeaderFor: [...config.omitDateForSerials] } : {}),
   });
 });
 
