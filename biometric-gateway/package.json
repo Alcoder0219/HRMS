@@ -9,6 +9,7 @@
     "node": ">=18.0.0"
   },
   "scripts": {
-    "start": "node gateway.js"
+    "start": "node gateway.js",
+    "test": "node --test"
   }
 }
