@@ -80,6 +80,22 @@ const bodies = {
     isNightShift: Joi.boolean(),
     weeklyOffs: Joi.array().items(Joi.number().integer().min(0).max(6)).max(7),
     saturdayWorkMinutes: Joi.number().integer().min(0).max(1440).allow(null),
+    // All seven days, or an empty list to go back to one timing for the week.
+    schedule: Joi.alternatives().try(
+      Joi.array().length(0),
+      Joi.array()
+        .length(7)
+        .unique('day')
+        .items(
+          Joi.object({
+            day: Joi.number().integer().min(0).max(6).required(),
+            isWorking: Joi.boolean().required(),
+            startTime: Joi.when('isWorking', { is: true, then: time.required(), otherwise: time.allow(null, '') }),
+            endTime: Joi.when('isWorking', { is: true, then: time.required(), otherwise: time.allow(null, '') }),
+            breakMinutes: Joi.number().integer().min(0).max(480).default(0),
+          }),
+        ),
+    ),
     isActive: Joi.boolean(),
   },
 };

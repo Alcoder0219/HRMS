@@ -213,6 +213,17 @@ export const MASTERS = {
       isNightShift: boolean,
       weeklyOffs,
       saturdayWorkMinutes: number,
+      // Validated as a whole by the route and the model; a weekly off keeps no times.
+      schedule: (value) =>
+        Array.isArray(value)
+          ? value.map((entry) => ({
+              day: Number(entry.day),
+              isWorking: Boolean(entry.isWorking),
+              startTime: entry.isWorking ? entry.startTime : null,
+              endTime: entry.isWorking ? entry.endTime : null,
+              breakMinutes: entry.isWorking ? Number(entry.breakMinutes) || 0 : 0,
+            }))
+          : [],
       isActive: boolean,
     },
     references: [{ Model: Employee, field: 'shiftId', label: 'employee' }],

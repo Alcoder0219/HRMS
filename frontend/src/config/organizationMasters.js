@@ -1,4 +1,5 @@
 import { PATHS } from '@routes/paths.js';
+import { scheduleErrors } from '@utils/shiftSchedule.js';
 
 /**
  * One description of each organization master, shared by the list screen, the
@@ -140,22 +141,21 @@ export const ORGANIZATION_MASTERS = {
         width: 6,
         help: 'Crosses midnight — attendance is graded against the previous day',
       },
-      { key: 'weeklyOffs', label: 'Weekly offs', type: 'days', width: 12, options: DAYS },
-      {
-        key: 'saturdayWorkMinutes',
-        label: 'Saturday working time (minutes)',
-        type: 'number',
-        width: 6,
-        min: 0,
-        max: 1440,
-        help: 'Only if this shift differs from the company Saturday (Attendance Policy, 330 = 5 h 30 m). 0 or blank = use the company figure',
-      },
+      // A day-wise schedule decides the weekly offs itself, so the chips stand
+      // aside while it is on.
+      { key: 'weeklyOffs', label: 'Weekly offs', type: 'days', width: 12, options: DAYS, hiddenWhen: (form) => form.schedule?.length === 7 },
+      // Replaces the single Saturday figure: every day, Saturday included, can
+      // have its own times. A shift left without one keeps working as before.
+      { key: 'schedule', label: 'Day-wise schedule', type: 'schedule', width: 12 },
     ],
     validate: (form) => {
       // A shift that starts and ends at the same minute has no duration, and
       // the rules engine would grade every day against a zero-length window.
       if (form.startTime && form.endTime && form.startTime === form.endTime) {
         return { endTime: 'Start and end time cannot be the same' };
+      }
+      if (form.schedule?.length === 7 && Object.keys(scheduleErrors(form.schedule)).length) {
+        return { schedule: 'Correct the highlighted days before saving' };
       }
       return null;
     },
@@ -175,6 +175,7 @@ export const emptyForm = (master) => {
     config.fields.map((field) => {
       if (field.type === 'switch') return [field.key, false];
       if (field.type === 'days') return [field.key, [0]];
+      if (field.type === 'schedule') return [field.key, []];
       return [field.key, ''];
     }),
   );
