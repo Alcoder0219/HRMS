@@ -71,6 +71,24 @@ export const attributeShiftDay = (time, shift = null) => {
 };
 
 /**
+ * How long a full day is on this date if it is a Saturday, or 0.
+ *
+ * The shift's own Saturday time wins; otherwise the company's, from the
+ * attendance policy, which applies to every employee -- including one with no
+ * shift assigned, who has no window for a shift setting to act on. The date is
+ * the attendance day key, so the weekday is the calendar day in the server's
+ * zone. 0 from both means Saturday is graded like any weekday.
+ */
+export const saturdayMinutesFor = (date, shift = null, policy = null) => {
+  if (!date || new Date(date).getDay() !== 6) return 0;
+
+  const fromShift = Number(shift?.saturdayWorkMinutes) || 0;
+  if (fromShift > 0) return fromShift;
+
+  return Number(policy?.saturdayFullDayMinutes ?? DEFAULT_POLICY.saturdayFullDayMinutes) || 0;
+};
+
+/**
  * Shift window for a date, expanded across midnight for night shifts.
  *
  * A 22:00-06:00 shift ends on the following calendar day. Comparing an 05:00
@@ -87,17 +105,17 @@ export const resolveShiftWindow = (date, shift, policy = null) => {
   if (end <= start) end = new Date(end.getTime() + 24 * 60 * MINUTE);
 
   /**
-   * A shorter Saturday, when the shift defines one.
+   * A shorter Saturday -- see `saturdayMinutesFor`.
    *
-   * Saturday starts at the shift's usual time and lasts `saturdayWorkMinutes`
-   * of work, so a full day, lateness, early going and overtime are all judged
-   * against that length -- by the same rules as any other day, not a separate
-   * Saturday system. The break, where it is deducted, is added back to the end
-   * so the length worked still comes out at the configured figure. Unset, or on
-   * any other day, the window is exactly the weekday one.
+   * Saturday starts at the shift's usual time and lasts that long, so a full
+   * day, lateness, early going and overtime are all judged against it by the
+   * same rules as any other day, not a separate Saturday system. The break,
+   * where it is deducted, is added back to the end so the length worked still
+   * comes out at the configured figure. On any other day the window is exactly
+   * the weekday one.
    */
-  const saturdayMinutes = Number(shift.saturdayWorkMinutes) || 0;
-  if (saturdayMinutes > 0 && new Date(date).getDay() === 6) {
+  const saturdayMinutes = saturdayMinutesFor(date, shift, policy);
+  if (saturdayMinutes > 0) {
     end = new Date(start.getTime() + (saturdayMinutes + (deductBreak ? (shift.breakMinutes ?? 0) : 0)) * MINUTE);
   }
 
@@ -164,6 +182,11 @@ export const DEFAULT_POLICY = {
    * so the default treats 08:30 and 08:32 as one punch. 0 turns it off.
    */
   duplicatePunchWindowMinutes: 2,
+  /**
+   * The company's Saturday: this much eligible work is a full day. 330 is
+   * 5 h 30 m. A shift may set its own; 0 grades Saturday like a weekday.
+   */
+  saturdayFullDayMinutes: 330,
 };
 
 const isBiometric = (punch) => punch?.source === ATTENDANCE_SOURCE.BIOMETRIC;
@@ -271,9 +294,17 @@ export const evaluateDay = ({
    * meaningful for over-long shifts: rostering ten hours does not raise the
    * bar for a full day above the eight the policy defines.
    */
-  const fullDayBar = window
-    ? Math.min(policy.fullDayMinutes, window.durationMinutes)
-    : policy.fullDayMinutes;
+  /**
+   * On a Saturday the day is that long. With a shift the window already says
+   * so; without one there is no window, and the company's Saturday applies
+   * directly -- an employee without a shift is not held to a weekday on
+   * Saturday. Either way the bar is never above the Saturday figure, so 5h30
+   * worked is always a full day and the weekday half-day bar cannot override it.
+   */
+  const saturdayMinutes = saturdayMinutesFor(date, shift, policy);
+  const dayMinutes = window ? window.durationMinutes : saturdayMinutes || policy.fullDayMinutes;
+
+  const fullDayBar = Math.min(policy.fullDayMinutes, dayMinutes);
   const halfDayBar = Math.min(policy.halfDayMinutes, fullDayBar / 2);
 
   const result = {
@@ -295,7 +326,7 @@ export const evaluateDay = ({
     compOffEarnedDays: 0,
     shiftStart: window?.start ?? null,
     shiftEnd: window?.end ?? null,
-    expectedMinutes: window?.durationMinutes ?? policy.fullDayMinutes,
+    expectedMinutes: dayMinutes,
     anomalies: [],
   };
 
@@ -426,7 +457,7 @@ export const evaluateDay = ({
      * Assigning the employee's real shift is still the fix; this stops the
      * absence of one from quietly costing somebody their overtime.
      */
-    const shiftMinutes = window ? window.durationMinutes : policy.fullDayMinutes;
+    const shiftMinutes = dayMinutes;
 
     if (!window) result.anomalies.push('NO_SHIFT_ASSIGNED');
 
