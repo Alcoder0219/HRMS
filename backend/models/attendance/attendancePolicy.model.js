@@ -65,6 +65,14 @@ const attendancePolicySchema = new Schema(
     countBreakAsWorked: { type: Boolean, default: DEFAULT_POLICY.countBreakAsWorked },
     // Biometric punches this many minutes or less after the one before are one
     // punch. 0 turns the rule off.
+    // Eligible work that makes a Saturday a full day, for every employee unless
+    // their shift sets its own. 330 = 5 h 30 m; 0 grades Saturday like a weekday.
+    saturdayFullDayMinutes: {
+      type: Number,
+      default: DEFAULT_POLICY.saturdayFullDayMinutes,
+      min: 0,
+      max: 900,
+    },
     duplicatePunchWindowMinutes: {
       type: Number,
       default: DEFAULT_POLICY.duplicatePunchWindowMinutes,

@@ -87,8 +87,11 @@ describe('Saturday working time', () => {
     assert.equal(result.earlyGoingMinutes, 0, 'leaving at the Saturday end is not early');
     assert.equal(result.overtimeMinutes, 0);
 
-    const before = day(SATURDAY, [punch(SATURDAY, '08:30'), punch(SATURDAY, '14:00')], WEEKDAY_SHIFT);
-    assert.equal(before.status, 'HALF_DAY', 'without the setting Saturday is still a weekday');
+    const companyRule = day(SATURDAY, [punch(SATURDAY, '08:30'), punch(SATURDAY, '14:00')], WEEKDAY_SHIFT);
+    assert.equal(companyRule.status, 'PRESENT', 'with no shift setting, the company Saturday applies');
+
+    const off = day(SATURDAY, [punch(SATURDAY, '08:30'), punch(SATURDAY, '14:00')], WEEKDAY_SHIFT, { policy: { saturdayFullDayMinutes: 0 } });
+    assert.equal(off.status, 'HALF_DAY', 'switched off company-wide, Saturday is a weekday again');
   });
 
   test('3. under 5h30 on a Saturday follows the usual rules against the Saturday length', () => {

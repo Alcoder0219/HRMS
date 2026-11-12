@@ -148,7 +148,7 @@ export const ORGANIZATION_MASTERS = {
         width: 6,
         min: 0,
         max: 1440,
-        help: '330 = 5 h 30 m, a full day on Saturday. 0 or blank = same as weekdays',
+        help: 'Only if this shift differs from the company Saturday (Attendance Policy, 330 = 5 h 30 m). 0 or blank = use the company figure',
       },
     ],
     validate: (form) => {

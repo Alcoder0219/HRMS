@@ -89,6 +89,7 @@ const AttendancePolicyPage = () => {
         autoAbsentOnNoPunch: policy.autoAbsentOnNoPunch,
         countBreakAsWorked: policy.countBreakAsWorked,
         duplicatePunchWindowMinutes: policy.duplicatePunchWindowMinutes,
+        saturdayFullDayMinutes: policy.saturdayFullDayMinutes,
         weeklyOffs: policy.weeklyOffs,
         geofenceEnabled: policy.geofenceEnabled,
         rejectOutsideGeofence: policy.rejectOutsideGeofence,
@@ -211,6 +212,9 @@ const AttendancePolicyPage = () => {
           <Grid size={{ xs: 12, sm: 6, md: 3 }}>{number('Early-going grace (minutes)', 'earlyGoingGraceMinutes', null, { min: 0, max: 120 })}</Grid>
           <Grid size={{ xs: 12, sm: 6, md: 3 }}>
             {number('Lates per half-day deduction', 'latesPerHalfDayDeduction', '0 disables the monthly pattern rule', { min: 0, max: 10 })}
+          </Grid>
+          <Grid size={{ xs: 12, sm: 6, md: 3 }}>
+            {number('Saturday full day (minutes)', 'saturdayFullDayMinutes', '330 = 5 h 30 m, for everyone unless a shift sets its own. Blank = 330, 0 = off', { min: 0, max: 900 })}
           </Grid>
           <Grid size={{ xs: 12, sm: 6, md: 3 }}>
             {number('Duplicate punch window (minutes)', 'duplicatePunchWindowMinutes', 'Biometric punches this close count once. Blank = 2, 0 = off', { min: 0, max: 30 })}

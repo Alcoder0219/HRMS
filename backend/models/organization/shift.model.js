@@ -22,8 +22,8 @@ const shiftSchema = new Schema(
     /**
      * Saturday's working time, when it is shorter (or longer) than a weekday's
      * -- 330 for 5 h 30 m. Saturday then starts at `startTime` and lasts this
-     * long, and is graded against it. Null or 0 means Saturday is an ordinary
-     * day of this shift; Monday to Friday never read it.
+     * long, and is graded against it. Null or 0 means the company's Saturday
+     * from the attendance policy applies; Monday to Friday never read it.
      */
     saturdayWorkMinutes: { type: Number, default: null, min: 0, max: 1440 },
     isActive: { type: Boolean, default: true, index: true },
