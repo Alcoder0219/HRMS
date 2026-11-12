@@ -1,8 +1,14 @@
 /**
- * Regrades stored Saturdays with the current attendance rules.
+ * Regrades stored Saturdays -- or, with --every-day, any stored day -- with the
+ * current attendance rules.
  *
  *   TZ=Asia/Kolkata npm run recompute:saturdays -- --timezone=Asia/Kolkata                               (preview)
  *   TZ=Asia/Kolkata npm run recompute:saturdays -- --timezone=Asia/Kolkata --apply --backup=<new file>   (write)
+ *   TZ=Asia/Kolkata npm run recompute:days -- --timezone=Asia/Kolkata [--from=2026-11-01] [--to=...]   (every day)
+ *
+ * Saving a shift's day-wise schedule changes how FUTURE days are graded; days
+ * already stored keep the answer they were given. --every-day is how those are
+ * brought into line, with the same protections and the same preview first.
  *
  * A day is graded when its punches arrive and stored; screens and payroll read
  * the stored result. Saturdays graded before the Saturday rule existed keep the
@@ -47,7 +53,7 @@ export const protectedReason = (record) => {
  * Every stored Saturday whose result the current rules would change. Writes
  * nothing.
  */
-export const previewSaturdays = async ({ from = null, to = null, allowPayrollMonths = [] } = {}) => {
+export const previewSaturdays = async ({ from = null, to = null, allowPayrollMonths = [], everyDay = false } = {}) => {
   const filter = {};
   if (from || to) {
     filter.date = {};
@@ -55,7 +61,9 @@ export const previewSaturdays = async ({ from = null, to = null, allowPayrollMon
     if (to) filter.date.$lte = startOfDay(new Date(to));
   }
 
-  const records = (await Attendance.find(filter).lean()).filter((record) => startOfDay(record.date).getDay() === 6);
+  const records = (await Attendance.find(filter).lean()).filter(
+    (record) => everyDay || startOfDay(record.date).getDay() === 6,
+  );
 
   const employees = new Map(
     (await Employee.find({ _id: { $in: [...new Set(records.map((record) => String(record.employeeId)))] }, deletedAt: null }).lean()).map(
@@ -115,6 +123,7 @@ export const previewSaturdays = async ({ from = null, to = null, allowPayrollMon
       record,
       employee,
       employeeCode: employee.employeeCode,
+      shiftCode: context.shift?.code ?? null,
       day: startOfDay(record.date),
       from: Object.fromEntries(COMPARED.map((field) => [field, record[field] ?? 0])),
       to: Object.fromEntries(COMPARED.map((field) => [field, evaluation[field] ?? 0])),
@@ -173,6 +182,7 @@ if (isMain) {
       from: argument('from') || null,
       to: argument('to') || null,
       allowPayrollMonths,
+      everyDay: process.argv.includes('--every-day'),
     });
 
     const statusMoves = changes.reduce((counts, change) => {
@@ -197,7 +207,7 @@ if (isMain) {
           statusMoves,
           skipped,
           updated,
-          days: changes.map(({ employeeCode, day, from, to }) => ({ employeeCode, day: day.toDateString(), from, to })),
+          days: changes.map(({ employeeCode, shiftCode, day, from, to }) => ({ employeeCode, shift: shiftCode, day: day.toDateString(), from, to })),
         },
         null,
         2,
