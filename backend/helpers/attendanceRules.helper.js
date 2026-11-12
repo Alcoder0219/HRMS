@@ -55,19 +55,62 @@ const minutesOfDay = (hhmm) => {
  */
 export const attributeShiftDay = (time, shift = null) => {
   const calendarDay = startOfDay(time);
-  if (!shift?.startTime || !shift?.endTime) return calendarDay;
+  const previous = new Date(calendarDay);
+  previous.setDate(previous.getDate() - 1);
 
-  const start = minutesOfDay(shift.startTime);
-  const end = minutesOfDay(shift.endTime);
+  // With a day-wise schedule, what can spill into this morning is the shift
+  // the day BEFORE ran, so that day's times decide; a weekly off spills nothing.
+  const times = hasDaySchedule(shift) ? workingDayOf(shift, previous) : shift;
+  if (!times?.startTime || !times?.endTime) return calendarDay;
+
+  const start = minutesOfDay(times.startTime);
+  const end = minutesOfDay(times.endTime);
   if (!Number.isFinite(start) || !Number.isFinite(end) || end > start) return calendarDay;
 
   const cutoff = end + (start - end) / 2;
   const punchMinutes = new Date(time).getHours() * 60 + new Date(time).getMinutes();
   if (punchMinutes >= cutoff) return calendarDay;
 
-  const previous = new Date(calendarDay);
-  previous.setDate(previous.getDate() - 1);
   return previous;
+};
+
+/* -------------------------------------------------------------------------- */
+/*                             Day-wise schedules                             */
+/* -------------------------------------------------------------------------- */
+
+/** Whether a shift sets its times per day. All seven days, or it does not. */
+export const hasDaySchedule = (shift) => Array.isArray(shift?.schedule) && shift.schedule.length === 7;
+
+/** This date's entry in the shift's day-wise schedule, or null without one. */
+export const scheduleForDay = (shift, date) =>
+  hasDaySchedule(shift) ? (shift.schedule.find((entry) => Number(entry.day) === new Date(date).getDay()) ?? null) : null;
+
+/** That entry, only if it is a working day. */
+const workingDayOf = (shift, date) => {
+  const entry = scheduleForDay(shift, date);
+  return entry?.isWorking ? entry : null;
+};
+
+/** A scheduled day's working time: end less start, less its break. Overnight runs on. */
+export const scheduledNetMinutes = (entry) => {
+  if (!entry?.isWorking || !entry.startTime || !entry.endTime) return 0;
+
+  let span = minutesOfDay(entry.endTime) - minutesOfDay(entry.startTime);
+  if (span <= 0) span += 24 * 60;
+
+  return Math.max(0, span - (Number(entry.breakMinutes) || 0));
+};
+
+/**
+ * The shift as it runs on this date: that day's times and break when the
+ * shift has a day-wise schedule and the day is worked, the shift unchanged
+ * otherwise. Everything that grades a day reads the shift through this.
+ */
+export const shiftForDay = (shift, date) => {
+  const entry = workingDayOf(shift, date);
+  if (!entry) return shift;
+
+  return { ...shift, startTime: entry.startTime, endTime: entry.endTime, breakMinutes: Number(entry.breakMinutes) || 0 };
 };
 
 /**
@@ -81,6 +124,9 @@ export const attributeShiftDay = (time, shift = null) => {
  */
 export const saturdayMinutesFor = (date, shift = null, policy = null) => {
   if (!date || new Date(date).getDay() !== 6) return 0;
+
+  // A shift with a day-wise schedule sets Saturday itself, like every other day.
+  if (hasDaySchedule(shift)) return 0;
 
   const fromShift = Number(shift?.saturdayWorkMinutes) || 0;
   if (fromShift > 0) return fromShift;
@@ -270,14 +316,26 @@ export const reducePunches = (punches = [], { duplicateWindowMinutes = 0 } = {})
 export const evaluateDay = ({
   date,
   punches = [],
-  shift = null,
+  shift: assignedShift = null,
   policy: policyOverrides = {},
   holiday = null,
-  isWeeklyOff = false,
+  isWeeklyOff: rosteredOff = false,
   onLeave = false,
   overrideStatus = null,
 }) => {
   const policy = { ...DEFAULT_POLICY, ...policyOverrides };
+
+  /**
+   * The shift as it runs on this date. With a day-wise schedule that is the
+   * day's own times and break, and a day marked off is a weekly off whatever
+   * the caller worked out; without one it is the shift exactly as before.
+   * Everything below reads `shift`, so window, break, lateness, early going and
+   * overtime all follow the day.
+   */
+  const daySchedule = scheduleForDay(assignedShift, date);
+  const shift = shiftForDay(assignedShift, date);
+  const isWeeklyOff = rosteredOff || daySchedule?.isWorking === false;
+
   // The policy is passed through so the shift's length and the day's worked
   // minutes treat the break the same way.
   const window = resolveShiftWindow(date, shift, policy);
@@ -302,7 +360,16 @@ export const evaluateDay = ({
    * worked is always a full day and the weekday half-day bar cannot override it.
    */
   const saturdayMinutes = saturdayMinutesFor(date, shift, policy);
-  const dayMinutes = window ? window.durationMinutes : saturdayMinutes || policy.fullDayMinutes;
+  const shiftMinutes = window ? window.durationMinutes : saturdayMinutes || policy.fullDayMinutes;
+
+  /**
+   * A scheduled day is a full day once its configured working time is done --
+   * end less start less that day's break, the figure the Shifts screen shows.
+   * It is measured against the work recorded for the day, so a Saturday is
+   * never held to a weekday's length. Half a day follows from it. A shift
+   * without a schedule keeps the length above.
+   */
+  const dayMinutes = daySchedule?.isWorking ? scheduledNetMinutes(daySchedule) : shiftMinutes;
 
   const fullDayBar = Math.min(policy.fullDayMinutes, dayMinutes);
   const halfDayBar = Math.min(policy.halfDayMinutes, fullDayBar / 2);
@@ -456,9 +523,11 @@ export const evaluateDay = ({
      *
      * Assigning the employee's real shift is still the fix; this stops the
      * absence of one from quietly costing somebody their overtime.
+     *
+     * Measured against the shift's length for the day, worked out the same way
+     * the day's worked minutes are -- so on a scheduled day overtime starts
+     * after that day's own times, with the break treated exactly as before.
      */
-    const shiftMinutes = dayMinutes;
-
     if (!window) result.anomalies.push('NO_SHIFT_ASSIGNED');
 
     const raw = Math.max(0, result.workedMinutes - shiftMinutes);

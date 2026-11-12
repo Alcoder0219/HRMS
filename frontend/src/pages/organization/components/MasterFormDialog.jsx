@@ -10,6 +10,7 @@ import Typography from '@mui/material/Typography';
 
 import FormDialog from '@components/common/FormDialog.jsx';
 import CurrencyAdornment from '@components/common/CurrencyAdornment.jsx';
+import DayScheduleEditor from './DayScheduleEditor.jsx';
 import organizationService from '@services/modules/organization.service.js';
 import { ORGANIZATION_MASTERS, emptyForm } from '@config/organizationMasters.js';
 import { getRowId } from '@utils/dataGrid.js';
@@ -52,6 +53,7 @@ const MasterFormDialog = ({ open, master, record = null, options = {}, onClose, 
 
           if (field.type === 'switch') return [field.key, Boolean(value)];
           if (field.type === 'days') return [field.key, value ?? []];
+          if (field.type === 'schedule') return [field.key, value ?? []];
           if (field.type === 'select') return [field.key, value ? getRowId(value) || String(value) : ''];
 
           return [field.key, value ?? ''];
@@ -98,6 +100,17 @@ const MasterFormDialog = ({ open, master, record = null, options = {}, onClose, 
 
       if (field.type === 'days') {
         result[field.key] = value ?? [];
+        return;
+      }
+
+      if (field.type === 'schedule') {
+        result[field.key] = (value ?? []).map((entry) => ({
+          day: entry.day,
+          isWorking: Boolean(entry.isWorking),
+          startTime: entry.isWorking ? entry.startTime : null,
+          endTime: entry.isWorking ? entry.endTime : null,
+          breakMinutes: entry.isWorking ? Number(entry.breakMinutes) || 0 : 0,
+        }));
         return;
       }
 
@@ -178,6 +191,20 @@ const MasterFormDialog = ({ open, master, record = null, options = {}, onClose, 
             </Typography>
           )}
         </Stack>
+      );
+    }
+
+    if (field.type === 'schedule') {
+      return (
+        <DayScheduleEditor
+          value={form[field.key]}
+          form={form}
+          error={fieldErrors[field.key]}
+          onChange={(next) => {
+            setForm((previous) => ({ ...previous, [field.key]: next }));
+            setFieldErrors((previous) => ({ ...previous, [field.key]: undefined }));
+          }}
+        />
       );
     }
 
@@ -277,7 +304,9 @@ const MasterFormDialog = ({ open, master, record = null, options = {}, onClose, 
       maxWidth="md"
     >
       <Grid container spacing={2} sx={{ pt: 0.5 }}>
-        {config.fields.map((field) => (
+        {/* A field may stand aside for another -- the weekly-off chips while a
+            day-wise schedule, which sets the offs itself, is on. */}
+        {config.fields.filter((field) => !field.hiddenWhen?.(form)).map((field) => (
           <Grid key={field.key} size={{ xs: 12, sm: field.width >= 8 ? 12 : 6, md: field.width ?? 6 }}>
             {renderField(field)}
           </Grid>

@@ -51,6 +51,12 @@ const normalizeWeeklyOffDays = (value) =>
  * here assumes Sunday: an employee whose shift rests on Saturday gets Saturday.
  */
 export const resolveWeeklyOffDays = (shift = null, policy = null) => {
+  // A day-wise schedule says which days are off itself. Saving one also writes
+  // `weeklyOffs`, so this only matters for a reader holding an unsaved shift.
+  if (Array.isArray(shift?.schedule) && shift.schedule.length === 7) {
+    return shift.schedule.filter((entry) => !entry.isWorking).map((entry) => Number(entry.day)).sort();
+  }
+
   const fromShift = normalizeWeeklyOffDays(shift?.weeklyOffs);
   if (fromShift.length) return fromShift;
 
