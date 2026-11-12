@@ -1,4 +1,4 @@
-import { ATTENDANCE_STATUS } from '../utils/constants.js';
+import { ATTENDANCE_SOURCE, ATTENDANCE_STATUS } from '../utils/constants.js';
 
 /**
  * The attendance rules engine.
@@ -80,10 +80,26 @@ export const attributeShiftDay = (time, shift = null) => {
 export const resolveShiftWindow = (date, shift, policy = null) => {
   if (!shift?.startTime || !shift?.endTime) return null;
 
+  const deductBreak = !(policy?.countBreakAsWorked ?? DEFAULT_POLICY.countBreakAsWorked);
   const start = timeOnDate(date, shift.startTime);
   let end = timeOnDate(date, shift.endTime);
 
   if (end <= start) end = new Date(end.getTime() + 24 * 60 * MINUTE);
+
+  /**
+   * A shorter Saturday, when the shift defines one.
+   *
+   * Saturday starts at the shift's usual time and lasts `saturdayWorkMinutes`
+   * of work, so a full day, lateness, early going and overtime are all judged
+   * against that length -- by the same rules as any other day, not a separate
+   * Saturday system. The break, where it is deducted, is added back to the end
+   * so the length worked still comes out at the configured figure. Unset, or on
+   * any other day, the window is exactly the weekday one.
+   */
+  const saturdayMinutes = Number(shift.saturdayWorkMinutes) || 0;
+  if (saturdayMinutes > 0 && new Date(date).getDay() === 6) {
+    end = new Date(start.getTime() + (saturdayMinutes + (deductBreak ? (shift.breakMinutes ?? 0) : 0)) * MINUTE);
+  }
 
   /**
    * The shift's length, measured the same way the day's work is.
@@ -94,8 +110,6 @@ export const resolveShiftWindow = (date, shift, policy = null) => {
    * full span -- overtime then began an hour early. `countBreakAsWorked`
    * governs both sides so the two figures are always comparable.
    */
-  const deductBreak = !(policy?.countBreakAsWorked ?? DEFAULT_POLICY.countBreakAsWorked);
-
   return {
     start,
     end,
@@ -142,7 +156,17 @@ export const DEFAULT_POLICY = {
    * comparable -- see `resolveShiftWindow`.
    */
   countBreakAsWorked: true,
+  /**
+   * Biometric punches this close to the one before are the same punch.
+   *
+   * A terminal that is touched twice in a row records two punches a minute
+   * apart, and the second then read as the exit: a one-minute day. Inclusive,
+   * so the default treats 08:30 and 08:32 as one punch. 0 turns it off.
+   */
+  duplicatePunchWindowMinutes: 2,
 };
+
+const isBiometric = (punch) => punch?.source === ATTENDANCE_SOURCE.BIOMETRIC;
 
 /**
  * Reduces a punch log to the first entry and last exit.
@@ -150,13 +174,37 @@ export const DEFAULT_POLICY = {
  * Biometric devices emit a punch per door swipe, so a day routinely has six or
  * eight. First-in / last-out is the standard interpretation; the intervening
  * punches stay on the record for audit but do not change the computation.
+ *
+ * Before that, a biometric punch within `duplicateWindowMinutes` of the last
+ * one kept is set aside as a repeat of it, whichever terminal took it: the
+ * earliest stands. It is compared with the last punch KEPT, not the last seen,
+ * so a run of quick touches cannot creep forward into a real exit. Punches
+ * entered by a person or a file are never set aside. Nothing is removed from
+ * the record -- this only decides which punches are read.
  */
-export const reducePunches = (punches = []) => {
+export const reducePunches = (punches = [], { duplicateWindowMinutes = 0 } = {}) => {
   const valid = [...punches].filter((punch) => punch?.time);
-  const sorted = valid.sort((a, b) => new Date(a.time) - new Date(b.time));
+  const ordered = valid.sort((a, b) => new Date(a.time) - new Date(b.time));
+
+  const windowMs = Math.max(0, Number(duplicateWindowMinutes) || 0) * MINUTE;
+  const sorted = [];
+  let duplicates = 0;
+
+  ordered.forEach((punch) => {
+    const previous = sorted[sorted.length - 1];
+    const repeat =
+      windowMs > 0 &&
+      previous &&
+      isBiometric(punch) &&
+      isBiometric(previous) &&
+      new Date(punch.time) - new Date(previous.time) <= windowMs;
+
+    if (repeat) duplicates += 1;
+    else sorted.push(punch);
+  });
 
   if (!sorted.length) {
-    return { checkIn: null, checkOut: null, punchCount: 0, directionConflict: false };
+    return { checkIn: null, checkOut: null, punchCount: 0, directionConflict: false, duplicates };
   }
 
   /**
@@ -179,6 +227,7 @@ export const reducePunches = (punches = []) => {
     checkOut: sorted.length > 1 ? sorted[sorted.length - 1] : null,
     punchCount: sorted.length,
     directionConflict,
+    duplicates,
   };
 };
 
@@ -209,7 +258,9 @@ export const evaluateDay = ({
   // The policy is passed through so the shift's length and the day's worked
   // minutes treat the break the same way.
   const window = resolveShiftWindow(date, shift, policy);
-  const { checkIn, checkOut, punchCount, directionConflict } = reducePunches(punches);
+  const { checkIn, checkOut, punchCount, directionConflict, duplicates } = reducePunches(punches, {
+    duplicateWindowMinutes: policy.duplicatePunchWindowMinutes,
+  });
 
   /**
    * A full day is measured against the roster, capped by policy.
@@ -230,6 +281,9 @@ export const evaluateDay = ({
     checkInAt: checkIn?.time ? new Date(checkIn.time) : null,
     checkOutAt: checkOut?.time ? new Date(checkOut.time) : null,
     punchCount,
+    // Repeat biometric punches set aside -- reported, not stored, and not an
+    // anomaly: a double touch is not something HR has to resolve.
+    duplicatePunches: duplicates,
     workedMinutes: 0,
     breakMinutes: shift?.breakMinutes ?? 0,
     lateMinutes: 0,

@@ -372,6 +372,7 @@ export const upsertPolicySchema = {
     compOffExpiryDays: Joi.number().integer().min(7).max(365),
     autoAbsentOnNoPunch: Joi.boolean(),
     countBreakAsWorked: Joi.boolean(),
+    duplicatePunchWindowMinutes: Joi.number().integer().min(0).max(30),
     weeklyOffs: Joi.array().items(Joi.number().integer().min(0).max(6)).max(7),
     geofenceEnabled: Joi.boolean(),
     rejectOutsideGeofence: Joi.boolean(),
