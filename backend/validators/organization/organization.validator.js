@@ -79,6 +79,7 @@ const bodies = {
     breakMinutes: Joi.number().integer().min(0).max(480),
     isNightShift: Joi.boolean(),
     weeklyOffs: Joi.array().items(Joi.number().integer().min(0).max(6)).max(7),
+    saturdayWorkMinutes: Joi.number().integer().min(0).max(1440).allow(null),
     isActive: Joi.boolean(),
   },
 };

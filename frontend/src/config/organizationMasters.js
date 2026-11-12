@@ -141,6 +141,15 @@ export const ORGANIZATION_MASTERS = {
         help: 'Crosses midnight — attendance is graded against the previous day',
       },
       { key: 'weeklyOffs', label: 'Weekly offs', type: 'days', width: 12, options: DAYS },
+      {
+        key: 'saturdayWorkMinutes',
+        label: 'Saturday working time (minutes)',
+        type: 'number',
+        width: 6,
+        min: 0,
+        max: 1440,
+        help: '330 = 5 h 30 m, a full day on Saturday. 0 or blank = same as weekdays',
+      },
     ],
     validate: (form) => {
       // A shift that starts and ends at the same minute has no duration, and

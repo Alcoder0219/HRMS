@@ -212,6 +212,7 @@ export const MASTERS = {
       breakMinutes: number,
       isNightShift: boolean,
       weeklyOffs,
+      saturdayWorkMinutes: number,
       isActive: boolean,
     },
     references: [{ Model: Employee, field: 'shiftId', label: 'employee' }],

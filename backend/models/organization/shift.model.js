@@ -19,6 +19,13 @@ const shiftSchema = new Schema(
     // True when the shift ends on the following day (e.g. 22:00 -> 06:00).
     isNightShift: { type: Boolean, default: false },
     weeklyOffs: { type: [Number], default: [0], validate: (v) => v.every((d) => d >= 0 && d <= 6) },
+    /**
+     * Saturday's working time, when it is shorter (or longer) than a weekday's
+     * -- 330 for 5 h 30 m. Saturday then starts at `startTime` and lasts this
+     * long, and is graded against it. Null or 0 means Saturday is an ordinary
+     * day of this shift; Monday to Friday never read it.
+     */
+    saturdayWorkMinutes: { type: Number, default: null, min: 0, max: 1440 },
     isActive: { type: Boolean, default: true, index: true },
   },
   { timestamps: true },

@@ -63,6 +63,14 @@ const attendancePolicySchema = new Schema(
     /* ---------------------------------------------------------- misc ---- */
     autoAbsentOnNoPunch: { type: Boolean, default: DEFAULT_POLICY.autoAbsentOnNoPunch },
     countBreakAsWorked: { type: Boolean, default: DEFAULT_POLICY.countBreakAsWorked },
+    // Biometric punches this many minutes or less after the one before are one
+    // punch. 0 turns the rule off.
+    duplicatePunchWindowMinutes: {
+      type: Number,
+      default: DEFAULT_POLICY.duplicatePunchWindowMinutes,
+      min: 0,
+      max: 30,
+    },
     // 0 = Sunday. Overridden per shift when a shift defines its own.
     weeklyOffs: { type: [Number], default: [0] },
 
