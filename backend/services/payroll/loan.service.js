@@ -10,6 +10,7 @@ import { roundToCurrency } from '../../helpers/statutory.helper.js';
 import { structureGross } from '../../models/payroll/salaryStructure.model.js';
 import { recordAudit } from '../../helpers/audit.helper.js';
 import { buildScopeFilter } from '../../helpers/permission.helper.js';
+import { assertEmployeeAccess } from '../../helpers/unitScope.helper.js';
 
 const ENTITY = 'Loan';
 
@@ -69,6 +70,18 @@ const nextLoanNumber = async (tenantId) => {
   return `LN${String(current + 1).padStart(6, '0')}`;
 };
 
+/**
+ * A loan, refused (403) unless the caller's scope and unit reach the borrower:
+ * an employee their own, a unit-restricted payroll user their unit's. Every
+ * read and every decision on a loan goes through here.
+ */
+const loadLoan = async (loanId, req) => {
+  const loan = await payrollRepository.findLoanById(loanId);
+  if (!loan) throw ApiError.notFound('Loan not found');
+  await assertEmployeeAccess(req, loan.employeeId?._id ?? loan.employeeId, RESOURCES.PAYROLL, { notFound: 'Loan not found' });
+  return loan;
+};
+
 export const createLoan = async (payload, req) => {
   const employee = await employeeRepository.findById(payload.employeeId, { populate: false });
   if (!employee) throw ApiError.notFound('Employee not found');
@@ -77,6 +90,7 @@ export const createLoan = async (payload, req) => {
   if (callerTenant !== null && String(employee.tenantId ?? null) !== callerTenant) {
     throw ApiError.notFound('Employee not found');
   }
+  await assertEmployeeAccess(req, employee.toObject({ depopulate: true }), RESOURCES.PAYROLL);
 
   const { totalPayable, emi } = calculateEmi(payload);
 
@@ -132,8 +146,7 @@ export const createLoan = async (payload, req) => {
 };
 
 export const decideLoan = async (loanId, { decision, reason }, req) => {
-  const loan = await payrollRepository.findLoanById(loanId);
-  if (!loan) throw ApiError.notFound('Loan not found');
+  const loan = await loadLoan(loanId, req);
 
   if (loan.status !== LOAN_STATUS.PENDING) {
     throw ApiError.badRequest(`This loan is already ${loan.status.toLowerCase()}`);
@@ -167,8 +180,7 @@ export const decideLoan = async (loanId, { decision, reason }, req) => {
  * but undisbursed loan must never appear as a deduction.
  */
 export const disburseLoan = async (loanId, { disbursedOn }, req) => {
-  const loan = await payrollRepository.findLoanById(loanId);
-  if (!loan) throw ApiError.notFound('Loan not found');
+  const loan = await loadLoan(loanId, req);
 
   if (loan.status !== LOAN_STATUS.APPROVED) {
     throw ApiError.badRequest('Only an approved loan can be disbursed');
@@ -194,8 +206,7 @@ export const disburseLoan = async (loanId, { disbursedOn }, req) => {
 
 /** Pauses or resumes recovery without closing the loan. */
 export const setLoanHold = async (loanId, { hold, reason }, req) => {
-  const loan = await payrollRepository.findLoanById(loanId);
-  if (!loan) throw ApiError.notFound('Loan not found');
+  const loan = await loadLoan(loanId, req);
 
   const updated = await payrollRepository.updateLoan(loanId, {
     $set: { isOnHold: hold, holdReason: hold ? reason : null },
@@ -215,8 +226,7 @@ export const setLoanHold = async (loanId, { hold, reason }, req) => {
 
 /** Early settlement outside payroll -- a cash repayment, or a write-off. */
 export const recordManualRepayment = async (loanId, { amount, note }, req) => {
-  const loan = await payrollRepository.findLoanById(loanId);
-  if (!loan) throw ApiError.notFound('Loan not found');
+  const loan = await loadLoan(loanId, req);
 
   if (amount > loan.outstanding) {
     throw ApiError.badRequest(`The repayment exceeds the outstanding balance of ${loan.outstanding}`);
@@ -272,8 +282,7 @@ export const listLoans = async (query, req) => {
 };
 
 export const getLoan = async (loanId, req) => {
-  const loan = await payrollRepository.findLoanById(loanId);
-  if (!loan) throw ApiError.notFound('Loan not found');
+  const loan = await loadLoan(loanId, req);
 
   const callerTenant = req.user.tenantId ?? null;
   if (callerTenant !== null && String(loan.tenantId) !== callerTenant) {

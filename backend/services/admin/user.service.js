@@ -1,11 +1,24 @@
-﻿import User from '../../models/auth/user.model.js';
+import User from '../../models/auth/user.model.js';
 import Employee from '../../models/employee/employee.model.js';
 import LoginHistory from '../../models/auth/loginHistory.model.js';
 import RefreshToken from '../../models/auth/refreshToken.model.js';
 
+import mongoose from 'mongoose';
+
+import Unit from '../../models/organization/unit.model.js';
 import ApiError from '../../utils/ApiError.js';
 import { AUDIT_ACTIONS, ROLES, ACCOUNT_STATUS } from '../../utils/constants.js';
 import { getRoleCache } from '../auth/roleCache.service.js';
+import {
+  accountUnitFilter,
+  canHoldManyUnits,
+  employeeIdAllowed,
+  isUnitRestricted,
+  isUnitUnrestrictedRole,
+  resolveWritableUnit,
+  unitAccessOf,
+  unitDenied,
+} from '../../helpers/unitScope.helper.js';
 import { buildPagination, buildSort, buildSearch } from '../../utils/queryBuilder.js';
 import { recordAudit, diffObjects } from '../../helpers/audit.helper.js';
 import { hashPassword } from '../../helpers/password.helper.js';
@@ -51,6 +64,72 @@ const assertNotSelf = (req, userId, what) => {
   }
 };
 
+/* -------------------------------------------------------------- unit reach */
+
+const toObjectId = (value) => new mongoose.Types.ObjectId(String(value?._id ?? value));
+const idOf = (value) => (value ? String(value._id ?? value) : null);
+
+/** The accounts a unit-restricted administrator may see (shared rule). */
+const userUnitFilter = accountUnitFilter;
+
+const userInReach = (req, user) => {
+  if (!isUnitRestricted(req)) return true;
+  const own = (user.unitIds ?? []).map(idOf);
+  if (own.length) return own.some((unitId) => unitAccessOf(req).unitIds.includes(unitId));
+  return Boolean(user.employeeId) && unitAccessOf(req).employeeIds.some((id) => idOf(id) === idOf(user.employeeId));
+};
+
+/** Refuses (403) an account outside the caller's units. */
+const assertUserInReach = (req, user) => {
+  if (!userInReach(req, user)) {
+    throw unitDenied(req, { targetUserId: idOf(user._id) }, 'This account belongs to a unit outside your access');
+  }
+};
+
+/**
+ * The unit list to store on an account being created or edited.
+ *
+ * - Every unit must exist.
+ * - Only a role that may hold several units (HOD) gets more than one.
+ * - A unit-restricted administrator may assign only their own units, and may
+ *   not re-scope an account that already reaches beyond them.
+ * - An account a restricted administrator creates with neither a unit nor an
+ *   employee is given the administrator's own unit, so it is not left in no
+ *   unit at all (and invisible to the person who made it).
+ */
+const resolveAccountUnits = async (req, { role, unitIds, employeeId, current = [] }) => {
+  let units = (unitIds === undefined ? current : unitIds).map(idOf).filter(Boolean);
+
+  if (units.length) {
+    const found = await Unit.countDocuments({ _id: { $in: units.map(toObjectId) }, tenantId: tenantOf(req) });
+    if (found !== units.length) throw ApiError.badRequest('One or more of the selected units do not exist');
+  }
+
+  if (units.length > 1 && !canHoldManyUnits(role) && !isUnitUnrestrictedRole(role)) {
+    throw ApiError.badRequest(`A ${role} account can be assigned only one unit`);
+  }
+
+  if (isUnitRestricted(req)) {
+    const mine = unitAccessOf(req).unitIds;
+    if (unitIds !== undefined) {
+      if (current.map(idOf).some((unitId) => !mine.includes(unitId))) {
+        throw unitDenied(req, {}, 'You cannot change the units of an account that reaches beyond your own');
+      }
+      if (units.some((unitId) => !mine.includes(unitId))) {
+        throw unitDenied(req, { requestedUnits: units }, 'You cannot assign a unit outside your access');
+      }
+    }
+    if (!units.length && !employeeId) units = [resolveWritableUnit(req, null)];
+  }
+
+  return units;
+};
+
+const unitSummary = (user) =>
+  (user.unitIds ?? [])
+    .filter((unit) => unit && typeof unit === 'object' && unit.name !== undefined)
+    .map((unit) => ({ _id: unit._id, name: unit.name, code: unit.code }));
+
 /** The shape every screen gets. Never carries the password or its history. */
 const present = (user) => ({
   _id: user._id,
@@ -63,6 +142,8 @@ const present = (user) => ({
   status: user.status,
   employeeId: user.employeeId ?? null,
   departmentId: user.departmentId ?? null,
+  unitIds: (user.unitIds ?? []).map(idOf),
+  units: unitSummary(user),
   isEmailVerified: user.isEmailVerified,
   mustChangePassword: user.mustChangePassword,
   failedLoginAttempts: user.failedLoginAttempts ?? 0,
@@ -90,6 +171,23 @@ export const listUsers = async (query, req) => {
 
   Object.assign(filter, buildSearch(query.search, ['email', 'firstName', 'lastName']));
 
+  // Conditions combined with $and so the search's own $or, a `linked` filter
+  // and the caller's unit reach cannot overwrite one another.
+  const conditions = [];
+  const reach = userUnitFilter(req);
+  if (Object.keys(reach).length) conditions.push(reach);
+
+  if (query.unitId) {
+    const inUnit = await Employee.find({ tenantId: tenantOf(req), unitId: toObjectId(query.unitId) }).select('_id').lean();
+    conditions.push({
+      $or: [
+        { unitIds: toObjectId(query.unitId) },
+        { 'unitIds.0': { $exists: false }, employeeId: { $in: inUnit.map((employee) => employee._id) } },
+      ],
+    });
+  }
+  if (conditions.length) filter.$and = conditions;
+
   const sort = buildSort({ sortBy: query.sortBy, sortOrder: query.sortOrder }, SORTABLE, { createdAt: -1 });
 
   const [items, total] = await Promise.all([
@@ -97,8 +195,9 @@ export const listUsers = async (query, req) => {
       .sort(sort)
       .skip(skip)
       .limit(limit)
-      .populate({ path: 'employeeId', select: 'employeeCode employeeId firstName lastName' })
+      .populate({ path: 'employeeId', select: 'employeeCode employeeId firstName lastName unitId' })
       .populate({ path: 'departmentId', select: 'name' })
+      .populate({ path: 'unitIds', select: 'name code' })
       .lean(),
     User.countDocuments(filter),
   ]);
@@ -117,11 +216,13 @@ export const listUsers = async (query, req) => {
 
 export const getUser = async (id, req) => {
   const user = await User.findOne({ _id: id, tenantId: tenantOf(req) })
-    .populate({ path: 'employeeId', select: 'employeeCode employeeId firstName lastName designationId' })
+    .populate({ path: 'employeeId', select: 'employeeCode employeeId firstName lastName designationId unitId' })
     .populate({ path: 'departmentId', select: 'name' })
+    .populate({ path: 'unitIds', select: 'name code' })
     .lean();
 
   if (!user) throw ApiError.notFound('No such user');
+  assertUserInReach(req, user);
 
   // The last few sign-ins, because "when did this account last work" is the
   // first question asked about any user being looked at.
@@ -158,10 +259,15 @@ export const createUser = async (payload, req) => {
   if (payload.employeeId) {
     const employee = await Employee.findOne({ _id: payload.employeeId, tenantId, deletedAt: null }).lean();
     if (!employee) throw ApiError.badRequest('No such employee to link to');
+    if (!employeeIdAllowed(req, employee._id)) {
+      throw unitDenied(req, { employeeId: idOf(employee._id) }, 'That employee belongs to a unit outside your access');
+    }
 
     const taken = await User.findOne({ employeeId: payload.employeeId, tenantId }).lean();
     if (taken) throw ApiError.conflict('That employee already has a login account');
   }
+
+  const unitIds = await resolveAccountUnits(req, { role: payload.role, unitIds: payload.unitIds, employeeId: payload.employeeId });
 
   const verified = payload.isEmailVerified ?? true;
 
@@ -175,6 +281,7 @@ export const createUser = async (payload, req) => {
     role: payload.role,
     employeeId: payload.employeeId ?? null,
     departmentId: payload.departmentId ?? null,
+    unitIds: unitIds.map(toObjectId),
     status: payload.status ?? ACCOUNT_STATUS.ACTIVE,
     // An administrator setting someone's first password knows it, so the
     // account is required to replace it at first sign-in.
@@ -201,6 +308,7 @@ export const createUser = async (payload, req) => {
       { field: 'email', from: null, to: user.email },
       { field: 'role', from: null, to: user.role },
       { field: 'status', from: null, to: user.status },
+      ...(unitIds.length ? [{ field: 'unitIds', from: null, to: unitIds.join(', ') }] : []),
     ],
   });
 
@@ -212,6 +320,7 @@ export const updateUser = async (id, payload, req) => {
   const user = await User.findOne({ _id: id, tenantId });
   if (!user) throw ApiError.notFound('No such user');
 
+  assertUserInReach(req, user);
   assertCanManage(req.user?.role, user.role, 'edit');
 
   if (payload.role && payload.role !== user.role) {
@@ -222,12 +331,30 @@ export const updateUser = async (id, payload, req) => {
   if (payload.employeeId && String(payload.employeeId) !== String(user.employeeId ?? '')) {
     const employee = await Employee.findOne({ _id: payload.employeeId, tenantId, deletedAt: null }).lean();
     if (!employee) throw ApiError.badRequest('No such employee to link to');
+    if (!employeeIdAllowed(req, employee._id)) {
+      throw unitDenied(req, { employeeId: idOf(employee._id) }, 'That employee belongs to a unit outside your access');
+    }
 
     const taken = await User.findOne({ employeeId: payload.employeeId, tenantId, _id: { $ne: id } }).lean();
     if (taken) throw ApiError.conflict('That employee already has a login account');
   }
 
   const before = user.toObject({ depopulate: true });
+
+  // Re-checked whenever the role or the unit list moves: a role change from
+  // HOD to HR must not keep two units, and a restricted administrator may not
+  // re-scope the account outside their own units.
+  if (payload.unitIds !== undefined || payload.role !== undefined || payload.employeeId !== undefined) {
+    const units = await resolveAccountUnits(req, {
+      role: payload.role ?? user.role,
+      unitIds: payload.unitIds,
+      employeeId: payload.employeeId !== undefined ? payload.employeeId : user.employeeId,
+      current: user.unitIds ?? [],
+    });
+    if (payload.unitIds !== undefined || units.length !== (user.unitIds ?? []).length) {
+      user.unitIds = units.map(toObjectId);
+    }
+  }
 
   ['firstName', 'lastName', 'phone', 'role', 'employeeId', 'departmentId', 'mustChangePassword'].forEach((field) => {
     if (payload[field] !== undefined) user[field] = payload[field];
@@ -260,6 +387,7 @@ export const updateUser = async (id, payload, req) => {
 export const setStatus = async (id, { status, reason }, req) => {
   const user = await User.findOne({ _id: id, tenantId: tenantOf(req) });
   if (!user) throw ApiError.notFound('No such user');
+  assertUserInReach(req, user);
 
   assertCanManage(req.user?.role, user.role, 'suspend');
   assertNotSelf(req, id, 'suspend');
@@ -296,6 +424,7 @@ export const setStatus = async (id, { status, reason }, req) => {
 export const unlockUser = async (id, req) => {
   const user = await User.findOne({ _id: id, tenantId: tenantOf(req) });
   if (!user) throw ApiError.notFound('No such user');
+  assertUserInReach(req, user);
 
   assertCanManage(req.user?.role, user.role, 'unlock');
 
@@ -333,6 +462,7 @@ export const unlockUser = async (id, req) => {
 export const resetPassword = async (id, { password, notify }, req) => {
   const user = await User.findOne({ _id: id, tenantId: tenantOf(req) }).select('+password +passwordHistory');
   if (!user) throw ApiError.notFound('No such user');
+  assertUserInReach(req, user);
 
   assertCanManage(req.user?.role, user.role, 'reset the password of');
 
@@ -379,6 +509,7 @@ export const resetPassword = async (id, { password, notify }, req) => {
 export const revokeSessions = async (id, req) => {
   const user = await User.findOne({ _id: id, tenantId: tenantOf(req) }).lean();
   if (!user) throw ApiError.notFound('No such user');
+  assertUserInReach(req, user);
 
   assertCanManage(req.user?.role, user.role, 'sign out');
 
@@ -409,6 +540,7 @@ export const revokeSessions = async (id, req) => {
 export const deleteUser = async (id, req) => {
   const user = await User.findOne({ _id: id, tenantId: tenantOf(req) });
   if (!user) throw ApiError.notFound('No such user');
+  assertUserInReach(req, user);
 
   assertCanManage(req.user?.role, user.role, 'delete');
   assertNotSelf(req, id, 'delete');
@@ -449,13 +581,17 @@ export const userSummary = async (req) => {
   const tenantId = tenantOf(req);
   const now = new Date();
 
+  // Counted over the accounts the caller can see, so the headline figures never
+  // reveal how many accounts another unit has.
+  const base = { tenantId, ...userUnitFilter(req) };
+
   const [total, byStatus, byRole, locked, unlinked, neverSignedIn] = await Promise.all([
-    User.countDocuments({ tenantId }),
-    User.aggregate([{ $match: { tenantId } }, { $group: { _id: '$status', count: { $sum: 1 } } }]),
-    User.aggregate([{ $match: { tenantId } }, { $group: { _id: '$role', count: { $sum: 1 } } }]),
-    User.countDocuments({ tenantId, lockUntil: { $gt: now } }),
-    User.countDocuments({ tenantId, employeeId: null }),
-    User.countDocuments({ tenantId, lastLoginAt: null }),
+    User.countDocuments(base),
+    User.aggregate([{ $match: base }, { $group: { _id: '$status', count: { $sum: 1 } } }]),
+    User.aggregate([{ $match: base }, { $group: { _id: '$role', count: { $sum: 1 } } }]),
+    User.countDocuments({ ...base, lockUntil: { $gt: now } }),
+    User.countDocuments({ ...base, employeeId: null }),
+    User.countDocuments({ ...base, lastLoginAt: null }),
   ]);
 
   return {

@@ -17,6 +17,7 @@ import Designation from '../../models/organization/designation.model.js';
 import { buildWorkbook, parseWorkbook } from '../../helpers/excel.helper.js';
 import { recordAudit, recordAuditBatch } from '../../helpers/audit.helper.js';
 import { buildScopeFilter } from '../../helpers/permission.helper.js';
+import { isUnitRestricted, resolveWritableUnit, unitAllowed } from '../../helpers/unitScope.helper.js';
 
 /**
  * Column contract shared by export, the import template and the import parser.
@@ -152,9 +153,10 @@ export const exportEmployees = async (query, req) => {
 
   const filter = {
     tenantId: req.user.tenantId ?? null,
-    ...scope,
     deletedAt: null,
     ...buildFilters(query, FILTER_DEFINITIONS),
+    // Its own condition, so a client filter on the same key cannot replace it.
+    $and: [scope],
   };
 
   const search = buildSearch(query.search, ['employeeCode', 'firstName', 'lastName', 'workEmail']);
@@ -370,10 +372,19 @@ export const importEmployees = async (buffer, { dryRun = false } = {}, req) => {
     const managers = await Promise.all(
       managerCodes.map((code) => employeeRepository.findByCode(tenantId, code)),
     );
-    managers.filter(Boolean).forEach((manager) => {
+    // A manager in a unit outside the caller's reach is treated as unknown.
+    managers.filter((manager) => manager && unitAllowed(req, manager.unitId)).forEach((manager) => {
       lookups.managers.set(manager.employeeCode, manager._id);
     });
   }
+
+  /**
+   * The sheet carries no unit column, and its format stays as it is. A
+   * unit-restricted importer's rows go into their own unit -- decided here, not
+   * by the file -- so they can neither land in another unit nor vanish from
+   * the importer's own view. Unrestricted importers are unchanged.
+   */
+  const importUnitId = isUnitRestricted(req) ? resolveWritableUnit(req, null) : undefined;
 
   /* --- validation pass -------------------------------------------------- */
   const valid = [];
@@ -403,7 +414,11 @@ export const importEmployees = async (buffer, { dryRun = false } = {}, req) => {
     }
 
     if (errors.length) failed.push({ row: rowNumber, errors, data });
-    else valid.push({ rowNumber, payload: toEmployeePayload(data, lookups, tenantId, req.user.id) });
+    else {
+      const payload = toEmployeePayload(data, lookups, tenantId, req.user.id);
+      if (importUnitId !== undefined) payload.unitId = importUnitId;
+      valid.push({ rowNumber, payload });
+    }
   }
 
   const summary = {

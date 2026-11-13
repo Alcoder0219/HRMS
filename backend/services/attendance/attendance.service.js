@@ -19,6 +19,7 @@ import { weeklyOffDaysForEmployee } from './weeklyOff.service.js';
 import { checkGeofence } from '../../helpers/geo.helper.js';
 import { recordAudit } from '../../helpers/audit.helper.js';
 import { buildScopeFilter } from '../../helpers/permission.helper.js';
+import { assertEmployeeAccess, employeeUnitFilter } from '../../helpers/unitScope.helper.js';
 
 const ENTITY = 'Attendance';
 
@@ -225,6 +226,8 @@ const resolveEmployeeForUser = async (req, employeeId = null) => {
   if (employeeId) {
     const employee = await employeeRepository.findById(employeeId);
     if (!employee) throw ApiError.notFound('Employee not found');
+    // Someone else's attendance: the caller's scope and unit must reach them.
+    await assertEmployeeAccess(req, employee.toObject({ depopulate: true }), RESOURCES.ATTENDANCE);
     return employee;
   }
 
@@ -340,6 +343,7 @@ export const punch = async ({ employeeId = null, direction = null, location = nu
 export const markManual = async ({ employeeId, date, checkIn, checkOut, status, remarks, reason }, req) => {
   const employee = await employeeRepository.findById(employeeId);
   if (!employee) throw ApiError.notFound('Employee not found');
+  await assertEmployeeAccess(req, employee.toObject({ depopulate: true }), RESOURCES.ATTENDANCE);
 
   const day = startOfDay(date);
   const before = await attendanceRepository.findByEmployeeAndDate(employee._id, day);
@@ -522,10 +526,10 @@ export const listAttendance = async (query, req) => {
   const { page, limit, skip } = buildPagination(query);
   const sort = buildSort(query, SORTABLE_FIELDS, { date: -1 });
 
-  const filter = {
-    ...(await scopedFilter(req)),
-    ...buildFilters(query, FILTER_DEFINITIONS),
-  };
+  // Scope and client filters are combined, never merged: merged, a client's
+  // `employeeId` replaced the scope's own employee restriction, so any id --
+  // from any unit -- could be read by passing it as a filter.
+  const filter = { $and: [await scopedFilter(req), buildFilters(query, FILTER_DEFINITIONS)] };
 
   const { items, total } = await attendanceRepository.paginate({ filter, sort, skip, limit });
   return { items, total, page, limit };
@@ -650,6 +654,9 @@ export const getAttendance = async (id, req) => {
   if (callerTenant !== null && String(record.tenantId) !== callerTenant) {
     throw ApiError.notFound('Attendance record not found');
   }
+  await assertEmployeeAccess(req, record.employeeId?._id ?? record.employeeId, RESOURCES.ATTENDANCE, {
+    notFound: 'Attendance record not found',
+  });
 
   return record.toObject({ virtuals: true });
 };
@@ -678,7 +685,8 @@ export const getCompOffLedger = async (employeeId, req) => {
  * regularization silently changes a figure that has already been paid.
  */
 export const lockPeriod = async ({ from, to }, req) => {
-  const result = await attendanceRepository.lockRange(req.user.tenantId ?? null, from, to);
+  // A unit-restricted caller locks their own unit(s)' days, not everyone's.
+  const result = await attendanceRepository.lockRange(req.user.tenantId ?? null, from, to, employeeUnitFilter(req));
 
   await recordAudit({
     req,

@@ -15,7 +15,7 @@ export const shifts = asyncHandler(async (req, res) =>
 );
 
 export const units = asyncHandler(async (req, res) =>
-  ApiResponse.ok(res, await organizationService.listUnits(req.user.tenantId)),
+  ApiResponse.ok(res, await organizationService.listUnits(req.user.tenantId, req)),
 );
 
 export const grades = asyncHandler(async (req, res) =>
@@ -27,12 +27,12 @@ export const salaryTemplates = asyncHandler(async (req, res) =>
 );
 
 export const reportingManagers = asyncHandler(async (req, res) =>
-  ApiResponse.ok(res, await organizationService.listReportingManagers(req.user.tenantId)),
+  ApiResponse.ok(res, await organizationService.listReportingManagers(req.user.tenantId, req)),
 );
 
 /** Everything a form needs, in one request instead of seven. */
 export const masters = asyncHandler(async (req, res) =>
-  ApiResponse.ok(res, await organizationService.listAllMasters(req.user.tenantId), 'Organization masters'),
+  ApiResponse.ok(res, await organizationService.listAllMasters(req.user.tenantId, req), 'Organization masters'),
 );
 
 export default {

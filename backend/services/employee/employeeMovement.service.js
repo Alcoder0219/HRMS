@@ -6,7 +6,8 @@ import Designation from '../../models/organization/designation.model.js';
 import Grade from '../../models/organization/grade.model.js';
 
 import ApiError from '../../utils/ApiError.js';
-import { AUDIT_ACTIONS } from '../../utils/constants.js';
+import { AUDIT_ACTIONS, RESOURCES } from '../../utils/constants.js';
+import { assertEmployeeAccess, visibleEmployeeIds } from '../../helpers/unitScope.helper.js';
 import { buildPagination } from '../../utils/queryBuilder.js';
 
 /**
@@ -291,10 +292,11 @@ const KIND_FILTER = {
  */
 export const getEmployeeMovements = async (employeeId, { type = 'all', page = 1, limit = 25 } = {}, req) => {
   const employee = await Employee.findOne({ _id: employeeId, tenantId: req.user?.tenantId ?? null })
-    .select('employeeCode employeeId firstName lastName unitId departmentId designationId gradeId reportingManagerId')
+    .select('tenantId employeeCode employeeId firstName lastName unitId departmentId designationId gradeId reportingManagerId')
     .lean();
 
   if (!employee) throw ApiError.notFound('Employee not found');
+  await assertEmployeeAccess(req, employee, RESOURCES.EMPLOYEE);
 
   const entries = await AuditLog.find({
     entity: 'Employee',
@@ -336,6 +338,11 @@ export const listMovements = async ({ type = 'all', from, to, page = 1, limit = 
     if (from) filter.occurredAt.$gte = new Date(from);
     if (to) filter.occurredAt.$lte = new Date(to);
   }
+
+  // Only the movements of employees the caller may see: their unit(s), and
+  // only their own for a self-service account.
+  const visible = await visibleEmployeeIds(req, RESOURCES.EMPLOYEE);
+  if (visible) filter.entityId = { $in: visible };
 
   const entries = await AuditLog.find(filter)
     .sort({ occurredAt: -1 })

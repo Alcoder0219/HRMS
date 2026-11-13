@@ -9,6 +9,7 @@ import Employee from '../../models/employee/employee.model.js';
 import { parseWorkbook } from '../../helpers/excel.helper.js';
 import { recordAudit } from '../../helpers/audit.helper.js';
 import { can } from '../../helpers/permission.helper.js';
+import { employeeUnitFilter } from '../../helpers/unitScope.helper.js';
 import { createAssetSchema } from '../../validators/payroll/settlement.validator.js';
 import assetService from './asset.service.js';
 
@@ -245,6 +246,8 @@ export const importAssets = async (buffer, { dryRun = false } = {}, req) => {
           tenantId,
           deletedAt: null,
           $or: [{ employeeCode: { $in: holdersInFile } }, { employeeId: { $in: holdersInFile } }],
+          // Someone in a unit outside the importer's reach is "not found".
+          ...employeeUnitFilter(req, '_id'),
         })
           .select('employeeCode employeeId')
           .lean()

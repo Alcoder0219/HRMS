@@ -24,6 +24,8 @@ import { buildBankTransferFile } from '../../helpers/bankFile.helper.js';
 import { buildPayslipPdf } from '../../helpers/pdf.helper.js';
 import { recordAudit } from '../../helpers/audit.helper.js';
 import { buildScopeFilter } from '../../helpers/permission.helper.js';
+import { assertEmployeeAccess, employeeIdAllowed, employeeUnitFilter, isUnitRestricted } from '../../helpers/unitScope.helper.js';
+import Payslip from '../../models/payroll/payslip.model.js';
 
 const ENTITY = 'PayrollRun';
 
@@ -682,6 +684,60 @@ export const cancelRun = async (runId, { reason }, req) => {
 /*                                   Reads                                    */
 /* -------------------------------------------------------------------------- */
 
+/**
+ * A pay run is one organisation-wide document, and its totals sum every unit.
+ * A unit-restricted caller is shown the run with the totals summed from their
+ * own unit(s)' payslips only, the organisation-wide statutory totals withheld,
+ * and the exclusions list narrowed to their unit(s). Unrestricted callers see
+ * the run exactly as stored.
+ */
+const ORG_WIDE_RUN_TOTALS = [
+  'totalNssfEmployee',
+  'totalNssfEmployer',
+  'totalNhif',
+  'totalSdl',
+  'totalWcf',
+  'totalPaye',
+  'totalLoanRecovery',
+];
+
+const scopeRunsToUnits = async (runs, req) => {
+  if (!isUnitRestricted(req) || !runs.length) return runs;
+
+  const sums = await Payslip.aggregate([
+    { $match: { payrollRunId: { $in: runs.map((run) => run._id) }, ...employeeUnitFilter(req) } },
+    {
+      $group: {
+        _id: '$payrollRunId',
+        employeeCount: { $sum: 1 },
+        totalGross: { $sum: '$grossEarnings' },
+        totalDeductions: { $sum: '$totalDeductions' },
+        totalNet: { $sum: '$netPayable' },
+        totalEmployerContribution: { $sum: '$employerContributionTotal' },
+      },
+    },
+  ]);
+  const byRun = new Map(sums.map((row) => [String(row._id), row]));
+
+  return runs.map((run) => {
+    const own = byRun.get(String(run._id)) ?? {};
+    const scoped = { ...run };
+    ORG_WIDE_RUN_TOTALS.forEach((field) => {
+      scoped[field] = null;
+    });
+    return {
+      ...scoped,
+      employeeCount: own.employeeCount ?? 0,
+      totalGross: roundToCurrency(own.totalGross ?? 0),
+      totalDeductions: roundToCurrency(own.totalDeductions ?? 0),
+      totalNet: roundToCurrency(own.totalNet ?? 0),
+      totalEmployerContribution: roundToCurrency(own.totalEmployerContribution ?? 0),
+      exclusions: (run.exclusions ?? []).filter((entry) => employeeIdAllowed(req, entry.employeeId)),
+      scopedToUnits: true,
+    };
+  });
+};
+
 export const listRuns = async (query, req) => {
   const { page, limit, skip } = buildPagination(query);
   const sort = buildSort(query, RUN_SORTABLE_FIELDS, { year: -1, month: -1 });
@@ -691,10 +747,11 @@ export const listRuns = async (query, req) => {
   if (query.year) filter.year = query.year;
 
   const { items, total } = await payrollRepository.listRuns({ filter, sort, skip, limit });
-  return { items, total, page, limit };
+  return { items: await scopeRunsToUnits(items, req), total, page, limit };
 };
 
-export const getRun = async (runId, req) => {
+/** The stored run, tenant-checked. For internal use by the run workflow. */
+const loadRun = async (runId, req) => {
   const run = await payrollRepository.findRunById(runId);
   if (!run) throw ApiError.notFound('Payroll run not found');
 
@@ -704,6 +761,11 @@ export const getRun = async (runId, req) => {
   }
 
   return run.toObject({ virtuals: true });
+};
+
+export const getRun = async (runId, req) => {
+  const [run] = await scopeRunsToUnits([await loadRun(runId, req)], req);
+  return run;
 };
 
 /**
@@ -745,6 +807,8 @@ export const listPayslips = async (query, req) => {
   if (scope._id !== undefined || scope.reportingManagerId !== undefined || scope.departmentId !== undefined) {
     const employees = await Employee.find({ ...scope, deletedAt: null }).select('_id').lean();
     filter.employeeId = { $in: employees.map((employee) => employee._id) };
+    // A requested employee narrows within the scope; it can never widen it.
+    if (query.employeeId) filter.$and = [{ employeeId: query.employeeId }];
   } else if (query.employeeId) {
     filter.employeeId = query.employeeId;
   }
@@ -762,11 +826,14 @@ export const getPayslip = async (payslipId, req) => {
     throw ApiError.notFound('Payslip not found');
   }
 
-  // An employee may read only their own slip, whatever else their role allows.
-  const scope = buildScopeFilter(req, { ownerField: '_id', resource: RESOURCES.PAYROLL });
-  if (scope._id !== undefined && String(payslip.employeeId?._id ?? payslip.employeeId) !== String(scope._id)) {
-    throw ApiError.forbidden('You can only view your own payslip');
-  }
+  /**
+   * Only a payslip the caller's scope and unit reach: an employee their own,
+   * a unit-restricted payroll or HR user their unit's. Checked on the person
+   * the slip belongs to, so a payslip id from another unit is refused (403).
+   */
+  await assertEmployeeAccess(req, payslip.employeeId?._id ?? payslip.employeeId, RESOURCES.PAYROLL, {
+    notFound: 'Payslip not found',
+  });
 
   return payslip;
 };
@@ -826,7 +893,7 @@ export const generatePayslipPdf = async (payslipId, req) => {
  * value. Held payslips are excluded by the query, not by the file builder.
  */
 export const generateBankFile = async (runId, { format = null } = {}, req) => {
-  const run = await getRun(runId, req);
+  const run = await loadRun(runId, req);
 
   if (![PAYROLL_STATUS.APPROVED, PAYROLL_STATUS.PAID].includes(run.status)) {
     throw ApiError.badRequest('A bank transfer file can only be generated from an approved run');

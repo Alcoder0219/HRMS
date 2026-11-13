@@ -273,6 +273,27 @@ export const enforceTenantScope =
   };
 
 /* -------------------------------------------------------------------------- */
+/*                               Unit isolation                               */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * For endpoints whose data cannot be split by unit -- a full backup, the
+ * biometric terminals and every punch they carry, an organisation-wide pay run
+ * -- only a caller who sees every unit may proceed. A unit-restricted caller
+ * holding the permission is refused (403) rather than shown other units' data.
+ */
+export const requireAllUnits = (req, _res, next) => {
+  if (!requireSession(req, next)) return undefined;
+  if (req.user.unitAccess?.all) return next();
+
+  return deny(req, next, {
+    code: ERROR_CODES.FORBIDDEN_UNIT,
+    message: 'This covers every unit; your access is limited to your own unit',
+    detail: { requiredUnits: 'ALL' },
+  });
+};
+
+/* -------------------------------------------------------------------------- */
 /*                              Login portals                                 */
 /* -------------------------------------------------------------------------- */
 

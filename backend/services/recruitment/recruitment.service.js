@@ -20,6 +20,7 @@ import { buildPagination, buildSort, buildSearch } from '../../utils/queryBuilde
 import { recordAudit, diffObjects } from '../../helpers/audit.helper.js';
 import { deleteImage, discardOnFailure, imageReference } from '../storage/imageStorage.service.js';
 import employeeService from '../employee/employee.service.js';
+import { isUnitRestricted, resolveWritableUnit, unitAllowed, unitDenied, unitFieldFilter } from '../../helpers/unitScope.helper.js';
 
 /**
  * Recruitment: requisitions, candidates, interviews, offers and joining.
@@ -32,6 +33,33 @@ import employeeService from '../employee/employee.service.js';
  */
 
 const tenantOf = (req) => req.user?.tenantId ?? null;
+
+/**
+ * Unit isolation. A candidate is not an employee, so the job opening's unit is
+ * the anchor: candidates, interviews and offers all hang off an opening. A
+ * unit-restricted caller sees and acts on their own unit(s)' openings only; an
+ * opening with no unit is visible only to callers who see every unit.
+ */
+const jobReach = async (req) => {
+  if (!isUnitRestricted(req)) return {};
+  const jobs = await JobOpening.find({ tenantId: tenantOf(req), ...unitFieldFilter(req) }).select('_id').lean();
+  return { jobOpeningId: { $in: jobs.map((job) => job._id) } };
+};
+
+const assertJobInReach = (req, job) => {
+  if (job && !unitAllowed(req, job.unitId?._id ?? job.unitId)) {
+    throw unitDenied(req, { jobOpeningId: String(job._id) }, 'This job opening belongs to a unit outside your access');
+  }
+};
+
+/** For a candidate, interview or offer: its opening must be in the caller's unit(s). */
+const assertOpeningInReach = async (req, jobOpeningId) => {
+  if (!isUnitRestricted(req)) return;
+  const id = jobOpeningId?._id ?? jobOpeningId;
+  const job = id ? await JobOpening.findById(id).select('unitId').lean() : null;
+  if (!job) throw unitDenied(req, {}, 'This record belongs to a unit outside your access');
+  assertJobInReach(req, job);
+};
 
 /* -------------------------------------------------------------------------- */
 /*                                Job openings                                */
@@ -50,6 +78,7 @@ export const listJobs = async (query, req) => {
 
   if (query.status) filter.status = query.status;
   if (query.departmentId) filter.departmentId = query.departmentId;
+  Object.assign(filter, unitFieldFilter(req));
 
   Object.assign(filter, buildSearch(query.search, ['title', 'code', 'location']));
 
@@ -103,6 +132,7 @@ export const getJob = async (id, req) => {
     .lean();
 
   if (!job) throw ApiError.notFound('Job opening not found');
+  assertJobInReach(req, job);
 
   const pipeline = await Candidate.aggregate([
     { $match: { jobOpeningId: job._id } },
@@ -120,6 +150,8 @@ export const getJob = async (id, req) => {
 
 export const createJob = async (payload, req) => {
   const tenantId = tenantOf(req);
+  // The caller's own unit when none is named; another unit is refused.
+  payload.unitId = resolveWritableUnit(req, payload.unitId);
 
   const code = payload.code || (await nextCode('JOB', JobOpening, tenantId));
 
@@ -150,6 +182,10 @@ export const createJob = async (payload, req) => {
 export const updateJob = async (id, payload, req) => {
   const job = await JobOpening.findOne({ _id: id, tenantId: tenantOf(req) });
   if (!job) throw ApiError.notFound('Job opening not found');
+  assertJobInReach(req, job);
+  if (payload.unitId !== undefined && String(payload.unitId ?? '') !== String(job.unitId ?? '') && !unitAllowed(req, payload.unitId)) {
+    throw unitDenied(req, { jobOpeningId: String(job._id) }, 'You cannot move a job opening to a unit outside your access');
+  }
 
   const before = job.toObject({ depopulate: true });
 
@@ -185,6 +221,7 @@ export const updateJob = async (id, payload, req) => {
 export const deleteJob = async (id, req) => {
   const job = await JobOpening.findOne({ _id: id, tenantId: tenantOf(req) });
   if (!job) throw ApiError.notFound('Job opening not found');
+  assertJobInReach(req, job);
 
   const applicants = await Candidate.countDocuments({ jobOpeningId: id });
 
@@ -223,6 +260,9 @@ export const listCandidates = async (query, req) => {
   if (query.active) filter.stage = { $in: ACTIVE_CANDIDATE_STAGES };
 
   Object.assign(filter, buildSearch(query.search, ['firstName', 'lastName', 'email', 'currentEmployer']));
+  // Combined with any requested opening, so it can only narrow.
+  const reach = await jobReach(req);
+  if (reach.jobOpeningId) filter.$and = [reach];
 
   const sort = buildSort(
     { sortBy: query.sortBy, sortOrder: query.sortOrder },
@@ -259,6 +299,7 @@ export const getCandidate = async (id, req) => {
     .lean();
 
   if (!candidate) throw ApiError.notFound('Candidate not found');
+  await assertOpeningInReach(req, candidate.jobOpeningId);
 
   const [interviews, offers] = await Promise.all([
     Interview.find({ candidateId: id }).sort({ round: 1 }).lean(),
@@ -280,6 +321,7 @@ export const createCandidate = async (payload, req) => {
 
   const job = await JobOpening.findOne({ _id: payload.jobOpeningId, tenantId }).lean();
   if (!job) throw ApiError.notFound('Job opening not found');
+  assertJobInReach(req, job);
 
   if (job.status !== JOB_STATUS.OPEN) {
     throw ApiError.badRequest(`${job.title} is ${job.status.toLowerCase()} and is not accepting applications`);
@@ -321,6 +363,7 @@ export const createCandidate = async (payload, req) => {
 export const updateCandidate = async (id, payload, req) => {
   const candidate = await Candidate.findOne({ _id: id, tenantId: tenantOf(req) });
   if (!candidate) throw ApiError.notFound('Candidate not found');
+  await assertOpeningInReach(req, candidate.jobOpeningId);
 
   const before = candidate.toObject({ depopulate: true });
   Object.assign(candidate, payload, { updatedBy: req.user.id });
@@ -352,6 +395,7 @@ export const updateCandidate = async (id, payload, req) => {
 export const moveStage = async (id, { stage, note }, req) => {
   const candidate = await Candidate.findOne({ _id: id, tenantId: tenantOf(req) });
   if (!candidate) throw ApiError.notFound('Candidate not found');
+  await assertOpeningInReach(req, candidate.jobOpeningId);
 
   if (stage === CANDIDATE_STAGE.HIRED) {
     throw ApiError.badRequest('A candidate becomes hired by joining, not by a stage change');
@@ -391,6 +435,7 @@ export const attachResume = async (id, file, req) => {
   const { candidate, previousImage } = await discardOnFailure([file], async () => {
     const found = await Candidate.findOne({ _id: id, tenantId: tenantOf(req) });
     if (!found) throw ApiError.notFound('Candidate not found');
+    await assertOpeningInReach(req, found.jobOpeningId);
 
     const previous = found.resume?.cloudinaryPublicId ?? null;
 
@@ -458,6 +503,9 @@ export const listInterviews = async (query, req) => {
   if (query.candidateId) filter.candidateId = query.candidateId;
   if (query.jobOpeningId) filter.jobOpeningId = query.jobOpeningId;
 
+  const reach = await jobReach(req);
+  if (reach.jobOpeningId) filter.$and = [reach];
+
   if (query.from || query.to) {
     filter.scheduledAt = {};
     if (query.from) filter.scheduledAt.$gte = new Date(query.from);
@@ -486,6 +534,7 @@ export const scheduleInterview = async (payload, req) => {
 
   const candidate = await Candidate.findOne({ _id: payload.candidateId, tenantId });
   if (!candidate) throw ApiError.notFound('Candidate not found');
+  await assertOpeningInReach(req, candidate.jobOpeningId);
 
   if (!ACTIVE_CANDIDATE_STAGES.includes(candidate.stage)) {
     throw ApiError.badRequest(
@@ -532,6 +581,7 @@ export const scheduleInterview = async (payload, req) => {
 export const updateInterview = async (id, payload, req) => {
   const interview = await Interview.findOne({ _id: id, tenantId: tenantOf(req) });
   if (!interview) throw ApiError.notFound('Interview not found');
+  await assertOpeningInReach(req, interview.jobOpeningId);
 
   const before = interview.toObject({ depopulate: true });
 
@@ -561,6 +611,7 @@ export const updateInterview = async (id, payload, req) => {
 export const submitFeedback = async (id, payload, req) => {
   const interview = await Interview.findOne({ _id: id, tenantId: tenantOf(req) });
   if (!interview) throw ApiError.notFound('Interview not found');
+  await assertOpeningInReach(req, interview.jobOpeningId);
 
   interview.feedback.push({ ...payload, submittedAt: new Date() });
 
@@ -595,6 +646,8 @@ export const listOffers = async (query, req) => {
   if (query.status) filter.status = query.status;
   if (query.candidateId) filter.candidateId = query.candidateId;
   if (query.jobOpeningId) filter.jobOpeningId = query.jobOpeningId;
+  const reach = await jobReach(req);
+  if (reach.jobOpeningId) filter.$and = [reach];
 
   const [items, total] = await Promise.all([
     Offer.find(filter)
@@ -629,6 +682,7 @@ export const getOffer = async (id, req) => {
     .lean();
 
   if (!offer) throw ApiError.notFound('Offer not found');
+  await assertOpeningInReach(req, offer.jobOpeningId);
   return offer;
 };
 
@@ -637,6 +691,7 @@ export const createOffer = async (payload, req) => {
 
   const candidate = await Candidate.findOne({ _id: payload.candidateId, tenantId });
   if (!candidate) throw ApiError.notFound('Candidate not found');
+  await assertOpeningInReach(req, candidate.jobOpeningId);
 
   if (!ACTIVE_CANDIDATE_STAGES.includes(candidate.stage)) {
     throw ApiError.badRequest(`${candidate.firstName} is ${candidate.stage.toLowerCase()}`);
@@ -653,6 +708,9 @@ export const createOffer = async (payload, req) => {
   if (live) {
     throw ApiError.conflict(`${live.offerNumber} is already ${live.status.toLowerCase()} for this candidate`);
   }
+
+  // The placement unit: the caller's own when none is named, another refused.
+  if (isUnitRestricted(req)) payload.unitId = resolveWritableUnit(req, payload.unitId);
 
   const offer = await Offer.create({
     ...payload,
@@ -694,6 +752,7 @@ const assertOfferTransition = (from, to) => {
 export const setOfferStatus = async (id, { status, reason }, req) => {
   const offer = await Offer.findOne({ _id: id, tenantId: tenantOf(req) });
   if (!offer) throw ApiError.notFound('Offer not found');
+  await assertOpeningInReach(req, offer.jobOpeningId);
 
   assertOfferTransition(offer.status, status);
 
@@ -762,6 +821,7 @@ export const setOfferStatus = async (id, { status, reason }, req) => {
 export const convertToEmployee = async (offerId, payload, req) => {
   const offer = await Offer.findOne({ _id: offerId, tenantId: tenantOf(req) });
   if (!offer) throw ApiError.notFound('Offer not found');
+  await assertOpeningInReach(req, offer.jobOpeningId);
 
   /**
    * Already-converted is checked FIRST.
@@ -875,6 +935,8 @@ export const hiringReport = async ({ from, to, jobOpeningId }, req) => {
 
   const match = { tenantId };
   if (jobOpeningId) match.jobOpeningId = jobOpeningId;
+  const reach = await jobReach(req);
+  if (reach.jobOpeningId) match.$and = [reach];
 
   if (from || to) {
     match.appliedAt = {};
@@ -968,9 +1030,9 @@ export const hiringReport = async ({ from, to, jobOpeningId }, req) => {
   });
 
   const [openJobs, scheduledInterviews, pendingOffers] = await Promise.all([
-    JobOpening.countDocuments({ tenantId, status: JOB_STATUS.OPEN }),
-    Interview.countDocuments({ tenantId, status: INTERVIEW_STATUS.SCHEDULED }),
-    Offer.countDocuments({ tenantId, status: OFFER_STATUS.SENT }),
+    JobOpening.countDocuments({ tenantId, status: JOB_STATUS.OPEN, ...unitFieldFilter(req) }),
+    Interview.countDocuments({ tenantId, status: INTERVIEW_STATUS.SCHEDULED, ...reach }),
+    Offer.countDocuments({ tenantId, status: OFFER_STATUS.SENT, ...reach }),
   ]);
 
   return {

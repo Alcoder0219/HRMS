@@ -4,8 +4,9 @@ import employeeRepository from '../../repositories/employee/employee.repository.
 import Employee from '../../models/employee/employee.model.js';
 import User from '../../models/auth/user.model.js';
 import ApiError from '../../utils/ApiError.js';
-import { AUDIT_ACTIONS, DOCUMENT_TYPES } from '../../utils/constants.js';
+import { AUDIT_ACTIONS, DOCUMENT_TYPES, RESOURCES } from '../../utils/constants.js';
 import { recordAudit } from '../../helpers/audit.helper.js';
+import { assertEmployeeAccess } from '../../helpers/unitScope.helper.js';
 import {
   createEmployeeFolders,
   folderFor,
@@ -88,6 +89,10 @@ const loadEmployee = async (id, req) => {
     // another tenant is not something this caller should be able to learn.
     throw ApiError.notFound('Employee not found');
   }
+
+  // Scope and unit: another unit's employee, or (for a self-service account)
+  // another person, is refused -- listing, opening and changing alike.
+  await assertEmployeeAccess(req, employee.toObject({ depopulate: true }), RESOURCES.EMPLOYEE);
 
   return employee;
 };

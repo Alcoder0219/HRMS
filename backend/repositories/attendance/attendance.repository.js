@@ -63,9 +63,10 @@ export const upsertDay = (employeeId, date, { set = {}, setOnInsert = {}, push =
 export const updateById = (id, update) =>
   Attendance.findByIdAndUpdate(id, update, { new: true, runValidators: true }).populate(POPULATE);
 
-export const lockRange = (tenantId, from, to) =>
+/** `scope` narrows the lock, e.g. to one unit's employees; `{}` locks the tenant. */
+export const lockRange = (tenantId, from, to, scope = {}) =>
   Attendance.updateMany(
-    { tenantId, date: { $gte: startOfDay(from), $lte: startOfDay(to) }, isLocked: false },
+    { tenantId, date: { $gte: startOfDay(from), $lte: startOfDay(to) }, isLocked: false, ...scope },
     { $set: { isLocked: true, lockedAt: new Date() } },
   );
 

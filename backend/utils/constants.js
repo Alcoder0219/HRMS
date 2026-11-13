@@ -56,6 +56,31 @@ export const ROLE_LABELS = {
 export const CROSS_TENANT_ROLES = [ROLES.SUPER_ADMIN];
 
 /* -------------------------------------------------------------------------- */
+/*                              Unit data isolation                           */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Roles that see every unit. Every other role -- built-in or created later --
+ * is confined to the unit(s) assigned to the account, and sees no unit data at
+ * all while it has none. Failing closed is the point: a new role is restricted
+ * until someone decides otherwise here.
+ */
+export const UNIT_UNRESTRICTED_ROLES = [ROLES.SUPER_ADMIN, ROLES.COMPANY_ADMIN];
+
+/**
+ * Roles that may be assigned more than one unit. Everyone else restricted
+ * holds exactly one.
+ */
+export const MULTI_UNIT_ROLES = [ROLES.HOD];
+
+/**
+ * Roles whose reach is their whole assigned unit(s), whatever scope the role
+ * row stores. A head of department was department-scoped before units were
+ * enforced; with units, the unit is the boundary that matters for them.
+ */
+export const UNIT_WIDE_ROLES = [ROLES.HOD];
+
+/* -------------------------------------------------------------------------- */
 /*                                Permissions                                 */
 /* -------------------------------------------------------------------------- */
 
@@ -932,4 +957,5 @@ export const ERROR_CODES = {
   FORBIDDEN_PERMISSION: 'RBAC_PERMISSION_DENIED',
   FORBIDDEN_SCOPE: 'RBAC_SCOPE_DENIED',
   FORBIDDEN_TENANT: 'RBAC_TENANT_DENIED',
+  FORBIDDEN_UNIT: 'RBAC_UNIT_DENIED',
 };

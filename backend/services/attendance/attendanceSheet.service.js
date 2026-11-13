@@ -6,6 +6,7 @@ import Employee from '../../models/employee/employee.model.js';
 import sheetRepository from '../../repositories/attendance/attendanceSheet.repository.js';
 import { recordAudit } from '../../helpers/audit.helper.js';
 import { buildScopeFilter } from '../../helpers/permission.helper.js';
+import { assertEmployeeAccess } from '../../helpers/unitScope.helper.js';
 
 export const SORTABLE_FIELDS = ['year', 'month', 'employeeId', 'uploadedAt', 'createdAt'];
 
@@ -17,11 +18,15 @@ export const SORTABLE_FIELDS = ['year', 'month', 'employeeId', 'uploadedAt', 'cr
  * two in step, which is why edits and deletes both touch the daily collection.
  */
 
-const assertTenant = (sheet, req) => {
+const assertTenant = async (sheet, req) => {
   const callerTenant = req.user.tenantId ?? null;
   if (callerTenant !== null && String(sheet.tenantId) !== callerTenant) {
     throw ApiError.notFound('Attendance sheet not found');
   }
+  // And the employee the sheet belongs to must be within the caller's scope and unit.
+  await assertEmployeeAccess(req, sheet.employeeRef?._id ?? sheet.employeeRef, RESOURCES.ATTENDANCE, {
+    notFound: 'Attendance sheet not found',
+  });
 };
 
 /** Restricts a query to the employees the caller may see. */
@@ -109,7 +114,7 @@ export const getMonth = async ({ employeeId, year, month }, req) => {
 export const updateSheet = async (id, { attendance, unit, remarks }, req) => {
   const target = await sheetRepository.findSheetById(id);
   if (!target) throw ApiError.notFound('Attendance sheet not found');
-  assertTenant(target, req);
+  await assertTenant(target, req);
 
   const merged = new Map((target.attendance ?? []).map((day) => [day.day, day]));
   (attendance ?? []).forEach((day) => merged.set(day.day, day));
@@ -144,7 +149,7 @@ export const updateSheet = async (id, { attendance, unit, remarks }, req) => {
 export const deleteSheet = async (id, req) => {
   const target = await sheetRepository.findSheetById(id);
   if (!target) throw ApiError.notFound('Attendance sheet not found');
-  assertTenant(target, req);
+  await assertTenant(target, req);
 
   const removedDays = await sheetRepository.deleteDaysForSheet(
     target.employeeRef?._id ?? target.employeeRef,

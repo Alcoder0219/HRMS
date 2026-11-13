@@ -1,10 +1,10 @@
-﻿import { Router } from 'express';
+import { Router } from 'express';
 import multer from 'multer';
 
 import controller from '../../controllers/admin/admin.controller.js';
 import roleController from '../../controllers/admin/role.controller.js';
 import validate from '../../middlewares/validate.js';
-import { requirePermission } from '../../middlewares/authorize.js';
+import { requireAllUnits, requirePermission } from '../../middlewares/authorize.js';
 import { ACTIONS, RESOURCES } from '../../utils/constants.js';
 import schemas from '../../validators/admin/admin.validator.js';
 import roleSchemas from '../../validators/admin/role.validator.js';
@@ -262,6 +262,7 @@ router.patch(
 router.get(
   '/biometric/devices',
   requirePermission(RESOURCES.TENANT, ACTIONS.READ),
+  requireAllUnits,
   controller.listBiometricDevices,
 );
 
@@ -270,6 +271,7 @@ router.get(
 router.get(
   '/biometric/status',
   requirePermission(RESOURCES.TENANT, ACTIONS.READ),
+  requireAllUnits,
   controller.biometricIntegrationStatus,
 );
 
@@ -277,6 +279,7 @@ router.get(
 router.put(
   '/biometric/receiver',
   requirePermission(RESOURCES.TENANT, ACTIONS.UPDATE),
+  requireAllUnits,
   validate({ body: schemas.receiverSettingsSchema }),
   controller.updateBiometricReceiver,
 );
@@ -284,6 +287,7 @@ router.put(
 router.get(
   '/biometric/devices/:deviceId/status',
   requirePermission(RESOURCES.TENANT, ACTIONS.READ),
+  requireAllUnits,
   validate({ params: schemas.deviceIdParamSchema }),
   controller.biometricDeviceStatus,
 );
@@ -291,6 +295,7 @@ router.get(
 router.get(
   '/biometric/devices/:deviceId/events',
   requirePermission(RESOURCES.TENANT, ACTIONS.READ),
+  requireAllUnits,
   validate({ params: schemas.deviceIdParamSchema, query: schemas.deviceEventsQuerySchema }),
   controller.biometricDeviceEvents,
 );
@@ -298,6 +303,7 @@ router.get(
 router.get(
   '/biometric/devices/:deviceId/logs',
   requirePermission(RESOURCES.TENANT, ACTIONS.READ),
+  requireAllUnits,
   validate({ params: schemas.deviceIdParamSchema, query: schemas.deviceLogsQuerySchema }),
   controller.biometricDeviceLogs,
 );
@@ -306,6 +312,7 @@ router.post(
   '/biometric/devices/:deviceId/reprocess',
   // Writes attendance -- and with includeHeld, over a human's correction.
   requirePermission(RESOURCES.TENANT, ACTIONS.UPDATE),
+  requireAllUnits,
   validate({ params: schemas.deviceIdParamSchema, body: schemas.reprocessDeviceSchema }),
   controller.reprocessBiometricDevice,
 );
@@ -313,6 +320,7 @@ router.post(
 router.post(
   '/biometric/devices/:deviceId/commands',
   requirePermission(RESOURCES.TENANT, ACTIONS.UPDATE),
+  requireAllUnits,
   validate({ params: schemas.deviceIdParamSchema, body: schemas.deviceCommandSchema }),
   controller.queueBiometricCommand,
 );
@@ -320,6 +328,7 @@ router.post(
 router.post(
   '/biometric/devices',
   requirePermission(RESOURCES.TENANT, ACTIONS.UPDATE),
+  requireAllUnits,
   validate({ body: schemas.createBiometricDeviceSchema }),
   controller.addBiometricDevice,
 );
@@ -327,6 +336,7 @@ router.post(
 router.put(
   '/biometric/devices/:deviceId',
   requirePermission(RESOURCES.TENANT, ACTIONS.UPDATE),
+  requireAllUnits,
   validate({ params: schemas.deviceIdParamSchema, body: schemas.updateBiometricDeviceSchema }),
   controller.updateBiometricDevice,
 );
@@ -334,6 +344,7 @@ router.put(
 router.delete(
   '/biometric/devices/:deviceId',
   requirePermission(RESOURCES.TENANT, ACTIONS.DELETE),
+  requireAllUnits,
   validate({ params: schemas.deviceIdParamSchema }),
   controller.removeBiometricDevice,
 );
@@ -341,6 +352,7 @@ router.delete(
 router.post(
   '/biometric/devices/:deviceId/test',
   requirePermission(RESOURCES.TENANT, ACTIONS.UPDATE),
+  requireAllUnits,
   validate({ params: schemas.deviceIdParamSchema }),
   controller.testBiometricDevice,
 );
@@ -348,6 +360,7 @@ router.post(
 router.post(
   '/biometric/devices/:deviceId/sync',
   requirePermission(RESOURCES.TENANT, ACTIONS.UPDATE),
+  requireAllUnits,
   validate({ params: schemas.deviceIdParamSchema }),
   controller.syncBiometricDevice,
 );
@@ -357,6 +370,7 @@ router.get(
   // Reads the device, not the database: it opens a socket to hardware, which
   // is a write-shaped act however read-shaped the verb looks.
   requirePermission(RESOURCES.TENANT, ACTIONS.UPDATE),
+  requireAllUnits,
   validate({ params: schemas.deviceIdParamSchema }),
   controller.fetchDeviceUsers,
 );
@@ -364,21 +378,24 @@ router.get(
 router.post(
   '/biometric/devices/:deviceId/map',
   requirePermission(RESOURCES.TENANT, ACTIONS.UPDATE),
+  requireAllUnits,
   validate({ params: schemas.deviceIdParamSchema, body: schemas.mapDeviceUsersSchema }),
   controller.mapDeviceUsers,
 );
 
 /* -------------------------------------------------------- backup, restore -- */
 
-router.get('/backup/preview', requirePermission(RESOURCES.TENANT, ACTIONS.EXPORT), controller.backupPreview);
+// A backup is every unit's data in one file: never for a unit-restricted caller.
+router.get('/backup/preview', requirePermission(RESOURCES.TENANT, ACTIONS.EXPORT), requireAllUnits, controller.backupPreview);
 
-router.get('/backup', requirePermission(RESOURCES.TENANT, ACTIONS.EXPORT), controller.downloadBackup);
+router.get('/backup', requirePermission(RESOURCES.TENANT, ACTIONS.EXPORT), requireAllUnits, controller.downloadBackup);
 
 router.post(
   '/restore',
   // DELETE on the tenant: a restore can empty collections, and no lesser
   // action in the product can.
   requirePermission(RESOURCES.TENANT, ACTIONS.DELETE),
+  requireAllUnits,
   archiveUpload.single('archive'),
   validate({ body: schemas.restoreSchema }),
   controller.restoreBackup,

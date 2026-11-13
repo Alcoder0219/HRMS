@@ -15,6 +15,7 @@ import { permissionsFor, scopeFor, describeRole } from '../../helpers/permission
 import roleService from '../admin/role.service.js';
 
 import userRepository from '../../repositories/auth/user.repository.js';
+import Unit from '../../models/organization/unit.model.js';
 import loginHistoryRepository from '../../repositories/auth/loginHistory.repository.js';
 import verificationTokenRepository from '../../repositories/auth/verificationToken.repository.js';
 
@@ -473,10 +474,31 @@ export const logoutAll = async (userId, req) => {
 
 /* ------------------------------------------------------------------ reads */
 
-export const getProfile = async (userId) => {
+export const getProfile = async (userId, unitAccess = null) => {
   const user = await userRepository.findById(userId);
   if (!user) throw ApiError.notFound('Account not found');
-  return toPublicUser(user);
+
+  const profile = toPublicUser(user);
+  if (!unitAccess) return profile;
+
+  /**
+   * The caller's unit reach, for the screens: whether to offer "All units" and
+   * which units to list. Display only -- every endpoint enforces it on its own
+   * from the database, whatever the client does with this.
+   */
+  const units = unitAccess.all
+    ? []
+    : await Unit.find({ _id: { $in: unitAccess.unitIds } }).select('name code').sort({ name: 1 }).lean();
+
+  return {
+    ...profile,
+    unitAccess: {
+      all: Boolean(unitAccess.all),
+      unitIds: unitAccess.all ? [] : unitAccess.unitIds,
+      units: units.map((unit) => ({ _id: String(unit._id), name: unit.name, code: unit.code })),
+      source: unitAccess.source ?? null,
+    },
+  };
 };
 
 export const getLoginHistory = (userId, pagination) =>

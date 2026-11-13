@@ -17,7 +17,7 @@ import {
   RESOURCES,
 } from '../../utils/constants.js';
 import { buildPagination, buildSort, buildSearch } from '../../utils/queryBuilder.js';
-import { buildScopeFilter } from '../../helpers/permission.helper.js';
+import { assertEmployeeAccess, employeeUnitFilter, visibleEmployeeIds } from '../../helpers/unitScope.helper.js';
 import { recordAudit, diffObjects } from '../../helpers/audit.helper.js';
 import attendanceRepository from '../../repositories/attendance/attendance.repository.js';
 import {
@@ -205,30 +205,25 @@ export const deleteType = async (id, req) => {
 /*                                  Balances                                  */
 /* -------------------------------------------------------------------------- */
 
-/** Restricts a query to the records this caller may see. */
-const scopeFilter = (req) => {
-  const scope = buildScopeFilter(req, {
-    ownerField: 'employeeId',
-    managerField: 'reportingManagerId',
-    departmentField: 'departmentId',
-    resource: RESOURCES.LEAVE,
-  });
-
-  return scope;
-};
-
-/** Employee ids the caller may act on, or null when unrestricted. */
+/**
+ * Employee ids the caller may act on, or null when unrestricted.
+ *
+ * Resolved on the Employee collection with the scope keyed on `_id`. The scope
+ * used to be built for leave rows (keyed on `employeeId`) and then read as if it
+ * were keyed on `_id` -- so a self-service account, and a unit-restricted one,
+ * fell through as "unrestricted" and saw every request.
+ */
 const scopedEmployeeIds = async (req) => {
-  const scope = scopeFilter(req);
-
-  const restricted =
-    scope._id !== undefined || scope.reportingManagerId !== undefined || scope.departmentId !== undefined;
-
-  if (!restricted) return null;
-
-  const employees = await Employee.find({ ...scope, deletedAt: null }).select('_id').lean();
-  return employees.map((employee) => employee._id);
+  const ids = await visibleEmployeeIds(req, RESOURCES.LEAVE);
+  return ids;
 };
+
+/**
+ * A leave record's owner must be within the caller's scope and unit, or the
+ * caller themselves. Used by every read and action on one request or balance.
+ */
+const assertLeaveAccess = (employeeId, req, notFound) =>
+  assertEmployeeAccess(req, employeeId?._id ?? employeeId, RESOURCES.LEAVE, { notFound });
 
 /** The employee a self-service call belongs to. */
 const resolveEmployee = async (req, employeeId = null) => {
@@ -243,6 +238,10 @@ const resolveEmployee = async (req, employeeId = null) => {
     .lean();
 
   if (!employee) throw ApiError.notFound('Employee not found');
+  // Acting for someone else needs the scope and unit to reach them.
+  if (employeeId && String(employeeId) !== String(req.user?.employeeId ?? '')) {
+    await assertLeaveAccess(employee._id, req, 'Employee not found');
+  }
   return employee;
 };
 
@@ -386,6 +385,8 @@ export const runCarryForward = async ({ fromYear, toYear, leaveTypeId = null }, 
     tenantId,
     year: fromYear,
     leaveTypeId: { $in: types.map((type) => type._id) },
+    // A unit-restricted caller carries forward their own unit(s) only.
+    ...employeeUnitFilter(req),
   });
 
   let processed = 0;
@@ -486,6 +487,7 @@ export const runCarryForward = async ({ fromYear, toYear, leaveTypeId = null }, 
 export const encashBalance = async ({ balanceId, days, note }, req) => {
   const balance = await LeaveBalance.findOne({ _id: balanceId, tenantId: tenantOf(req) });
   if (!balance) throw ApiError.notFound('Leave balance not found');
+  await assertLeaveAccess(balance.employeeId, req, 'Leave balance not found');
 
   const type = await LeaveType.findById(balance.leaveTypeId).lean();
   if (!type) throw ApiError.notFound('Leave type not found');
@@ -522,6 +524,7 @@ export const encashBalance = async ({ balanceId, days, note }, req) => {
 export const adjustBalance = async ({ balanceId, days, note }, req) => {
   const balance = await LeaveBalance.findOne({ _id: balanceId, tenantId: tenantOf(req) });
   if (!balance) throw ApiError.notFound('Leave balance not found');
+  await assertLeaveAccess(balance.employeeId, req, 'Leave balance not found');
 
   balance.adjusted = Number(((balance.adjusted ?? 0) + days).toFixed(2));
   balance.ledger.push({
@@ -814,6 +817,8 @@ const assertTransition = (from, to) => {
 export const decideRequest = async (id, { decision, comment }, req) => {
   const request = await LeaveRequest.findOne({ _id: id, tenantId: tenantOf(req) });
   if (!request) throw ApiError.notFound('Leave request not found');
+  // Only a request the approver's scope and unit reach -- another unit's is 403.
+  await assertLeaveAccess(request.employeeId, req, 'Leave request not found');
 
   assertTransition(request.status, decision);
 
@@ -865,6 +870,8 @@ export const decideRequest = async (id, { decision, comment }, req) => {
 export const cancelRequest = async (id, { reason }, req) => {
   const request = await LeaveRequest.findOne({ _id: id, tenantId: tenantOf(req) });
   if (!request) throw ApiError.notFound('Leave request not found');
+  // Your own request, or one within your scope and unit.
+  await assertLeaveAccess(request.employeeId, req, 'Leave request not found');
 
   assertTransition(request.status, LEAVE_STATUS.CANCELLED);
 
@@ -932,7 +939,9 @@ export const listRequests = async (query, req) => {
     filter.employeeId = req.user.employeeId ?? null;
   } else {
     const allowed = await scopedEmployeeIds(req);
-    if (allowed) filter.employeeId = filter.employeeId ?? { $in: allowed };
+    // Combined, not merged: a requested employee narrows within the scope and
+    // can no longer replace it (it used to win, so any id could be read).
+    if (allowed) filter.$and = [{ employeeId: { $in: allowed } }];
   }
 
   const sort = buildSort({ sortBy: query.sortBy, sortOrder: query.sortOrder }, REQUEST_SORTABLE, { from: -1 });
@@ -958,6 +967,7 @@ export const getRequest = async (id, req) => {
     .lean();
 
   if (!request) throw ApiError.notFound('Leave request not found');
+  await assertLeaveAccess(request.employeeId, req, 'Leave request not found');
   return request;
 };
 

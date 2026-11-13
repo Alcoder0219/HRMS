@@ -1,12 +1,25 @@
 import logger from '../../config/logger.js';
 import ApiError from '../../utils/ApiError.js';
-import { ASSET_STATUS, ASSET_CONDITION, AUDIT_ACTIONS } from '../../utils/constants.js';
+import { ASSET_STATUS, ASSET_CONDITION, AUDIT_ACTIONS, RESOURCES } from '../../utils/constants.js';
 import { buildPagination, buildSort, buildSearch } from '../../utils/queryBuilder.js';
 import Asset from '../../models/employee/asset.model.js';
 import employeeRepository from '../../repositories/employee/employee.repository.js';
 import { recordAudit } from '../../helpers/audit.helper.js';
+import { allowedEmployeeIds, assertEmployeeAccess, employeeIdAllowed, unitDenied } from '../../helpers/unitScope.helper.js';
 
 const ENTITY = 'Asset';
+
+/**
+ * Assets carry no unit of their own; an assigned asset belongs to the unit of
+ * the person holding it. A unit-restricted caller can see and act on assets
+ * held in their unit and on unassigned stock, and on nothing held elsewhere.
+ */
+const assertHolderAllowed = (asset, req) => {
+  const holder = asset.currentHolderId?._id ?? asset.currentHolderId;
+  if (holder && !employeeIdAllowed(req, holder)) {
+    throw unitDenied(req, { assetId: String(asset._id) }, 'This asset is held by an employee outside your unit');
+  }
+};
 
 export const SORTABLE_FIELDS = ['assetCode', 'name', 'category', 'status', 'createdAt'];
 
@@ -64,6 +77,7 @@ export const assignAsset = async (assetId, { employeeId, assignedOn, condition, 
 
   const employee = await employeeRepository.findById(employeeId, { populate: false });
   if (!employee) throw ApiError.notFound('Employee not found');
+  await assertEmployeeAccess(req, employee.toObject({ depopulate: true }), RESOURCES.PAYROLL);
 
   asset.assignments.push({
     employeeId: employee._id,
@@ -101,6 +115,7 @@ export const assignAsset = async (assetId, { employeeId, assignedOn, condition, 
 export const returnAsset = async (assetId, { returnedOn, condition, recoveryAmount, remarks }, req) => {
   const asset = await Asset.findById(assetId);
   if (!asset) throw ApiError.notFound('Asset not found');
+  assertHolderAllowed(asset, req);
 
   const open = asset.assignments.find((entry) => !entry.returnedOn);
   if (!open) throw ApiError.badRequest('This asset is not currently assigned to anyone');
@@ -133,6 +148,7 @@ export const returnAsset = async (assetId, { returnedOn, condition, recoveryAmou
 export const markAssetLost = async (assetId, { recoveryAmount, remarks }, req) => {
   const asset = await Asset.findById(assetId);
   if (!asset) throw ApiError.notFound('Asset not found');
+  assertHolderAllowed(asset, req);
 
   const open = asset.assignments.find((entry) => !entry.returnedOn);
   if (open) {
@@ -173,6 +189,11 @@ export const listAssets = async (query, req) => {
   const search = buildSearch(query.search, ['assetCode', 'name', 'serialNumber']);
   if (search) Object.assign(filter, search);
 
+  // Held in the caller's unit(s), or unassigned. Added under $and so an
+  // `employeeId` filter naming someone in another unit returns nothing.
+  const allowed = allowedEmployeeIds(req);
+  if (allowed) filter.$and = [{ $or: [{ currentHolderId: null }, { currentHolderId: { $in: allowed } }] }];
+
   const [items, total] = await Promise.all([
     Asset.find(filter)
       .sort(sort)
@@ -198,6 +219,7 @@ export const getAsset = async (assetId, req) => {
   if (callerTenant !== null && String(asset.tenantId) !== callerTenant) {
     throw ApiError.notFound('Asset not found');
   }
+  assertHolderAllowed(asset, req);
 
   return asset.toObject({ virtuals: true });
 };

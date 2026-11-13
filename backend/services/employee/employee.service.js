@@ -26,6 +26,7 @@ import User from '../../models/auth/user.model.js';
 import { syncOvertimeAfterEmployeeChange } from '../attendance/overtimeRecompute.service.js';
 import { recordAudit, diffObjects } from '../../helpers/audit.helper.js';
 import { can, buildScopeFilter } from '../../helpers/permission.helper.js';
+import { assertEmployeeAccess, resolveWritableUnit, unitAllowed, unitDenied } from '../../helpers/unitScope.helper.js';
 import { deleteImage, discardOnFailure, imageReference } from '../storage/imageStorage.service.js';
 import {
   createEmployeeFolders,
@@ -151,12 +152,14 @@ export const listEmployees = async (query, req) => {
 
   const filter = {
     tenantId: req.user.tenantId ?? null,
-    ...scope,
     // Deleted rows are opt-in, and only for callers who could restore them.
     deletedAt: query.includeDeleted && can(req.user.role, RESOURCES.EMPLOYEE, ACTIONS.DELETE)
       ? { $exists: true }
       : null,
     ...buildFilters(query, FILTER_DEFINITIONS),
+    // The scope as its own condition: merged, a client filter on the same key
+    // (department, reporting manager) would replace it.
+    $and: [scope],
   };
 
   const search = buildSearch(query.search, SEARCHABLE_FIELDS);
@@ -202,15 +205,28 @@ export const getEmployee = async (id, req, { includeDeleted = false } = {}) => {
   const employee = await employeeRepository.findById(id, { includeDeleted });
   if (!employee) throw ApiError.notFound('Employee not found');
 
-  assertSameTenant(employee, req);
+  await assertAccess(employee, req);
 
   return maskSensitive(employee.toObject({ virtuals: true }), req.user);
 };
 
 /**
- * Tenant isolation at the record level. The list query is already scoped, but a
- * direct fetch by id must be checked explicitly -- an id from another tenant is
+ * Record-level check for every operation on one employee: tenant first (as
+ * "not found"), then the caller's scope and unit (403). The list query is
+ * already scoped, but a direct fetch by id must be checked explicitly -- an id
+ * from another unit, or another person's id for a self-service account, is
  * otherwise a valid lookup.
+ */
+const assertAccess = async (employee, req) => {
+  assertSameTenant(employee, req);
+  // Populated references are reduced to ids for the check.
+  const plain = employee.toObject ? employee.toObject({ depopulate: true }) : employee;
+  await assertEmployeeAccess(req, { ...plain, unitId: plain.unitId ?? null, tenantId: plain.tenantId ?? null }, RESOURCES.EMPLOYEE);
+};
+
+/**
+ * Tenant isolation at the record level. An id from another tenant is reported
+ * as not found.
  */
 const assertSameTenant = (employee, req) => {
   const callerTenant = req.user?.tenantId ?? null;
@@ -371,10 +387,19 @@ export const createEmployee = async (payload, req) => {
   await assertUniqueIdentifiers(tenantId, payload);
   assertDatesAreCoherent(payload);
 
+  /**
+   * The unit is decided by the backend for a unit-restricted caller: their own
+   * unit when they name none, and a refusal when they name another.
+   */
+  payload.unitId = resolveWritableUnit(req, payload.unitId);
+
   if (payload.reportingManagerId) {
     const manager = await employeeRepository.findById(payload.reportingManagerId, { populate: false });
     if (!manager) throw ApiError.badRequest('The selected reporting manager does not exist');
     assertSameTenant(manager, req);
+    if (!unitAllowed(req, manager.unitId)) {
+      throw unitDenied(req, { reportingManagerId: String(manager._id) }, 'The selected reporting manager belongs to a unit outside your access');
+    }
   }
 
   const employee = await createWithUniqueIdentifiers(
@@ -530,7 +555,7 @@ const syncAttachmentFolder = async (before, updated, req) => {
 export const updateEmployee = async (id, payload, req) => {
   const existing = await employeeRepository.findById(id, { populate: false });
   if (!existing) throw ApiError.notFound('Employee not found');
-  assertSameTenant(existing, req);
+  await assertAccess(existing, req);
 
   const { attributes, portal } = splitPortalFields(payload);
 
@@ -539,6 +564,22 @@ export const updateEmployee = async (id, payload, req) => {
 
   await assertUniqueIdentifiers(req.user.tenantId ?? null, update, id);
   assertDatesAreCoherent(update, existing.toObject());
+
+  /**
+   * Moving an employee to another unit -- or out of any unit -- is for a caller
+   * who sees every unit. A unit-restricted caller may only keep the employee in
+   * a unit of their own.
+   */
+  if (update.unitId !== undefined && String(update.unitId ?? '') !== String(existing.unitId ?? '') && !unitAllowed(req, update.unitId)) {
+    throw unitDenied(req, { employeeId: String(existing._id), requestedUnit: String(update.unitId ?? '') }, 'You cannot move an employee to a unit outside your access');
+  }
+
+  if (update.reportingManagerId) {
+    const manager = await employeeRepository.findById(update.reportingManagerId, { populate: false });
+    if (manager && !unitAllowed(req, manager.unitId)) {
+      throw unitDenied(req, { reportingManagerId: String(manager._id) }, 'The selected reporting manager belongs to a unit outside your access');
+    }
+  }
 
   if (update.reportingManagerId !== undefined && update.reportingManagerId !== null) {
     const cycles = await employeeRepository.wouldCreateReportingCycle(id, update.reportingManagerId);
@@ -673,7 +714,7 @@ export const updateEmployee = async (id, payload, req) => {
 export const changeStatus = async (id, { status, effectiveDate, reason, ...details }, req) => {
   const employee = await employeeRepository.findById(id, { populate: false });
   if (!employee) throw ApiError.notFound('Employee not found');
-  assertSameTenant(employee, req);
+  await assertAccess(employee, req);
 
   const allowed = EMPLOYEE_STATUS_TRANSITIONS[employee.status] ?? [];
   if (!allowed.includes(status)) {
@@ -772,7 +813,7 @@ export const changeStatus = async (id, { status, effectiveDate, reason, ...detai
 export const deleteEmployee = async (id, reason, req, { purgeAttachments = false } = {}) => {
   const employee = await employeeRepository.findById(id, { populate: false });
   if (!employee) throw ApiError.notFound('Employee not found');
-  assertSameTenant(employee, req);
+  await assertAccess(employee, req);
 
   const documentCount = (employee.documents ?? []).length;
 
@@ -833,7 +874,7 @@ export const deleteEmployee = async (id, reason, req, { purgeAttachments = false
 export const restoreEmployee = async (id, req) => {
   const employee = await employeeRepository.findById(id, { includeDeleted: true, populate: false });
   if (!employee) throw ApiError.notFound('Employee not found');
-  assertSameTenant(employee, req);
+  await assertAccess(employee, req);
   if (!employee.deletedAt) throw ApiError.badRequest('This employee is not deleted');
 
   // Uniqueness is scoped to live rows, so a code or email may have been taken
@@ -862,7 +903,7 @@ export const attachPhoto = async (id, file, req) => {
   const { employee, updated } = await discardOnFailure([file], async () => {
     const found = await employeeRepository.findById(id, { populate: false });
     if (!found) throw ApiError.notFound('Employee not found');
-    assertSameTenant(found, req);
+    await assertAccess(found, req);
 
     const photo = {
       fileName: file.originalname,
@@ -900,7 +941,7 @@ export const attachDocuments = async (id, files, meta, req) => {
   const { employee, documents, updated } = await discardOnFailure(files, async () => {
     const found = await employeeRepository.findById(id, { populate: false });
     if (!found) throw ApiError.notFound('Employee not found');
-    assertSameTenant(found, req);
+    await assertAccess(found, req);
 
     const added = files.map((file, index) => ({
       type: meta?.types?.[index] ?? meta?.type ?? 'OTHER',
@@ -940,7 +981,7 @@ export const attachDocuments = async (id, files, meta, req) => {
 export const removeDocument = async (id, documentId, req) => {
   const employee = await employeeRepository.findById(id, { populate: false });
   if (!employee) throw ApiError.notFound('Employee not found');
-  assertSameTenant(employee, req);
+  await assertAccess(employee, req);
 
   const removed = (employee.documents ?? []).find((document) => String(document._id) === String(documentId));
 
@@ -965,7 +1006,7 @@ export const removeDocument = async (id, documentId, req) => {
 export const getAuditTrail = async (id, pagination, req) => {
   const employee = await employeeRepository.findById(id, { includeDeleted: true, populate: false });
   if (!employee) throw ApiError.notFound('Employee not found');
-  assertSameTenant(employee, req);
+  await assertAccess(employee, req);
 
   return auditLogRepository.findForEntity(ENTITY, employee._id, pagination);
 };

@@ -1,4 +1,12 @@
-import { ACTION_VALUES, RESOURCE_VALUES, SCOPES, SCOPE_RANK, WILDCARD } from '../utils/constants.js';
+import {
+  ACTION_VALUES,
+  RESOURCE_VALUES,
+  SCOPES,
+  SCOPE_RANK,
+  UNIT_UNRESTRICTED_ROLES,
+  UNIT_WIDE_ROLES,
+  WILDCARD,
+} from '../utils/constants.js';
 import { ALWAYS_SELF_SCOPED } from '../config/permissions.js';
 import { getRoleCache } from '../services/auth/roleCache.service.js';
 
@@ -49,6 +57,10 @@ export const scopeFor = (role, resource = null) => {
 
   if (resource && ALWAYS_SELF_SCOPED.includes(resource)) return SCOPES.SELF;
 
+  // A head of department reaches their whole unit(s); the unit restriction
+  // applied to every query is what bounds it.
+  if (UNIT_WIDE_ROLES.includes(role) && entry.scope === SCOPES.DEPARTMENT) return SCOPES.TENANT;
+
   return entry.scope ?? SCOPES.SELF;
 };
 
@@ -75,27 +87,52 @@ export const buildScopeFilter = (
   const { role, id, tenantId, employeeId, departmentId } = req.user ?? {};
   const scope = scopeFor(role, resource ?? req.resource);
 
+  let filter;
   switch (scope) {
     case SCOPES.GLOBAL:
-      return {};
+      filter = {};
+      break;
 
     case SCOPES.TENANT:
-      return { tenantId };
+      filter = { tenantId };
+      break;
 
     case SCOPES.DEPARTMENT:
       // Falls back to SELF when the user has no department yet, rather than
       // matching `undefined` and leaking the whole tenant.
-      return departmentId
+      filter = departmentId
         ? { tenantId, [departmentField]: departmentId }
         : { tenantId, [ownerField]: employeeId ?? id };
+      break;
 
     case SCOPES.TEAM:
-      return { tenantId, [managerField]: employeeId ?? id };
+      filter = { tenantId, [managerField]: employeeId ?? id };
+      break;
 
     case SCOPES.SELF:
     default:
       return { tenantId, [ownerField]: employeeId ?? id };
   }
+
+  /**
+   * Unit isolation, on top of the scope. Expressed on the OWNER field -- the
+   * employee reference -- because that is the key every caller already reads
+   * to decide whether a query is narrowed: a list of employee ids confines the
+   * Employee collection (`_id`) and everything hanging off it (`employeeId`)
+   * with the same rule. Where the scope already uses that key (a TEAM filter
+   * keyed on the employee, as attendance does), the caller resolves it through
+   * the Employee collection, where this applies.
+   *
+   * The ids come from `authenticate`, resolved from the database. A request
+   * without them is narrowed to nothing unless its role sees every unit.
+   */
+  const access = req.user?.unitAccess;
+  const unrestricted = access ? access.all : UNIT_UNRESTRICTED_ROLES.includes(role) || isCrossTenant(role);
+  if (!unrestricted && filter[ownerField] === undefined) {
+    filter[ownerField] = { $in: access?.employeeIds ?? [] };
+  }
+
+  return filter;
 };
 
 /* ------------------------------------------------------------ enumeration */

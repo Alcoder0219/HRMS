@@ -5,6 +5,7 @@ import User from '../../models/auth/user.model.js';
 import ApiError from '../../utils/ApiError.js';
 import { AUDIT_ACTIONS, LOGIN_EVENTS, LOGIN_STATUS } from '../../utils/constants.js';
 import { buildPagination } from '../../utils/queryBuilder.js';
+import { accountUnitFilter, allowedEmployeeIds, visibleAccountIds } from '../../helpers/unitScope.helper.js';
 
 /**
  * Two different questions, two different logs.
@@ -20,6 +21,22 @@ import { buildPagination } from '../../utils/queryBuilder.js';
  */
 
 const tenantOf = (req) => req.user?.tenantId ?? null;
+
+/**
+ * What a unit-restricted caller may see of the trail: changes made by an
+ * account in their unit(s), and changes to an employee in their unit(s).
+ * Sign-in history is narrowed to the accounts in their unit(s). Everything,
+ * for a caller who sees every unit.
+ */
+const reachOf = async (req) => {
+  const accounts = await visibleAccountIds(req);
+  if (!accounts) return { audit: {}, login: {}, users: {} };
+  return {
+    audit: { $or: [{ actorId: { $in: accounts } }, { entity: 'Employee', entityId: { $in: allowedEmployeeIds(req) ?? [] } }] },
+    login: { userId: { $in: accounts } },
+    users: accountUnitFilter(req),
+  };
+};
 
 const dateRange = (query, field) => {
   const range = {};
@@ -89,7 +106,7 @@ const presentLogin = (entry) => ({
 export const listAuditLogs = async (query, req) => {
   const { page, limit, skip } = buildPagination(query);
 
-  const filter = { tenantId: tenantOf(req), ...dateRange(query, 'occurredAt') };
+  const filter = { tenantId: tenantOf(req), ...dateRange(query, 'occurredAt'), ...(await reachOf(req)).audit };
 
   if (query.entity) filter.entity = query.entity;
   if (query.action) filter.action = query.action;
@@ -106,7 +123,7 @@ export const listAuditLogs = async (query, req) => {
 };
 
 export const getAuditLog = async (id, req) => {
-  const entry = await AuditLog.findOne({ _id: id, tenantId: tenantOf(req) }).lean();
+  const entry = await AuditLog.findOne({ _id: id, tenantId: tenantOf(req), ...(await reachOf(req)).audit }).lean();
   if (!entry) throw ApiError.notFound('No such audit entry');
 
   return presentAudit(entry);
@@ -121,11 +138,12 @@ export const getAuditLog = async (id, req) => {
  */
 export const auditFilters = async (req) => {
   const tenantId = tenantOf(req);
+  const { audit } = await reachOf(req);
 
   const [entities, actors] = await Promise.all([
-    AuditLog.distinct('entity', { tenantId }),
+    AuditLog.distinct('entity', { tenantId, ...audit }),
     AuditLog.aggregate([
-      { $match: { tenantId, actorId: { $ne: null } } },
+      { $match: { tenantId, actorId: { $ne: null }, ...audit } },
       { $group: { _id: '$actorId', email: { $last: '$actorEmail' }, count: { $sum: 1 } } },
       { $sort: { count: -1 } },
       { $limit: 50 },
@@ -153,11 +171,12 @@ export const auditFilters = async (req) => {
 export const listLoginHistory = async (query, req) => {
   const { page, limit, skip } = buildPagination(query);
 
-  const filter = { tenantId: tenantOf(req), ...dateRange(query, 'occurredAt') };
+  const filter = { tenantId: tenantOf(req), ...dateRange(query, 'occurredAt'), ...(await reachOf(req)).login };
 
   if (query.status) filter.status = query.status;
   if (query.event) filter.event = query.event;
-  if (query.userId) filter.userId = query.userId;
+  // Within the caller's reach only: an account from another unit matches nothing.
+  if (query.userId) filter.$and = [{ userId: query.userId }];
   if (query.search) filter.email = { $regex: String(query.search).trim(), $options: 'i' };
 
   const [items, total] = await Promise.all([
@@ -191,12 +210,13 @@ export const activityFeed = async (query, req) => {
   const wantsChanges = !query.kind || query.kind === 'CHANGE';
   const wantsAccess = !query.kind || query.kind === 'ACCESS';
 
-  const auditFilter = { tenantId, ...range };
-  if (query.actorId) auditFilter.actorId = query.actorId;
+  const reach = await reachOf(req);
+  const auditFilter = { tenantId, ...range, ...reach.audit };
+  if (query.actorId) auditFilter.$and = [{ actorId: query.actorId }];
   if (query.search) auditFilter.entityLabel = { $regex: String(query.search).trim(), $options: 'i' };
 
-  const loginFilter = { tenantId, ...range };
-  if (query.actorId) loginFilter.userId = query.actorId;
+  const loginFilter = { tenantId, ...range, ...reach.login };
+  if (query.actorId) loginFilter.$and = [{ userId: query.actorId }];
   if (query.search) loginFilter.email = { $regex: String(query.search).trim(), $options: 'i' };
 
   const [changes, access] = await Promise.all([
@@ -255,37 +275,40 @@ export const activityStats = async (query, req) => {
   const tenantId = tenantOf(req);
   const days = Math.min(90, Math.max(1, Number(query.days) || 30));
   const since = new Date(Date.now() - days * 24 * 3600 * 1000);
+  const { audit, login, users } = await reachOf(req);
 
   const [byAction, byEntity, topActors, logins, failures, uniqueUsers, totalUsers] = await Promise.all([
     AuditLog.aggregate([
-      { $match: { tenantId, occurredAt: { $gte: since } } },
+      { $match: { tenantId, occurredAt: { $gte: since }, ...audit } },
       { $group: { _id: '$action', count: { $sum: 1 } } },
     ]),
     AuditLog.aggregate([
-      { $match: { tenantId, occurredAt: { $gte: since } } },
+      { $match: { tenantId, occurredAt: { $gte: since }, ...audit } },
       { $group: { _id: '$entity', count: { $sum: 1 } } },
       { $sort: { count: -1 } },
       { $limit: 10 },
     ]),
     AuditLog.aggregate([
-      { $match: { tenantId, occurredAt: { $gte: since }, actorEmail: { $ne: null } } },
+      { $match: { tenantId, occurredAt: { $gte: since }, actorEmail: { $ne: null }, ...audit } },
       { $group: { _id: '$actorEmail', count: { $sum: 1 } } },
       { $sort: { count: -1 } },
       { $limit: 10 },
     ]),
     LoginHistory.countDocuments({
       tenantId,
+      ...login,
       occurredAt: { $gte: since },
       event: LOGIN_EVENTS.LOGIN,
       status: LOGIN_STATUS.SUCCESS,
     }),
-    LoginHistory.countDocuments({ tenantId, occurredAt: { $gte: since }, status: LOGIN_STATUS.FAILED }),
+    LoginHistory.countDocuments({ tenantId, ...login, occurredAt: { $gte: since }, status: LOGIN_STATUS.FAILED }),
     LoginHistory.distinct('email', {
       tenantId,
+      ...login,
       occurredAt: { $gte: since },
       status: LOGIN_STATUS.SUCCESS,
     }),
-    User.countDocuments({ tenantId }),
+    User.countDocuments({ tenantId, ...users }),
   ]);
 
   const changes = byAction.reduce((total, entry) => total + entry.count, 0);

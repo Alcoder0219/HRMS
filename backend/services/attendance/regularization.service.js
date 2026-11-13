@@ -14,6 +14,7 @@ import employeeRepository from '../../repositories/employee/employee.repository.
 import { startOfDay } from '../../helpers/attendanceRules.helper.js';
 import { recordAudit } from '../../helpers/audit.helper.js';
 import { buildScopeFilter } from '../../helpers/permission.helper.js';
+import { assertEmployeeAccess } from '../../helpers/unitScope.helper.js';
 import { recomputeDay } from './attendance.service.js';
 
 const ENTITY = 'Regularization';
@@ -31,6 +32,8 @@ const resolveEmployee = async (req, employeeId = null) => {
 
   const employee = await employeeRepository.findById(id);
   if (!employee) throw ApiError.notFound('Employee not found');
+  // Raising a correction for someone else needs the scope and unit to reach them.
+  if (employeeId) await assertEmployeeAccess(req, employee.toObject({ depopulate: true }), RESOURCES.ATTENDANCE);
   return employee;
 };
 
@@ -173,6 +176,10 @@ export const decideRegularization = async (id, { decision, comment }, req) => {
   if (req.user.employeeId && String(request.employeeId) === String(req.user.employeeId)) {
     throw ApiError.forbidden('You cannot approve your own regularization request');
   }
+
+  // Only a request the approver's scope and unit reach: an id from another
+  // unit's inbox is refused, not decided.
+  await assertEmployeeAccess(req, request.employeeId, RESOURCES.ATTENDANCE, { notFound: 'Request not found' });
 
   const approved = decision === REGULARIZATION_STATUS.APPROVED;
 

@@ -46,7 +46,9 @@ const scopedEmployees = async (req, filters = {}) => {
     resource: RESOURCES.EMPLOYEE,
   });
 
-  const filter = { ...scope, deletedAt: null };
+  // The scope (role reach + unit) is its own condition: a requested
+  // department, unit or employee narrows within it and can never replace it.
+  const filter = { deletedAt: null, $and: [scope] };
   if (filters.departmentId) filter.departmentId = new mongoose.Types.ObjectId(String(filters.departmentId));
   if (filters.unitId) filter.unitId = new mongoose.Types.ObjectId(String(filters.unitId));
   if (filters.employeeId) filter._id = new mongoose.Types.ObjectId(String(filters.employeeId));

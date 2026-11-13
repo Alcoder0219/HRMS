@@ -7,6 +7,7 @@ import SalaryTemplate from '../../models/organization/salaryTemplate.model.js';
 import Employee from '../../models/employee/employee.model.js';
 import PayrollSettings from '../../models/payroll/payrollSettings.model.js';
 import { ACTIVE_EMPLOYEE_STATUSES, CURRENCY, DEFAULT_MONTHLY_WORKING_HOURS } from '../../utils/constants.js';
+import { unitFieldFilter } from '../../helpers/unitScope.helper.js';
 
 /**
  * Read-only masters that other modules pick from.
@@ -16,8 +17,14 @@ import { ACTIVE_EMPLOYEE_STATUSES, CURRENCY, DEFAULT_MONTHLY_WORKING_HOURS } fro
  * have something to populate their dropdowns from.
  */
 
-const listActive = (Model, tenantId, projection) =>
-  Model.find({ tenantId: tenantId ?? null, isActive: true }).select(projection).sort({ name: 1 }).lean();
+const listActive = (Model, tenantId, projection, scope = {}) =>
+  Model.find({ tenantId: tenantId ?? null, isActive: true, ...scope }).select(projection).sort({ name: 1 }).lean();
+
+/**
+ * The caller's unit reach, for lists that name units or the people in them.
+ * Without a request (an internal caller) nothing is narrowed.
+ */
+const unitScope = (req, field) => (req ? unitFieldFilter(req, field) : {});
 
 export const listDepartments = (tenantId) => listActive(Department, tenantId, 'name code');
 
@@ -26,8 +33,9 @@ export const listDesignations = (tenantId) => listActive(Designation, tenantId, 
 export const listShifts = (tenantId) =>
   listActive(Shift, tenantId, 'name code startTime endTime isNightShift');
 
-export const listUnits = (tenantId) =>
-  listActive(Unit, tenantId, 'name code city state nssfEmployerCode nhifEmployerCode wcfEmployerCode');
+// A unit-restricted caller is offered only their own unit(s) -- never "All units".
+export const listUnits = (tenantId, req = null) =>
+  listActive(Unit, tenantId, 'name code city state nssfEmployerCode nhifEmployerCode wcfEmployerCode', unitScope(req, '_id'));
 
 export const listGrades = (tenantId) => listActive(Grade, tenantId, 'name code level minGross maxGross');
 
@@ -46,11 +54,13 @@ export const listSalaryTemplates = (tenantId) =>
  * Currently-employed people only -- offering someone who has left as a manager
  * produces a reporting line that breaks the moment approvals walk it.
  */
-export const listReportingManagers = (tenantId) =>
+export const listReportingManagers = (tenantId, req = null) =>
   Employee.find({
     tenantId: tenantId ?? null,
     deletedAt: null,
     status: { $in: ACTIVE_EMPLOYEE_STATUSES },
+    // Only people in the caller's unit(s) are offered.
+    ...unitScope(req, 'unitId'),
   })
     .select('employeeCode employeeId firstName middleName lastName designationId')
     .populate({ path: 'designationId', select: 'name' })
@@ -64,16 +74,16 @@ export const listReportingManagers = (tenantId) =>
  * The original three keys are returned unchanged; the rest are additive, so a
  * client built against the earlier shape keeps working.
  */
-export const listAllMasters = async (tenantId) => {
+export const listAllMasters = async (tenantId, req = null) => {
   const [departments, designations, shifts, units, grades, salaryTemplates, reportingManagers, settings] =
     await Promise.all([
       listDepartments(tenantId),
       listDesignations(tenantId),
       listShifts(tenantId),
-      listUnits(tenantId),
+      listUnits(tenantId, req),
       listGrades(tenantId),
       listSalaryTemplates(tenantId),
-      listReportingManagers(tenantId),
+      listReportingManagers(tenantId, req),
       PayrollSettings.findOne({ tenantId: tenantId ?? null })
         .select('monthlyWorkingHours overtimeMultiplier currency')
         .lean(),

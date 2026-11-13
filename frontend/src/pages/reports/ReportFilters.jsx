@@ -10,6 +10,8 @@ import leaveService from '@services/modules/leave.service.js';
 import recruitmentService from '@services/modules/recruitment.service.js';
 import { humanize } from '@utils/format.js';
 import { getRowId } from '@utils/dataGrid.js';
+import { allUnitsLabel } from '@utils/unitAccess.js';
+import useUnitAccess from '@hooks/useUnitAccess.js';
 
 /**
  * Filter controls built from the server's filter descriptors.
@@ -35,6 +37,7 @@ const MONTHS = [
 const ReportFilters = ({ filters = [], values = {}, onChange, onReset }) => {
   const dispatch = useAppDispatch();
   const masters = useAppSelector(selectMasters);
+  const unitAccess = useUnitAccess();
 
   const [leaveTypes, setLeaveTypes] = useState([]);
   const [jobOpenings, setJobOpenings] = useState([]);
@@ -162,19 +165,30 @@ const ReportFilters = ({ filters = [], values = {}, onChange, onReset }) => {
     // The remaining kinds are all "pick a record", differing only in source.
     const records = optionsFor(filter);
 
+    /**
+     * Units are already the caller's own (the server lists nothing else). A
+     * unit-restricted account is not offered "All units": with one unit it is
+     * shown that unit, with several "All my units". Display only -- the server
+     * confines every report whatever is chosen here.
+     */
+    const isUnit = filter.type === 'unit';
+    const emptyLabel = isUnit ? allUnitsLabel(unitAccess, records.length) : 'All';
+    const value = values[filter.key] ?? '';
+    const shown = isUnit && emptyLabel === null && value === '' && records.length ? getRowId(records[0]) : value;
+
     return (
       <TextField
         key={filter.key}
         select
         size="small"
         label={filter.label}
-        value={values[filter.key] ?? ''}
+        value={shown}
         onChange={set(filter.key)}
         sx={{ width: 210 }}
-        disabled={records.length === 0}
+        disabled={records.length === 0 || (isUnit && emptyLabel === null && records.length === 1)}
         helperText={records.length === 0 ? 'None available' : undefined}
       >
-        <MenuItem value="">All</MenuItem>
+        {emptyLabel !== null && <MenuItem value="">{emptyLabel}</MenuItem>}
         {records.map((record) => (
           <MenuItem key={getRowId(record)} value={getRowId(record)}>
             {record.name ?? record.title}
