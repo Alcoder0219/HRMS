@@ -96,7 +96,7 @@ export const logoutAll = asyncHandler(async (req, res) => {
 });
 
 export const me = asyncHandler(async (req, res) => {
-  const user = await authService.getProfile(req.user.id);
+  const user = await authService.getProfile(req.user.id, req.user.unitAccess);
   return ApiResponse.ok(res, user);
 });
 

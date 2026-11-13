@@ -8,6 +8,7 @@ import Shift from '../../models/organization/shift.model.js';
 import { startOfDay, attributeShiftDay } from '../../helpers/attendanceRules.helper.js';
 import { parseWorkbook, buildWorkbook } from '../../helpers/excel.helper.js';
 import { recordAudit } from '../../helpers/audit.helper.js';
+import { employeeUnitFilter } from '../../helpers/unitScope.helper.js';
 import { recomputeDay, loadDayContext } from './attendance.service.js';
 
 /**
@@ -51,7 +52,7 @@ const parseDateTime = (value, dayHint = null) => {
 };
 
 /** Resolves employee codes to records in one query rather than per row. */
-const loadEmployeeMap = async (tenantId, codes) => {
+const loadEmployeeMap = async (tenantId, codes, scope = {}) => {
   const unique = [...new Set(codes.filter(Boolean).map((code) => String(code).toUpperCase()))];
   if (!unique.length) return new Map();
 
@@ -59,6 +60,8 @@ const loadEmployeeMap = async (tenantId, codes) => {
     tenantId: tenantId ?? null,
     employeeCode: { $in: unique },
     deletedAt: null,
+    // Narrows a person's upload to their unit(s); the biometric path passes nothing.
+    ...scope,
   })
     .populate([{ path: 'departmentId', select: '_id' }])
     .lean();
@@ -212,11 +215,14 @@ const applyGroups = async (groups, { source, req, allowCorrectedDays = false }) 
 export const ingestBiometric = async (
   { deviceId, punches = [], auditEntityId = null, allowCorrectedDays = false },
   req,
+  // Set only by the HTTP endpoint, to the caller's unit(s). Device sync and the
+  // ADMS receiver pass nothing and are unchanged.
+  { employeeScope = {} } = {},
 ) => {
   if (!punches.length) throw ApiError.badRequest('No punches were supplied');
 
   const tenantId = req.user.tenantId ?? null;
-  const employees = await loadEmployeeMap(tenantId, punches.map((punch) => punch.employeeCode));
+  const employees = await loadEmployeeMap(tenantId, punches.map((punch) => punch.employeeCode), employeeScope);
   const shifts = await loadShiftMap(employees);
 
   const unknownCodes = new Set();
@@ -345,7 +351,9 @@ export const importAttendanceFile = async (buffer, { dryRun = false } = {}, req)
   const { rows, truncated } = await parseWorkbook(buffer, { columns: IMPORT_COLUMNS });
   if (!rows.length) throw ApiError.badRequest('The uploaded file contains no data rows');
 
-  const employees = await loadEmployeeMap(tenantId, rows.map(({ data }) => data.employeeCode));
+  // An employee outside the uploader's unit(s) is "unknown", so that row is
+  // rejected rather than written into another unit's attendance.
+  const employees = await loadEmployeeMap(tenantId, rows.map(({ data }) => data.employeeCode), employeeUnitFilter(req, '_id'));
 
   const valid = [];
   const failed = [];

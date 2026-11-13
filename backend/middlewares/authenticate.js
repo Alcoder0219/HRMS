@@ -2,6 +2,7 @@ import ApiError from '../utils/ApiError.js';
 import { ACCOUNT_STATUS, ERROR_CODES } from '../utils/constants.js';
 import { verifyAccessToken } from '../helpers/token.helper.js';
 import userRepository from '../repositories/auth/user.repository.js';
+import { resolveUnitAccess } from '../helpers/unitScope.helper.js';
 
 const extractBearer = (req) => {
   const header = req.get('Authorization') || '';
@@ -82,6 +83,9 @@ const authenticate = async (req, _res, next) => {
       employeeId: user.employeeId ? String(user.employeeId) : null,
       departmentId: user.departmentId ? String(user.departmentId) : null,
       mustChangePassword: user.mustChangePassword,
+      // Which units' data this account may see, from the database on every
+      // request -- never from the client. See helpers/unitScope.helper.js.
+      unitAccess: await resolveUnitAccess(user),
     };
     // Read by the repository layer to scope every query to one customer.
     req.tenantId = req.user.tenantId;

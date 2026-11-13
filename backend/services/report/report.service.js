@@ -17,6 +17,7 @@ import Unit from '../../models/organization/unit.model.js';
 
 import ApiError from '../../utils/ApiError.js';
 import { buildScopeFilter, scopeFor } from '../../helpers/permission.helper.js';
+import { employeeUnitFilter, isUnitRestricted, unitFieldFilter } from '../../helpers/unitScope.helper.js';
 import {
   RESOURCES,
   SCOPES,
@@ -551,6 +552,21 @@ const payrollReport = async (query, ctx) => {
     PayrollRun.find({ tenantId, year }).select('year month period status totalNet').lean(),
   ]);
 
+  /**
+   * A run's stored net is the whole organisation's. A unit-restricted caller is
+   * shown each run's net summed from their own unit(s)' payslips instead.
+   */
+  if (isUnitRestricted(ctx.req)) {
+    const sums = await Payslip.aggregate([
+      { $match: { tenantId, year, payrollRunId: { $in: runs.map((run) => run._id) }, ...employeeUnitFilter(ctx.req) } },
+      { $group: { _id: '$payrollRunId', net: { $sum: '$netPayable' } } },
+    ]);
+    const netByRun = new Map(sums.map((row) => [String(row._id), row.net]));
+    runs.forEach((run) => {
+      run.totalNet = netByRun.get(String(run._id)) ?? 0;
+    });
+  }
+
   const rows = payslips.map((payslip) => {
     const employee = scope.byId.get(String(payslip.employeeId));
     return {
@@ -672,10 +688,14 @@ const recruitmentReport = async (query, ctx) => {
     jobFilter.hiringManagerId = req?.user?.employeeId ?? req?.user?.id ?? null;
   }
 
+  // The opening's own unit is the anchor for unit isolation: a unit-restricted
+  // caller sees only their unit(s)' openings and the candidates for them.
+  Object.assign(jobFilter, unitFieldFilter(req));
+
   const jobs = await JobOpening.find(jobFilter).select('title code status vacancies filled departmentId').lean();
 
   const visibleJobIds = jobs.map((job) => job._id);
-  const jobScoped = reach !== SCOPES.GLOBAL && reach !== SCOPES.TENANT;
+  const jobScoped = (reach !== SCOPES.GLOBAL && reach !== SCOPES.TENANT) || isUnitRestricted(req);
   if (jobScoped) {
     // Intersect rather than overwrite, so an explicit jobOpeningId outside the
     // caller's reach returns nothing instead of that opening's pipeline.

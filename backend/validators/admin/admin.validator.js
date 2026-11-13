@@ -56,6 +56,8 @@ export const listUsersSchema = Joi.object({
   status: Joi.string().valid(...Object.values(ACCOUNT_STATUS)).allow('', null),
   isEmailVerified: Joi.boolean().allow('', null),
   linked: Joi.string().valid('true', 'false').allow('', null),
+  // Accounts whose data reach includes this unit. Never widens the caller's own.
+  unitId: objectId.allow('', null),
 });
 
 export const createUserSchema = Joi.object({
@@ -67,6 +69,9 @@ export const createUserSchema = Joi.object({
   role: Joi.string().trim().max(40).required(),
   employeeId: objectId.allow(null),
   departmentId: objectId.allow(null),
+  // The units whose data the account may see. Empty means "the linked
+  // employee's unit". See User.unitIds.
+  unitIds: Joi.array().items(objectId).max(20).unique(),
   status: Joi.string().valid(...Object.values(ACCOUNT_STATUS)),
   mustChangePassword: Joi.boolean(),
   isEmailVerified: Joi.boolean(),
@@ -79,6 +84,7 @@ export const updateUserSchema = Joi.object({
   role: Joi.string().trim().max(40),
   employeeId: objectId.allow(null),
   departmentId: objectId.allow(null),
+  unitIds: Joi.array().items(objectId).max(20).unique(),
   mustChangePassword: Joi.boolean(),
 })
   .min(1)

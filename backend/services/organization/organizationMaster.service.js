@@ -14,6 +14,7 @@ import { recordAudit, recordAuditBatch, diffObjects } from '../../helpers/audit.
 import { buildWorkbook, parseWorkbook } from '../../helpers/excel.helper.js';
 import { buildTablePdf } from '../../helpers/pdf.helper.js';
 import auditLogRepository from '../../repositories/audit/auditLog.repository.js';
+import { isUnitRestricted, unitDenied, unitFieldFilter } from '../../helpers/unitScope.helper.js';
 
 /**
  * CRUD for the organization masters.
@@ -252,6 +253,21 @@ export const resolveMaster = (key) => {
 const tenantOf = (req) => req.user?.tenantId ?? null;
 
 /**
+ * Units are the one master that is itself a data boundary. A unit-restricted
+ * caller sees only their own unit(s) here, and only a caller who sees every
+ * unit may create, change, retire, delete or import units. The other masters
+ * (departments, designations, shifts, grades, templates) are shared reference
+ * data for the whole organisation and are unchanged.
+ */
+const unitRows = (master, req) => (master.key === 'units' ? unitFieldFilter(req, '_id') : {});
+
+const assertMasterWritable = (master, req) => {
+  if (master.key === 'units' && isUnitRestricted(req)) {
+    throw unitDenied(req, { master: 'units' }, 'Only an administrator with access to every unit can change units');
+  }
+};
+
+/**
  * Applies the descriptor's coercions to a request body.
  *
  * Only declared fields survive, so an unexpected key in the payload cannot
@@ -311,7 +327,7 @@ export const listMaster = async (key, query, req) => {
   const master = resolveMaster(key);
   const { page, limit, skip } = buildPagination(query);
 
-  const filter = { tenantId: tenantOf(req) };
+  const filter = { tenantId: tenantOf(req), ...unitRows(master, req) };
 
   if (query.status === 'active') filter.isActive = true;
   if (query.status === 'inactive') filter.isActive = false;
@@ -335,7 +351,7 @@ export const listMaster = async (key, query, req) => {
 export const getMaster = async (key, id, req) => {
   const master = resolveMaster(key);
 
-  let cursor = master.Model.findOne({ _id: id, tenantId: tenantOf(req) });
+  let cursor = master.Model.findOne({ _id: id, tenantId: tenantOf(req), ...unitRows(master, req) });
   if (master.populate) master.populate.forEach((populate) => cursor.populate(populate));
 
   const document = await cursor.lean();
@@ -395,6 +411,7 @@ const assertCodeAvailable = async (master, code, tenantId, excludeId = null) => 
 export const createMaster = async (key, payload, req) => {
   const master = resolveMaster(key);
   const tenantId = tenantOf(req);
+  assertMasterWritable(master, req);
 
   const data = coerce(master, payload);
   await assertCodeAvailable(master, data.code, tenantId);
@@ -416,6 +433,7 @@ export const createMaster = async (key, payload, req) => {
 export const updateMaster = async (key, id, payload, req) => {
   const master = resolveMaster(key);
   const tenantId = tenantOf(req);
+  assertMasterWritable(master, req);
 
   const existing = await master.Model.findOne({ _id: id, tenantId });
   if (!existing) throw ApiError.notFound(`${master.label} not found`);
@@ -459,6 +477,7 @@ export const updateMaster = async (key, id, payload, req) => {
 
 export const setMasterStatus = async (key, id, isActive, req) => {
   const master = resolveMaster(key);
+  assertMasterWritable(master, req);
 
   const existing = await master.Model.findOne({ _id: id, tenantId: tenantOf(req) });
   if (!existing) throw ApiError.notFound(`${master.label} not found`);
@@ -490,6 +509,7 @@ export const setMasterStatus = async (key, id, isActive, req) => {
  */
 export const deleteMaster = async (key, id, req) => {
   const master = resolveMaster(key);
+  assertMasterWritable(master, req);
 
   const existing = await master.Model.findOne({ _id: id, tenantId: tenantOf(req) });
   if (!existing) throw ApiError.notFound(`${master.label} not found`);
@@ -535,7 +555,7 @@ export const getMasterAudit = async (key, id, pagination) => {
 
 /** Every row matching the current filters, not just the current page. */
 const rowsForExport = async (master, query, req) => {
-  const filter = { tenantId: tenantOf(req) };
+  const filter = { tenantId: tenantOf(req), ...unitRows(master, req) };
 
   if (query.status === 'active') filter.isActive = true;
   if (query.status === 'inactive') filter.isActive = false;
@@ -628,6 +648,7 @@ export const buildMasterTemplate = async (key) => {
 export const importMaster = async (key, buffer, { dryRun = false } = {}, req) => {
   const master = resolveMaster(key);
   const tenantId = tenantOf(req);
+  assertMasterWritable(master, req);
 
   const { rows, truncated } = await parseWorkbook(buffer, { columns: master.columns });
 

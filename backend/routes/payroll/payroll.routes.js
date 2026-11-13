@@ -4,7 +4,7 @@ import controller from '../../controllers/payroll/payroll.controller.js';
 import settlementController from '../../controllers/payroll/settlement.controller.js';
 import validate from '../../middlewares/validate.js';
 import { spreadsheetUpload } from '../../config/multer.js';
-import { requirePermission, requireScope } from '../../middlewares/authorize.js';
+import { requireAllUnits, requirePermission, requireScope } from '../../middlewares/authorize.js';
 import { ACTIONS, SCOPES } from '../../utils/constants.js';
 
 /**
@@ -16,6 +16,15 @@ import { ACTIONS, SCOPES } from '../../utils/constants.js';
  * employee or a TEAM-scoped manager cannot pull the whole company's figures.
  */
 const orgWidePayroll = [requirePermission(ACTIONS.READ), requireScope(SCOPES.TENANT)];
+
+/**
+ * A pay run is one organisation-wide document: processing, approving, paying
+ * or cancelling it writes every unit's payslips, and the bank file carries
+ * every unit's account numbers. Only a caller who sees every unit may do these.
+ * A unit-restricted caller still reads their own unit's runs, register and
+ * payslips -- those reads are narrowed in the services.
+ */
+const allUnitsOnly = requireAllUnits;
 import schemas from '../../validators/payroll/payroll.validator.js';
 import settlementSchemas from '../../validators/payroll/settlement.validator.js';
 
@@ -75,6 +84,7 @@ router.get('/runs', orgWidePayroll, validate(schemas.listRunsSchema), controller
 router.post(
   '/runs/process',
   requirePermission(ACTIONS.APPROVE),
+  allUnitsOnly,
   validate(schemas.processRunSchema),
   controller.processRun,
 );
@@ -84,6 +94,7 @@ router.get('/runs/:id', orgWidePayroll, validate(schemas.idParamSchema), control
 router.post(
   '/runs/:id/submit',
   requirePermission(ACTIONS.APPROVE),
+  allUnitsOnly,
   validate(schemas.idParamSchema),
   controller.submitRun,
 );
@@ -91,6 +102,7 @@ router.post(
 router.post(
   '/runs/:id/approve',
   requirePermission(ACTIONS.APPROVE),
+  allUnitsOnly,
   validate(schemas.idParamSchema),
   controller.approveRun,
 );
@@ -98,6 +110,7 @@ router.post(
 router.post(
   '/runs/:id/paid',
   requirePermission(ACTIONS.APPROVE),
+  allUnitsOnly,
   validate(schemas.markPaidSchema),
   controller.markPaid,
 );
@@ -105,6 +118,7 @@ router.post(
 router.post(
   '/runs/:id/cancel',
   requirePermission(ACTIONS.APPROVE),
+  allUnitsOnly,
   validate(schemas.cancelRunSchema),
   controller.cancelRun,
 );
@@ -130,6 +144,7 @@ router.get(
   // The bank file is a payment instruction carrying every account number in
   // the organisation. Export rights are the floor for it.
   requirePermission(ACTIONS.EXPORT),
+  allUnitsOnly,
   validate(schemas.bankFileSchema),
   controller.bankFile,
 );

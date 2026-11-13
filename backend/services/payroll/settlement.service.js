@@ -29,6 +29,7 @@ import {
 import { roundToCurrency } from '../../helpers/statutory.helper.js';
 import { recordAudit } from '../../helpers/audit.helper.js';
 import { buildScopeFilter } from '../../helpers/permission.helper.js';
+import { assertEmployeeAccess, visibleEmployeeIds } from '../../helpers/unitScope.helper.js';
 
 const ENTITY = 'Settlement';
 
@@ -321,6 +322,7 @@ export const createSettlement = async (payload, req) => {
   if (callerTenant !== null && String(employee.tenantId ?? null) !== callerTenant) {
     throw ApiError.notFound('Employee not found');
   }
+  await assertEmployeeAccess(req, employee, RESOURCES.PAYROLL);
 
   // Settling someone who is still employed would pay out severance and
   // encashment to a person who has not left.
@@ -396,6 +398,7 @@ export const recalculateSettlement = async (settlementId, payload, req) => {
   const settlement = await Settlement.findById(settlementId);
   if (!settlement) throw ApiError.notFound('Settlement not found');
   assertTenant(settlement, req);
+  await assertSettlementAccess(settlement, req);
   assertEditable(settlement);
 
   const employee = await Employee.findById(settlement.employeeId)
@@ -484,10 +487,17 @@ const moveTo = async (settlement, next, req, { comment, stage, decision, extra =
   return settlement;
 };
 
+/** Refuses (403) a settlement whose employee is outside the caller's scope or unit. */
+const assertSettlementAccess = (settlement, req) =>
+  assertEmployeeAccess(req, settlement.employeeId?._id ?? settlement.employeeId, RESOURCES.PAYROLL, {
+    notFound: 'Settlement not found',
+  });
+
 const load = async (settlementId, req) => {
   const settlement = await Settlement.findById(settlementId);
   if (!settlement) throw ApiError.notFound('Settlement not found');
   assertTenant(settlement, req);
+  await assertSettlementAccess(settlement, req);
   return settlement;
 };
 
@@ -678,14 +688,8 @@ export const getSettlement = async (settlementId, req) => {
   const settlement = await Settlement.findById(settlementId).populate(POPULATE);
   if (!settlement) throw ApiError.notFound('Settlement not found');
   assertTenant(settlement, req);
-
-  const scope = buildScopeFilter(req, { ownerField: '_id', resource: RESOURCES.PAYROLL });
-  if (
-    scope._id !== undefined &&
-    String(settlement.employeeId?._id ?? settlement.employeeId) !== String(scope._id)
-  ) {
-    throw ApiError.forbidden('You can only view your own settlement');
-  }
+  // Own settlement for a self-service account; the caller's unit(s) otherwise.
+  await assertSettlementAccess(settlement, req);
 
   return settlement.toObject({ virtuals: true });
 };
@@ -703,15 +707,18 @@ export const getSettlement = async (settlementId, req) => {
  */
 export const dashboard = async (req) => {
   const tenantId = req.user.tenantId ?? null;
+  // The caller's unit(s) only, applied in every $match before any figure is summed.
+  const visible = await visibleEmployeeIds(req, RESOURCES.PAYROLL);
+  const reach = visible ? { employeeId: { $in: visible } } : {};
 
   const [byStatus, byTrigger, ageing, monthly, blocked] = await Promise.all([
     Settlement.aggregate([
-      { $match: { tenantId } },
+      { $match: { tenantId, ...reach } },
       { $group: { _id: '$status', count: { $sum: 1 }, value: { $sum: '$netSettlement' } } },
     ]),
 
     Settlement.aggregate([
-      { $match: { tenantId } },
+      { $match: { tenantId, ...reach } },
       { $group: { _id: '$trigger', count: { $sum: 1 } } },
     ]),
 
@@ -719,6 +726,7 @@ export const dashboard = async (req) => {
       {
         $match: {
           tenantId,
+          ...reach,
           status: {
             $in: [
               SETTLEMENT_STATUS.DRAFT,
@@ -751,7 +759,7 @@ export const dashboard = async (req) => {
     ]),
 
     Settlement.aggregate([
-      { $match: { tenantId, paidAt: { $ne: null } } },
+      { $match: { tenantId, ...reach, paidAt: { $ne: null } } },
       {
         $group: {
           _id: { year: { $year: '$paidAt' }, month: { $month: '$paidAt' } },
@@ -766,6 +774,7 @@ export const dashboard = async (req) => {
     // Sitting in a queue with company property still out.
     Settlement.countDocuments({
       tenantId,
+      ...reach,
       pendingAssetCount: { $gt: 0 },
       status: { $in: [SETTLEMENT_STATUS.PENDING_HR, SETTLEMENT_STATUS.PENDING_FINANCE] },
     }),

@@ -74,6 +74,20 @@ const userSchema = new Schema(
     employeeId: { type: Schema.Types.ObjectId, ref: 'Employee', default: null, index: true },
     departmentId: { type: Schema.Types.ObjectId, ref: 'Department', default: null, index: true },
 
+    /**
+     * The units whose data this account may see, when they are set here.
+     *
+     * Where a person WORKS is the linked Employee's `unitId`, and that is what
+     * decides an account's unit by default. This list is for the cases that
+     * cannot be expressed through it: an account with no employee record (an
+     * HR login, say), or a head of department over more than one unit. When it
+     * is non-empty it is the account's whole reach; when empty the employee's
+     * unit is used; with neither, the account sees no unit data at all.
+     *
+     * Ignored for roles that see every unit (UNIT_UNRESTRICTED_ROLES).
+     */
+    unitIds: { type: [{ type: Schema.Types.ObjectId, ref: 'Unit' }], default: [] },
+
     status: {
       type: String,
       enum: Object.values(ACCOUNT_STATUS),

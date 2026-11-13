@@ -1,12 +1,22 @@
 import mongoose from 'mongoose';
 import ApiError from '../../utils/ApiError.js';
-import { AUDIT_ACTIONS, COMPONENT_CODE } from '../../utils/constants.js';
+import { AUDIT_ACTIONS, COMPONENT_CODE, RESOURCES } from '../../utils/constants.js';
 import Payslip from '../../models/payroll/payslip.model.js';
 import payrollRepository from '../../repositories/payroll/payroll.repository.js';
 import { buildWorkbook } from '../../helpers/excel.helper.js';
 import { calculateGrossSalary, FIXED_EARNINGS } from '../../helpers/salaryCalculator.helper.js';
 import { roundToCurrency } from '../../helpers/statutory.helper.js';
 import { recordAudit } from '../../helpers/audit.helper.js';
+import { visibleEmployeeIds } from '../../helpers/unitScope.helper.js';
+
+/**
+ * The payslips a caller may see: their role's reach and their unit(s). `{}`
+ * for an organisation-wide, all-units caller.
+ */
+const payslipScope = async (req) => {
+  const ids = await visibleEmployeeIds(req, RESOURCES.PAYROLL);
+  return ids ? { employeeId: { $in: ids } } : {};
+};
 
 /**
  * Payroll reporting.
@@ -72,7 +82,9 @@ export const salaryRegister = async (runId, req) => {
     throw ApiError.notFound('Payroll run not found');
   }
 
-  const payslips = await payrollRepository.findPayslipsForRun(run._id);
+  // The caller's unit(s) only: the register of an organisation-wide run is
+  // narrowed to their own people, and its totals are summed from those rows.
+  const payslips = await payrollRepository.findPayslipsForRun(run._id, await payslipScope(req));
 
   /**
    * Every figure below is read from the stored payslip. The only arithmetic is
@@ -324,7 +336,7 @@ export const exportSalaryRegister = async (runId, req) => {
  */
 export const statutoryReport = async ({ year, month }, req) => {
   const tenantId = req.user.tenantId ?? null;
-  const payslips = await Payslip.find({ tenantId, year, month }).lean();
+  const payslips = await Payslip.find({ tenantId, year, month, ...(await payslipScope(req)) }).lean();
 
   const nssf = [];
   const nhif = [];
@@ -405,7 +417,8 @@ export const costByDepartment = async ({ year, month }, req) => {
   const tenantId = req.user.tenantId ?? null;
 
   const rows = await Payslip.aggregate([
-    { $match: { tenantId, year, month } },
+    // Scope first, so no total is ever computed over another unit's payslips.
+    { $match: { tenantId, year, month, ...(await payslipScope(req)) } },
     {
       $group: {
         _id: '$employeeSnapshot.department',
@@ -443,7 +456,7 @@ export const yearlyTrend = async ({ year }, req) => {
   const tenantId = req.user.tenantId ?? null;
 
   const rows = await Payslip.aggregate([
-    { $match: { tenantId, year } },
+    { $match: { tenantId, year, ...(await payslipScope(req)) } },
     {
       $group: {
         _id: '$month',

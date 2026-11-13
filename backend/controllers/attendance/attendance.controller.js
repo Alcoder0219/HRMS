@@ -69,7 +69,9 @@ export const lockPeriod = asyncHandler(async (req, res) => {
 /* --------------------------------------------------------------- ingest -- */
 
 export const biometric = asyncHandler(async (req, res) => {
-  const result = await ingestService.ingestBiometric(req.body, req);
+  // A person posting punches reaches only their own unit(s): codes outside them
+  // are reported as unknown rather than written into another unit.
+  const result = await ingestService.ingestBiometric(req.body, req, { employeeScope: employeeUnitFilter(req, '_id') });
 
   return ApiResponse.ok(
     res,

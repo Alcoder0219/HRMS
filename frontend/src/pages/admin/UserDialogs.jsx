@@ -21,6 +21,8 @@ import DataTable from '@components/common/DataTable.jsx';
 import StatusChip from '@components/common/StatusChip.jsx';
 import EmployeePicker from '@components/common/EmployeePicker.jsx';
 import adminService from '@services/modules/admin.service.js';
+import organizationService from '@services/modules/organization.service.js';
+import { MULTI_UNIT_ROLES, UNIT_UNRESTRICTED_ROLES } from '@utils/unitAccess.js';
 import { formatDateTime, humanize } from '@utils/format.js';
 import { employeeIdentifiers } from '@utils/dataGrid.js';
 
@@ -67,6 +69,7 @@ export const UserFormDialog = ({ open, user = null, myRole, roles = [], onClose,
             phone: user.phone ?? '',
             role: user.role ?? 'EMPLOYEE',
             employeeId: user.employee?._id ?? user.employeeId ?? '',
+            unitIds: (user.unitIds ?? []).map(String),
             mustChangePassword: user.mustChangePassword ?? false,
           }
         : {
@@ -77,10 +80,24 @@ export const UserFormDialog = ({ open, user = null, myRole, roles = [], onClose,
             phone: '',
             role: 'EMPLOYEE',
             employeeId: '',
+            unitIds: [],
             mustChangePassword: true,
           },
     );
   }, [open, editing, user]);
+
+  // The units this administrator may assign -- the server lists only their own.
+  const [units, setUnits] = useState([]);
+  useEffect(() => {
+    if (!open) return;
+    organizationService
+      .units()
+      .then((response) => setUnits(response.data ?? []))
+      .catch(() => setUnits([]));
+  }, [open]);
+
+  const seesEveryUnit = UNIT_UNRESTRICTED_ROLES.includes(form.role);
+  const manyUnits = MULTI_UNIT_ROLES.includes(form.role);
 
   const set = (field) => (event) =>
     setForm((previous) => ({
@@ -98,6 +115,8 @@ export const UserFormDialog = ({ open, user = null, myRole, roles = [], onClose,
       const payload = { ...form };
       if (!payload.employeeId) payload.employeeId = null;
       if (payload.phone === '') delete payload.phone;
+      // A role that sees every unit keeps no unit list; one unit unless HOD.
+      payload.unitIds = seesEveryUnit ? [] : (payload.unitIds ?? []).slice(0, manyUnits ? undefined : 1);
 
       if (editing) {
         await adminService.updateUser(user._id, payload);
@@ -196,6 +215,37 @@ export const UserFormDialog = ({ open, user = null, myRole, roles = [], onClose,
             the payroll can be left unlinked.
           </Typography>
         </Grid>
+
+        {!seesEveryUnit && (
+          <Grid size={12}>
+            <TextField
+              fullWidth
+              select
+              size="small"
+              label={manyUnits ? 'Units' : 'Unit'}
+              value={manyUnits ? (form.unitIds ?? []) : (form.unitIds?.[0] ?? '')}
+              onChange={(event) => {
+                const { value } = event.target;
+                setForm((previous) => ({
+                  ...previous,
+                  unitIds: manyUnits ? (typeof value === 'string' ? value.split(',') : value) : value ? [value] : [],
+                }));
+              }}
+              slotProps={{ select: { multiple: manyUnits } }}
+            >
+              {!manyUnits && <MenuItem value="">From the linked employee</MenuItem>}
+              {units.map((unit) => (
+                <MenuItem key={unit._id} value={String(unit._id)}>
+                  {unit.name}
+                </MenuItem>
+              ))}
+            </TextField>
+            <Typography variant="caption" color="text.secondary">
+              The account sees data from {manyUnits ? 'these units' : 'this unit'} only. Left empty, it uses the linked
+              employee&apos;s unit; with neither, it sees no unit data.
+            </Typography>
+          </Grid>
+        )}
 
         <Grid size={12}>
           <FormControlLabel
@@ -310,6 +360,16 @@ export const UserDetailDialog = ({ open, userId, onClose }) => {
     ['Email', user?.email],
     ['Role', humanize(user?.role ?? '')],
     ['Linked employee', user?.employee ? `${employeeIdentifiers(user.employee)} — ${user.employee.firstName} ${user.employee.lastName}` : 'Not linked'],
+    [
+      'Units',
+      UNIT_UNRESTRICTED_ROLES.includes(user?.role)
+        ? 'All units'
+        : user?.units?.length
+          ? user.units.map((unit) => unit.name).join(', ')
+          : user?.employee
+            ? "The linked employee's unit"
+            : 'None — sees no unit data',
+    ],
     ['Department', user?.department?.name ?? '—'],
     ['Email verified', user?.isEmailVerified ? 'Yes' : 'No'],
     ['Must change password', user?.mustChangePassword ? 'Yes' : 'No'],

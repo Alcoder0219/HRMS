@@ -1,7 +1,7 @@
 import logger from '../../config/logger.js';
 import ApiError from '../../utils/ApiError.js';
 import { AUDIT_ACTIONS, RESOURCES } from '../../utils/constants.js';
-import { buildScopeFilter } from '../../helpers/permission.helper.js';
+import { assertEmployeeAccess } from '../../helpers/unitScope.helper.js';
 import payrollRepository from '../../repositories/payroll/payroll.repository.js';
 import employeeRepository from '../../repositories/employee/employee.repository.js';
 import { deriveStructureFromCtc } from '../../helpers/salaryCalculator.helper.js';
@@ -51,6 +51,7 @@ export const createStructure = async (payload, req) => {
   if (callerTenant !== null && recordTenant !== callerTenant) {
     throw ApiError.notFound('Employee not found');
   }
+  await assertEmployeeAccess(req, employee.toObject({ depopulate: true }), RESOURCES.PAYROLL);
 
   const effectiveFrom = new Date(payload.effectiveFrom);
   const monthlyCtc = assertComponentsMatchCtc(payload);
@@ -114,24 +115,21 @@ export const createStructure = async (payload, req) => {
  * user holding `payroll:read` -- which every employee does, so they can see
  * their own payslip -- could read anyone's pay.
  */
-const assertMayReadStructure = (employeeId, req) => {
-  const scope = buildScopeFilter(req, { ownerField: '_id', resource: RESOURCES.PAYROLL });
-
-  if (scope._id !== undefined && String(scope._id) !== String(employeeId)) {
-    throw ApiError.forbidden('You can only view your own salary structure');
-  }
-};
+const assertMayReadStructure = (employeeId, req) =>
+  // Scope and unit together: own record for a self-service account, the
+  // caller's unit(s) for everyone restricted. Another unit's employee is 403.
+  assertEmployeeAccess(req, employeeId, RESOURCES.PAYROLL);
 
 export const getCurrentStructure = async (employeeId, req, date = new Date()) => {
-  assertMayReadStructure(employeeId, req);
+  await assertMayReadStructure(employeeId, req);
 
   const structure = await payrollRepository.findStructureOn(employeeId, date);
   if (!structure) throw ApiError.notFound('No salary structure is in force for this employee');
   return structure;
 };
 
-export const getStructureHistory = (employeeId, req) => {
-  assertMayReadStructure(employeeId, req);
+export const getStructureHistory = async (employeeId, req) => {
+  await assertMayReadStructure(employeeId, req);
   return payrollRepository.findStructureHistory(employeeId);
 };
 

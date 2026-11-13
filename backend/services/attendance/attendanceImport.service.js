@@ -19,6 +19,7 @@ import { startOfDay } from '../../helpers/attendanceRules.helper.js';
 // Imported days are derived exactly as hand-entered days are. See the helper.
 import { deriveManualDay, resolveWeeklyOffDays } from '../../helpers/manualAttendance.helper.js';
 import { recordAudit } from '../../helpers/audit.helper.js';
+import { employeeUnitFilter } from '../../helpers/unitScope.helper.js';
 
 /** How a month that already has data should be handled. */
 export const DUPLICATE_STRATEGY = {
@@ -40,7 +41,7 @@ export const DUPLICATE_STRATEGY = {
  * never matched on: they are not unique and the specification is explicit that
  * they are for display only.
  */
-const resolveEmployees = async (tenantId, identifiers) => {
+const resolveEmployees = async (tenantId, identifiers, scope = {}) => {
   const wanted = [...new Set(identifiers.filter(Boolean).map((value) => String(value).trim()))];
   if (!wanted.length) return new Map();
 
@@ -50,6 +51,8 @@ const resolveEmployees = async (tenantId, identifiers) => {
     tenantId: tenantId ?? null,
     deletedAt: null,
     $or: [{ employeeId: { $in: wanted } }, { employeeCode: { $in: upper } }],
+    // Someone outside the uploader's unit(s) is reported as not found.
+    ...scope,
   })
     .select('employeeCode employeeId firstName middleName lastName status shiftId departmentId unitId overtime overtimeEligible standardDutyMinutes')
     .lean();
@@ -84,7 +87,7 @@ export const validateWorkbook = async (buffer, { year, month, fileName }, req) =
   const { rows, truncated, dayColumns } = await parseAttendanceWorkbook(buffer);
   if (!rows.length) throw ApiError.badRequest('The uploaded file contains no employee rows');
 
-  const employees = await resolveEmployees(tenantId, rows.map((row) => row.employeeId));
+  const employees = await resolveEmployees(tenantId, rows.map((row) => row.employeeId), employeeUnitFilter(req, '_id'));
 
   const units = await Unit.find({ tenantId, isActive: true }).select('name code').lean();
   const unitByName = new Map(
