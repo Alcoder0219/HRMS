@@ -40,6 +40,9 @@ const CODE_STYLE = {
   WFH: { bg: 'primary.light', fg: 'primary.contrastText' },
 };
 
+/** Employees per page; the first is the default. */
+const PAGE_SIZES = [25, 50, 100];
+
 const MONTHS = Array.from({ length: 12 }, (_, index) => ({
   value: index + 1,
   label: new Date(2000, index).toLocaleString([], { month: 'long' }),
@@ -61,20 +64,50 @@ const MonthlyAttendancePage = () => {
   const [exporting, setExporting] = useState(false);
   const [error, setError] = useState(null);
 
-  // Client-side filters, kept apart from `params` so changing one does not
-  // refetch the month.
+  // Shift and overtime filters. They are applied by the server with the page,
+  // so the counts and pages always describe the filtered set.
   const [filters, setFilters] = useState({ overtime: '', minOvertimeMinutes: '', shiftId: '' });
   const [editing, setEditing] = useState(null);
 
-  const setFilter = (field) => (event) =>
+  // Pagination: employees per page, and which page. Every filter change, and a
+  // new page size, goes back to page 1.
+  const [page, setPage] = useState(1);
+  const [limit, setLimit] = useState(PAGE_SIZES[0]);
+
+  const setFilter = (field) => (event) => {
     setFilters((prev) => ({ ...prev, [field]: event.target.value }));
+    setPage(1);
+  };
+
+  // Typing a minimum is debounced, so one request follows the number rather
+  // than one per keystroke.
+  const [minOvertime, setMinOvertime] = useState('');
+  useEffect(() => {
+    const timer = setTimeout(() => setMinOvertime(filters.minOvertimeMinutes), 400);
+    return () => clearTimeout(timer);
+  }, [filters.minOvertimeMinutes]);
+
+  /** Everything the page asks the server for: the month, the filters, the page. */
+  const query = useMemo(() => {
+    const minimum = Number(minOvertime) || 0;
+    return {
+      ...params,
+      shiftId: filters.shiftId,
+      ...(filters.overtime === 'with' ? { hasOvertime: true } : {}),
+      ...(filters.overtime === 'without' ? { hasOvertime: false } : {}),
+      // Overtime is whole minutes, so "at least 30.5" is "at least 31".
+      ...(minimum > 0 ? { minOvertimeMinutes: Math.ceil(minimum) } : {}),
+      page,
+      limit,
+    };
+  }, [params, filters.shiftId, filters.overtime, minOvertime, page, limit]);
 
   const reload = useCallback(
     () =>
-      dispatch(fetchMonthlyRegister(params))
+      dispatch(fetchMonthlyRegister(query))
         .unwrap()
         .catch((rejection) => setError(rejection?.message ?? 'Could not reload the register')),
-    [dispatch, params],
+    [dispatch, query],
   );
 
   useEffect(() => {
@@ -84,11 +117,26 @@ const MonthlyAttendancePage = () => {
   useEffect(() => {
     setLoading(true);
     setError(null);
-    dispatch(fetchMonthlyRegister(params))
+
+    // A newer selection supersedes this one: its response is dropped rather
+    // than painted over the page the user has moved on to.
+    const request = dispatch(fetchMonthlyRegister(query));
+    let current = true;
+
+    request
       .unwrap()
-      .catch((rejection) => setError(rejection?.message ?? 'Could not load the register'))
-      .finally(() => setLoading(false));
-  }, [dispatch, params]);
+      .catch((rejection) => {
+        if (current && rejection?.name !== 'AbortError') setError(rejection?.message ?? 'Could not load the register');
+      })
+      .finally(() => {
+        if (current) setLoading(false);
+      });
+
+    return () => {
+      current = false;
+      request.abort();
+    };
+  }, [dispatch, query]);
 
   const handleExport = async () => {
     setExporting(true);
@@ -102,8 +150,10 @@ const MonthlyAttendancePage = () => {
     }
   };
 
-  const set = (field) => (event) =>
+  const set = (field) => (event) => {
     setParams((prev) => ({ ...prev, [field]: event.target.value }));
+    setPage(1);
+  };
 
   const holidayDays = new Set((register?.holidays ?? []).map((holiday) => holiday.day));
 
@@ -112,12 +162,11 @@ const MonthlyAttendancePage = () => {
   const canEdit = can(RESOURCES.ATTENDANCE, ACTIONS.UPDATE);
 
   /**
-   * The overtime and shift filters narrow the rows already loaded.
+   * The rows of this page.
    *
-   * The register is one row per employee in scope and arrives in a single
-   * request, so filtering here is instant and keeps the month, the department
-   * and these filters from needing three round trips between them. Month, year
-   * and department stay server-side, where they decide what is fetched.
+   * The server already applied the shift and overtime filters before choosing
+   * the page; the same rule is applied again here, which changes nothing then,
+   * and keeps the filters working against a server that does not page yet.
    */
   const visibleRows = useMemo(() => {
     const minimum = Number(filters.minOvertimeMinutes) || 0;
@@ -134,10 +183,19 @@ const MonthlyAttendancePage = () => {
     });
   }, [register, filters]);
 
+  const pagination = register?.pagination ?? null;
+
+  // Across every matching employee, not just this page -- as before paging.
   const overtimeTotal = useMemo(
-    () => visibleRows.reduce((sum, row) => sum + (row.totals?.overtimeMinutes ?? 0), 0),
-    [visibleRows],
+    () => pagination?.overtimeTotal ?? visibleRows.reduce((sum, row) => sum + (row.totals?.overtimeMinutes ?? 0), 0),
+    [pagination, visibleRows],
   );
+
+  const totalEmployees = pagination?.total ?? visibleRows.length;
+  const currentPage = pagination?.page ?? 1;
+  const totalPages = pagination?.totalPages ?? 1;
+  const firstShown = totalEmployees ? (currentPage - 1) * (pagination?.limit ?? limit) + 1 : 0;
+  const lastShown = totalEmployees ? firstShown + visibleRows.length - 1 : 0;
 
   return (
     <Box>
@@ -239,7 +297,7 @@ const MonthlyAttendancePage = () => {
 
       {/* The month's overtime across whatever the filters left showing. */}
       <Stack direction="row" spacing={1} sx={{ mb: 2 }} flexWrap="wrap" useFlexGap alignItems="center">
-        <Chip size="small" label={`${visibleRows.length} employee(s)`} variant="outlined" />
+        <Chip size="small" label={`${totalEmployees} employee(s)`} variant="outlined" />
         <Chip
           size="small"
           color={overtimeTotal > 0 ? 'success' : 'default'}
@@ -483,6 +541,64 @@ const MonthlyAttendancePage = () => {
             </Typography>
           </Box>
         )}
+
+        {/* Pagination: page size, where you are, and previous / next. */}
+        <Stack
+          direction={{ xs: 'column', sm: 'row' }}
+          spacing={1.5}
+          alignItems={{ xs: 'flex-start', sm: 'center' }}
+          justifyContent="space-between"
+          sx={{ px: 2, py: 1.25, borderTop: 1, borderColor: 'divider' }}
+        >
+          <Typography variant="body2" color="text.secondary">
+            {totalEmployees
+              ? `Showing ${firstShown}–${lastShown} of ${totalEmployees} employee${totalEmployees === 1 ? '' : 's'}`
+              : 'No employees'}
+          </Typography>
+
+          <Stack direction="row" spacing={1.5} alignItems="center" flexWrap="wrap" useFlexGap>
+            <TextField
+              select
+              size="small"
+              label="Per page"
+              value={limit}
+              onChange={(event) => {
+                setLimit(Number(event.target.value));
+                setPage(1);
+              }}
+              sx={{ width: 110 }}
+            >
+              {PAGE_SIZES.map((size) => (
+                <MenuItem key={size} value={size}>
+                  {size}
+                </MenuItem>
+              ))}
+            </TextField>
+
+            <Typography variant="body2" color="text.secondary">
+              Page {currentPage} of {totalPages}
+            </Typography>
+
+            <Button
+              size="small"
+              variant="outlined"
+              color="inherit"
+              onClick={() => setPage(currentPage - 1)}
+              disabled={loading || currentPage <= 1}
+            >
+              Previous
+            </Button>
+            <Button
+              size="small"
+              variant="outlined"
+              color="inherit"
+              onClick={() => setPage(currentPage + 1)}
+              disabled={loading || currentPage >= totalPages}
+            >
+              Next
+            </Button>
+          </Stack>
+        </Stack>
       </Paper>
 
       {/* Reloads the register on save, so the row's P, A, Pay and OT reflect

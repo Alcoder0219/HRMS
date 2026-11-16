@@ -197,6 +197,12 @@ export const monthlyReportSchema = {
     shiftId: objectId,
     hasOvertime: Joi.boolean(),
     minOvertimeMinutes: Joi.number().integer().min(0).max(100000),
+
+    /* ------------------------------------------------- pagination ----- */
+    // Optional. The monthly register pages only when one is given; every
+    // other caller of this schema ignores them.
+    page: Joi.number().integer().min(1).max(100000),
+    limit: Joi.number().integer().valid(25, 50, 100),
   }),
 };
 
