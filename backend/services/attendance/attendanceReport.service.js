@@ -2,6 +2,7 @@ import mongoose from 'mongoose';
 import { AUDIT_ACTIONS, ATTENDANCE_STATUS, RESOURCES } from '../../utils/constants.js';
 import attendanceRepository from '../../repositories/attendance/attendance.repository.js';
 import Employee from '../../models/employee/employee.model.js';
+import Attendance from '../../models/attendance/attendance.model.js';
 import { startOfDay } from '../../helpers/attendanceRules.helper.js';
 import { dutyMinutesFor } from '../../helpers/manualAttendance.helper.js';
 import { unrecordedWeeklyOffs, weeklyOffDaysByEmployee } from './weeklyOff.service.js';
@@ -37,8 +38,8 @@ const monthWindow = (year, month) => ({
   daysInMonth: new Date(year, month, 0).getDate(),
 });
 
-/** Employees this caller may see, already narrowed by scope and filters. */
-const scopedEmployees = async (req, filters = {}) => {
+/** The Employee filter for this caller: scope first, then the requested slice. */
+const scopedEmployeeFilter = (req, filters = {}) => {
   const scope = buildScopeFilter(req, {
     ownerField: '_id',
     managerField: 'reportingManagerId',
@@ -52,8 +53,16 @@ const scopedEmployees = async (req, filters = {}) => {
   if (filters.departmentId) filter.departmentId = new mongoose.Types.ObjectId(String(filters.departmentId));
   if (filters.unitId) filter.unitId = new mongoose.Types.ObjectId(String(filters.unitId));
   if (filters.employeeId) filter._id = new mongoose.Types.ObjectId(String(filters.employeeId));
+  if (filters.shiftId) filter.shiftId = new mongoose.Types.ObjectId(String(filters.shiftId));
+  return filter;
+};
 
-  return Employee.find(filter)
+/** Employees this caller may see, already narrowed by scope and filters. */
+const scopedEmployees = async (req, filters = {}) => loadReportEmployees(scopedEmployeeFilter(req, filters));
+
+/** The employee fields every attendance report reads, in register order. */
+const loadReportEmployees = (filter) =>
+  Employee.find(filter)
     // `employeeId` and `unitId` added for the import-era reports, which key on
     // the uploaded identifier and group by site.
     // `shiftId` and `overtimeEligible` added for the monthly overtime column:
@@ -75,6 +84,65 @@ const scopedEmployees = async (req, filters = {}) => {
     ])
     .sort({ employeeCode: 1 })
     .lean();
+
+/**
+ * One page of the monthly register's employees, chosen in the database.
+ *
+ * The shift filter is part of the Employee query. The overtime filters need
+ * each employee's month of overtime, which is the plain sum of the day records'
+ * `overtimeMinutes` -- the same sum the register's OT column shows -- so it is
+ * computed by one aggregation over the attendance index, without building any
+ * rows. Only the page's employees are then loaded in full and turned into rows.
+ *
+ * Ordered by employee code with the id as a tie-breaker, so every page sees the
+ * same sequence and no employee is repeated or skipped between pages.
+ */
+const registerPage = async (req, { year, month, departmentId, employeeId, shiftId, hasOvertime, minOvertimeMinutes, page, limit }) => {
+  const { from, to } = monthWindow(year, month);
+
+  const ordered = await Employee.find(scopedEmployeeFilter(req, { departmentId, employeeId, shiftId }))
+    .select('_id')
+    .sort({ employeeCode: 1, _id: 1 })
+    .lean();
+
+  const sums = ordered.length
+    ? await Attendance.aggregate([
+        { $match: { employeeId: { $in: ordered.map((row) => row._id) }, date: { $gte: from, $lte: to } } },
+        { $group: { _id: '$employeeId', overtimeMinutes: { $sum: { $ifNull: ['$overtimeMinutes', 0] } } } },
+      ])
+    : [];
+  const overtimeOf = new Map(sums.map((row) => [String(row._id), row.overtimeMinutes]));
+
+  const minimum = Number(minOvertimeMinutes) || 0;
+  const matching = ordered.filter((row) => {
+    const overtime = overtimeOf.get(String(row._id)) ?? 0;
+    if (hasOvertime === true && overtime <= 0) return false;
+    if (hasOvertime === false && overtime > 0) return false;
+    if (minimum > 0 && overtime < minimum) return false;
+    return true;
+  });
+
+  const size = Number(limit) || 25;
+  const total = matching.length;
+  const totalPages = Math.max(1, Math.ceil(total / size));
+  // A page past the end (after a filter shrank the set) shows the last page.
+  const current = Math.min(Math.max(1, Number(page) || 1), totalPages);
+  const pageIds = matching.slice((current - 1) * size, current * size).map((row) => row._id);
+
+  const loaded = pageIds.length ? await loadReportEmployees({ _id: { $in: pageIds } }) : [];
+  const byId = new Map(loaded.map((employee) => [String(employee._id), employee]));
+
+  return {
+    employees: pageIds.map((id) => byId.get(String(id))).filter(Boolean),
+    pagination: {
+      page: current,
+      limit: size,
+      total,
+      totalPages,
+      // The month's overtime across every matching employee, not just this page.
+      overtimeTotal: matching.reduce((sum, row) => sum + (overtimeOf.get(String(row._id)) ?? 0), 0),
+    },
+  };
 };
 
 /**
@@ -118,12 +186,38 @@ const weeklyOffsByEmployee = ({ year, month, employees, records, holidays, weekl
  * One query for the whole month rather than one per employee: at 500 people
  * that is the difference between 1 round trip and 500.
  */
-export const monthlyRegister = async ({ year, month, departmentId, employeeId }, req) => {
+export const monthlyRegister = async (
+  { year, month, departmentId, employeeId, shiftId, hasOvertime, minOvertimeMinutes, page, limit },
+  req,
+) => {
   const { from, to, daysInMonth } = monthWindow(year, month);
-  const employees = await scopedEmployees(req, { departmentId, employeeId });
+
+  /**
+   * Paged when the caller asks for a page (the Monthly Attendance screen):
+   * only that page's employees are loaded and computed, and `pagination`
+   * reports the totals. Without `page`/`limit` the register is exactly as it
+   * always was -- every employee in scope, unfiltered by shift or overtime.
+   */
+  const paged = page !== undefined || limit !== undefined;
+  const { employees, pagination } = paged
+    ? await registerPage(req, { year, month, departmentId, employeeId, shiftId, hasOvertime, minOvertimeMinutes, page, limit })
+    : { employees: await scopedEmployees(req, { departmentId, employeeId }), pagination: undefined };
 
   if (!employees.length) {
-    return { year, month, daysInMonth, employees: [], holidays: [] };
+    if (!paged) return { year, month, daysInMonth, employees: [], holidays: [] };
+
+    // An empty page keeps the legend and the month's holidays, as the screen
+    // showed them before filtering moved to the server.
+    const holidays = await attendanceRepository.findHolidays(req.user.tenantId ?? null, from, to);
+    return {
+      year,
+      month,
+      daysInMonth,
+      legend: STATUS_CODE,
+      holidays: holidays.map((holiday) => ({ day: new Date(holiday.date).getDate(), name: holiday.name })),
+      employees: [],
+      pagination,
+    };
   }
 
   const employeeIds = employees.map((employee) => employee._id);
@@ -269,6 +363,7 @@ export const monthlyRegister = async ({ year, month, departmentId, employeeId },
       name: holiday.name,
     })),
     employees: rows,
+    ...(paged ? { pagination } : {}),
   };
 };
 
