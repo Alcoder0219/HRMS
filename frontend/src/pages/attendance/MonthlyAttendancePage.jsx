@@ -19,6 +19,7 @@ import EditAttendanceDialog from './components/EditAttendanceDialog.jsx';
 import { OVERTIME_FILTERS, toHoursMinutes } from './attendanceConstants.js';
 import { useAppDispatch, useAppSelector } from '@hooks/useRedux.js';
 import usePermissions from '@hooks/usePermissions.js';
+import useUnitAccess from '@hooks/useUnitAccess.js';
 import { RESOURCES, ACTIONS } from '@utils/permissions.js';
 import { fetchMonthlyRegister, selectAttendance } from '@redux/slices/attendanceSlice.js';
 import { fetchMasters, selectMasters } from '@redux/slices/employeeSlice.js';
@@ -58,6 +59,7 @@ const MonthlyAttendancePage = () => {
   const [params, setParams] = useState({
     year: now.getFullYear(),
     month: now.getMonth() + 1,
+    unitId: '',
     departmentId: '',
   });
   const [loading, setLoading] = useState(false);
@@ -141,7 +143,9 @@ const MonthlyAttendancePage = () => {
   const handleExport = async () => {
     setExporting(true);
     try {
-      const blob = await attendanceService.exportMonthly(params);
+      // Export is unchanged: the unit filter narrows the screen, not the file.
+      const { unitId: _unitId, ...exportParams } = params;
+      const blob = await attendanceService.exportMonthly(exportParams);
       downloadBlob(blob, `attendance-${params.year}-${String(params.month).padStart(2, '0')}.xlsx`);
     } catch (rejection) {
       setError(rejection?.message ?? 'Export failed');
@@ -154,6 +158,11 @@ const MonthlyAttendancePage = () => {
     setParams((prev) => ({ ...prev, [field]: event.target.value }));
     setPage(1);
   };
+
+  // A user confined to one unit is shown that unit, with no "All Units".
+  const unitAccess = useUnitAccess();
+  const unitOptions = masters.units ?? [];
+  const singleUnit = !unitAccess.all && unitOptions.length === 1;
 
   const holidayDays = new Set((register?.holidays ?? []).map((holiday) => holiday.day));
 
@@ -241,6 +250,24 @@ const MonthlyAttendancePage = () => {
           {[now.getFullYear(), now.getFullYear() - 1, now.getFullYear() - 2].map((year) => (
             <MenuItem key={year} value={year}>
               {year}
+            </MenuItem>
+          ))}
+        </TextField>
+
+        {/* Units from the Units master, already limited by the server to the
+            ones this user may see. "All Units" only when there is a choice. */}
+        <TextField
+          select
+          label="Unit"
+          value={singleUnit ? getRowId(unitOptions[0]) : params.unitId}
+          onChange={set('unitId')}
+          disabled={singleUnit}
+          sx={{ maxWidth: 240 }}
+        >
+          {!singleUnit && <MenuItem value="">All Units</MenuItem>}
+          {unitOptions.map((unit) => (
+            <MenuItem key={getRowId(unit)} value={getRowId(unit)}>
+              {unit.name}
             </MenuItem>
           ))}
         </TextField>

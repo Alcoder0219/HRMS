@@ -10,6 +10,7 @@ import { buildWorkbook } from '../../helpers/excel.helper.js';
 import { buildTablePdf } from '../../helpers/pdf.helper.js';
 import { recordAudit } from '../../helpers/audit.helper.js';
 import { buildScopeFilter } from '../../helpers/permission.helper.js';
+import { unitAllowed, unitDenied } from '../../helpers/unitScope.helper.js';
 
 /**
  * Monthly attendance reporting.
@@ -97,10 +98,10 @@ const loadReportEmployees = (filter) =>
  * Ordered by employee code with the id as a tie-breaker, so every page sees the
  * same sequence and no employee is repeated or skipped between pages.
  */
-const registerPage = async (req, { year, month, departmentId, employeeId, shiftId, hasOvertime, minOvertimeMinutes, page, limit }) => {
+const registerPage = async (req, { year, month, departmentId, unitId, employeeId, shiftId, hasOvertime, minOvertimeMinutes, page, limit }) => {
   const { from, to } = monthWindow(year, month);
 
-  const ordered = await Employee.find(scopedEmployeeFilter(req, { departmentId, employeeId, shiftId }))
+  const ordered = await Employee.find(scopedEmployeeFilter(req, { departmentId, unitId, employeeId, shiftId }))
     .select('_id')
     .sort({ employeeCode: 1, _id: 1 })
     .lean();
@@ -187,10 +188,16 @@ const weeklyOffsByEmployee = ({ year, month, employees, records, holidays, weekl
  * that is the difference between 1 round trip and 500.
  */
 export const monthlyRegister = async (
-  { year, month, departmentId, employeeId, shiftId, hasOvertime, minOvertimeMinutes, page, limit },
+  { year, month, departmentId, unitId, employeeId, shiftId, hasOvertime, minOvertimeMinutes, page, limit },
   req,
 ) => {
   const { from, to, daysInMonth } = monthWindow(year, month);
+
+  // A unit outside the caller's own is refused outright (403), not answered
+  // with an empty page. Within their units the filter narrows the scope.
+  if (unitId && !unitAllowed(req, unitId)) {
+    throw unitDenied(req, { requestedUnit: String(unitId) }, 'You do not have access to that unit');
+  }
 
   /**
    * Paged when the caller asks for a page (the Monthly Attendance screen):
@@ -200,8 +207,8 @@ export const monthlyRegister = async (
    */
   const paged = page !== undefined || limit !== undefined;
   const { employees, pagination } = paged
-    ? await registerPage(req, { year, month, departmentId, employeeId, shiftId, hasOvertime, minOvertimeMinutes, page, limit })
-    : { employees: await scopedEmployees(req, { departmentId, employeeId }), pagination: undefined };
+    ? await registerPage(req, { year, month, departmentId, unitId, employeeId, shiftId, hasOvertime, minOvertimeMinutes, page, limit })
+    : { employees: await scopedEmployees(req, { departmentId, unitId, employeeId }), pagination: undefined };
 
   if (!employees.length) {
     if (!paged) return { year, month, daysInMonth, employees: [], holidays: [] };

@@ -246,6 +246,59 @@ describe('Monthly Attendance pagination', { skip: !reachable && 'MongoDB is not 
     assert.equal((await get('hrA', `/attendance/reports/monthly?year=${YEAR}&month=${MONTH}&page=0&limit=25`)).status, 422);
   });
 
+  test('Unit filter: each unit shows exactly its own employees, with unchanged rows and totals', async () => {
+    units.C = units.C ?? (await models.Unit.create({ name: 'Unit C (empty)', code: 'C' }));
+    const everyone = (await register('admin')).employees;
+
+    for (const [code, size] of [['A', PEOPLE_A], ['B', 7], ['C', 0]]) {
+      const unitId = String(units[code]._id);
+      const expected = (await register('admin', `&unitId=${unitId}`)).employees;
+      assert.equal(expected.length, size, `unit ${code} (unpaged)`);
+      // The same rows as the all-units register shows for those employees.
+      assert.deepEqual(expected, everyone.filter((row) => expected.some((own) => own.employee.id === row.employee.id)));
+
+      const { first, rows } = await allPages('admin', `&unitId=${unitId}`, 25);
+      assert.equal(first.pagination.total, size, `unit ${code}: count`);
+      assert.equal(first.pagination.totalPages, Math.max(1, Math.ceil(size / 25)));
+      assert.deepEqual(rows, expected, `unit ${code}: pages reproduce the unit's register`);
+      assert.equal(first.pagination.overtimeTotal, expected.reduce((sum, row) => sum + row.totals.overtimeMinutes, 0));
+    }
+
+    const all = await register('admin', '&page=1&limit=25');
+    assert.equal(all.pagination.total, PEOPLE_A + 7, 'All Units is everything the user may see');
+  });
+
+  test('Unit filter combines with department, shift, overtime and minimum OT', async () => {
+    const unitA = String(units.A._id);
+    const night = String(shifts.night._id);
+    const reference = (await register('admin', `&unitId=${unitA}&departmentId=${departments.ops._id}`)).employees;
+    const expected = screenFilter(reference, { shiftId: night, overtime: 'with', minimum: 200 });
+    assert.ok(expected.length > 0 && expected.length < reference.length);
+
+    const { first, rows } = await allPages('admin', `&unitId=${unitA}&departmentId=${departments.ops._id}&shiftId=${night}&hasOvertime=true&minOvertimeMinutes=200`, 25);
+    assert.deepEqual(rows, expected);
+    assert.equal(first.pagination.total, expected.length);
+  });
+
+  test("Unit filter cannot reach another unit: a restricted user's request for it is refused (403)", async () => {
+    const asked = await get('hrA', `/attendance/reports/monthly?year=${YEAR}&month=${MONTH}&unitId=${units.B._id}&page=1&limit=25`);
+    assert.equal(asked.status, 403);
+    assert.ok(JSON.stringify(asked.body).includes('RBAC_UNIT_DENIED'));
+    assert.equal((await get('hrA', `/attendance/reports/monthly?year=${YEAR}&month=${MONTH}&unitId=${units.B._id}`)).status, 403, 'unpaged too');
+
+    const own = await register('hrA', `&unitId=${units.A._id}&page=1&limit=25`);
+    assert.equal(own.pagination.total, PEOPLE_A, 'its own unit works');
+    assert.equal((await get('hrA', `/attendance/reports/monthly?year=${YEAR}&month=${MONTH}&unitId=not-an-id`)).status, 422);
+  });
+
+  test('the unit dropdown lists the active units from the Units master, limited to the user', async () => {
+    const inactive = await models.Unit.create({ name: 'Closed site', code: 'X', isActive: false });
+    const forAdmin = (await get('admin', '/organization/masters')).body.data.units.map((unit) => unit.code).sort();
+    assert.ok(forAdmin.includes('A') && forAdmin.includes('B') && !forAdmin.includes('X'), 'active units only');
+    assert.deepEqual((await get('hrA', '/organization/masters')).body.data.units.map((unit) => unit.code), ['A']);
+    await models.Unit.deleteOne({ _id: inactive._id });
+  });
+
   test('10. export still covers the complete filtered month, whatever page is on screen', async () => {
     const response = await get('hrA', `/attendance/reports/export?year=${YEAR}&month=${MONTH}`);
     assert.equal(response.status, 200);

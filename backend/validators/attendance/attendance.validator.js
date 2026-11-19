@@ -191,6 +191,8 @@ export const monthlyReportSchema = {
     month: Joi.number().integer().min(1).max(12).required(),
     departmentId: objectId,
     employeeId: objectId,
+    // The Monthly Attendance unit filter. Must be one of the caller's units.
+    unitId: objectId,
 
     /* ------------------------------------------- overtime filters ----- */
     // Additive and all optional, so every existing caller is unaffected.
