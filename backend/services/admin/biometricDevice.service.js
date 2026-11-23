@@ -451,12 +451,31 @@ export const deviceUsers = async (deviceId, req) => {
     (await biometricEvents.unmappedUsers(tenantId, device._id)).map((entry) => [entry.deviceUserId, entry]),
   );
 
-  const rows = users.map((user) => ({
-    ...user,
-    employeeCode: mapped.get(user.userId) ?? null,
-    unmappedPunches: waiting.get(user.userId)?.punches ?? 0,
-    lastPunchAt: waiting.get(user.userId)?.lastPunchAt ?? null,
-  }));
+  /**
+   * Who each saved mapping points at, so the dialog can name the employee on
+   * any row -- the employee picker searches and pages, and the mapped person
+   * may not be on the page it has loaded. Read-only; null for an unknown code.
+   */
+  const mappedCodes = [...new Set([...mapped.values()].filter(Boolean))];
+  const mappedEmployees = mappedCodes.length
+    ? await Employee.find({ tenantId: tenantId ?? null, employeeCode: { $in: mappedCodes }, deletedAt: null })
+        .select('employeeCode employeeId firstName lastName')
+        .lean()
+    : [];
+  const employeeByCode = new Map(mappedEmployees.map((employee) => [employee.employeeCode, employee]));
+
+  const rows = users.map((user) => {
+    const employee = employeeByCode.get(mapped.get(user.userId));
+    return {
+      ...user,
+      employeeCode: mapped.get(user.userId) ?? null,
+      employee: employee
+        ? { _id: employee._id, employeeCode: employee.employeeCode, employeeId: employee.employeeId ?? null, firstName: employee.firstName, lastName: employee.lastName }
+        : null,
+      unmappedPunches: waiting.get(user.userId)?.punches ?? 0,
+      lastPunchAt: waiting.get(user.userId)?.lastPunchAt ?? null,
+    };
+  });
 
   /**
    * Mappings whose enrolment is gone from the device.

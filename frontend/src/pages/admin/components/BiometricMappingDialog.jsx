@@ -5,21 +5,19 @@ import Button from '@mui/material/Button';
 import Checkbox from '@mui/material/Checkbox';
 import Chip from '@mui/material/Chip';
 import FormControlLabel from '@mui/material/FormControlLabel';
-import MenuItem from '@mui/material/MenuItem';
 import Stack from '@mui/material/Stack';
 import Table from '@mui/material/Table';
 import TableBody from '@mui/material/TableBody';
 import TableCell from '@mui/material/TableCell';
 import TableHead from '@mui/material/TableHead';
 import TableRow from '@mui/material/TableRow';
-import TextField from '@mui/material/TextField';
 import Typography from '@mui/material/Typography';
 import DownloadIcon from '@mui/icons-material/CloudDownloadOutlined';
 
 import FormDialog from '@components/common/FormDialog.jsx';
 import { LoadingState } from '@components/common/StateBlock.jsx';
 import adminService from '@services/modules/admin.service.js';
-import employeeService from '@services/modules/employee.service.js';
+import MappingEmployeeSelect from './MappingEmployeeSelect.jsx';
 
 /**
  * Matches a terminal's enrolments to employees.
@@ -36,16 +34,13 @@ import employeeService from '@services/modules/employee.service.js';
  */
 
 /**
- * Employees are fetched once per dialog open; a tenant has hundreds, not millions.
- * 200 is the employee list's maximum page size (`listEmployeesSchema`): anything
- * larger is rejected with a 422, which left the dropdown with no employees at all.
+ * Employees are no longer fetched here. One request for the list's largest page
+ * (200) silently left everyone after the 200th by code unselectable; each row's
+ * picker now searches and pages the full list itself (MappingEmployeeSelect).
  */
-const EMPLOYEE_LIMIT = 200;
-
 const BiometricMappingDialog = ({ open, device, onClose, onSaved }) => {
   const [users, setUsers] = useState([]);
   const [orphaned, setOrphaned] = useState([]);
-  const [employees, setEmployees] = useState([]);
   const [draft, setDraft] = useState({});
 
   const [fetching, setFetching] = useState(false);
@@ -64,11 +59,6 @@ const BiometricMappingDialog = ({ open, device, onClose, onSaved }) => {
     setDraft({});
     setFetched(false);
     setError(null);
-
-    employeeService
-      .list({ limit: EMPLOYEE_LIMIT, sortBy: 'employeeCode', sortOrder: 'asc' })
-      .then((response) => setEmployees(response.data ?? []))
-      .catch(() => setEmployees([]));
   }, [open, device?._id]);
 
   /** Pulls the enrolment list from the terminal, with whatever is mapped already. */
@@ -284,32 +274,22 @@ const BiometricMappingDialog = ({ open, device, onClose, onSaved }) => {
                       )}
                     </TableCell>
                     <TableCell>
-                      <TextField
-                        select
-                        size="small"
-                        fullWidth
+                      {/* Searches and pages every employee; see MappingEmployeeSelect. */}
+                      <MappingEmployeeSelect
                         value={draft[user.userId] ?? ''}
+                        known={user.employee ?? null}
                         error={Boolean(draft[user.userId]) && duplicates.has(draft[user.userId])}
-                        onChange={(event) =>
+                        onChange={(code) =>
                           setDraft((previous) => {
                             const next = { ...previous };
                             // An empty choice clears the mapping rather than
                             // storing a blank code the server would reject.
-                            if (event.target.value) next[user.userId] = event.target.value;
+                            if (code) next[user.userId] = code;
                             else delete next[user.userId];
                             return next;
                           })
                         }
-                      >
-                        <MenuItem value="">
-                          <em>Not mapped</em>
-                        </MenuItem>
-                        {employees.map((employee) => (
-                          <MenuItem key={employee._id} value={employee.employeeCode}>
-                            {employee.employeeCode} — {[employee.firstName, employee.lastName].filter(Boolean).join(' ')}
-                          </MenuItem>
-                        ))}
-                      </TextField>
+                      />
                     </TableCell>
                   </TableRow>
                 ))}
