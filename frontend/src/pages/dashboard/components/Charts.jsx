@@ -1,3 +1,4 @@
+import { useMemo, useState } from 'react';
 import Box from '@mui/material/Box';
 import Stack from '@mui/material/Stack';
 import Typography from '@mui/material/Typography';
@@ -424,4 +425,206 @@ export const DonutChart = ({ data = [], format = (value) => value, centerLabel =
   );
 };
 
-export default { BarChart, HorizontalBars, DonutChart, CHART_COLORS, SERIES_COLORS, resolveColor, compactCurrency };
+/* -------------------------------------------------------------------------- */
+/*                     Categorical palette, per theme mode                     */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Colours for distributions whose categories are named things -- units,
+ * departments, employment types -- in a fixed order, never cycled.
+ *
+ * Each mode has its own steps, validated against its card surface (white and
+ * #161d24) for lightness, chroma, colour-blind separation of neighbours and
+ * contrast. Neighbouring slots are kept apart (amber never beside green). Every
+ * chart that uses these labels its categories by name, which the light set's
+ * closest colour-blind pair relies on.
+ */
+const CATEGORICAL = {
+  light: ['#2563EB', '#D97706', '#0891B2', '#7C3AED', '#16A34A', '#DB2777', '#4F46E5', '#65A30D'],
+  dark: ['#3B82F6', '#D97706', '#0891B2', '#8B5CF6', '#16A34A', '#EC4899', '#6366F1', '#65A30D'],
+};
+
+export const categoricalColors = (theme) => CATEGORICAL[theme?.palette?.mode === 'dark' ? 'dark' : 'light'];
+
+/* -------------------------------------------------------------------------- */
+/*                                 Line chart                                 */
+/* -------------------------------------------------------------------------- */
+
+/** A round ceiling for the value axis: 0, half, top. */
+const niceCeiling = (max) => {
+  if (max <= 0) return 1;
+  const magnitude = 10 ** Math.floor(Math.log10(max));
+  const step = [1, 2, 2.5, 5, 10].find((candidate) => candidate * magnitude >= max) ?? 10;
+  return step * magnitude;
+};
+
+/**
+ * Lines over a sequence -- days of a month -- with a hover crosshair.
+ *
+ * `data` is `[{ label, [key]: number }]`; `series` is `[{ key, label, color }]`.
+ * One value axis, 2px lines, a legend for two or more series. Hovering anywhere
+ * over the plot picks the nearest point: a crosshair, a marker on each line,
+ * and a tooltip listing every series for that day. Markers, crosshair and
+ * tooltip are HTML over the SVG, so none of them is stretched by its scaling.
+ */
+export const LineChart = ({ data = [], series = [], height = 220, format = (value) => value, tooltipLabel = (row) => row.label }) => {
+  const theme = useTheme();
+  const [hover, setHover] = useState(null);
+
+  const ceiling = useMemo(
+    () => niceCeiling(Math.max(0, ...data.flatMap((row) => series.map((entry) => Number(row[entry.key]) || 0)))),
+    [data, series],
+  );
+
+  if (!data.length || !series.length) return null;
+
+  const count = data.length;
+  const xOf = (index) => (count === 1 ? 50 : (index / (count - 1)) * 100);
+  const yOf = (value) => 100 - ((Number(value) || 0) / ceiling) * 100;
+  const colors = series.map((entry) => resolveColor(theme, entry.color));
+  // A label under every few days, so 31 of them never collide.
+  const every = Math.max(1, Math.ceil(count / 8));
+
+  const pick = (event) => {
+    const box = event.currentTarget.getBoundingClientRect();
+    const ratio = Math.min(1, Math.max(0, (event.clientX - box.left) / box.width));
+    setHover(Math.round(ratio * (count - 1)));
+  };
+
+  const hovered = hover === null ? null : data[hover];
+
+  return (
+    <Box>
+      {series.length > 1 && <Legend items={series.map((entry, index) => ({ label: entry.label, color: colors[index] }))} />}
+
+      <Box sx={{ display: 'flex', gap: 1 }}>
+        <Stack sx={{ height, flexShrink: 0, py: 0.25, justifyContent: 'space-between' }}>
+          {[ceiling, ceiling / 2, 0].map((value) => (
+            <Typography key={value} variant="caption" color="text.secondary" sx={{ lineHeight: 1 }}>
+              {format(value)}
+            </Typography>
+          ))}
+        </Stack>
+
+        <Box sx={{ flex: 1, minWidth: 0 }}>
+          <Box
+            sx={{ position: 'relative', height, cursor: 'crosshair' }}
+            onMouseMove={pick}
+            onMouseLeave={() => setHover(null)}
+            role="img"
+            aria-label={`${series.map((entry) => entry.label).join(', ')} by day`}
+          >
+            <Box component="svg" viewBox="0 0 100 100" preserveAspectRatio="none" sx={{ width: '100%', height: '100%', display: 'block', overflow: 'visible' }}>
+              {[0, 50, 100].map((y) => (
+                <Box
+                  key={y}
+                  component="line"
+                  x1="0"
+                  x2="100"
+                  y1={y}
+                  y2={y}
+                  stroke={theme.palette.divider}
+                  sx={{ strokeWidth: 1, vectorEffect: 'non-scaling-stroke' }}
+                />
+              ))}
+              {series.map((entry, index) => (
+                <Box
+                  key={entry.key}
+                  component="polyline"
+                  fill="none"
+                  stroke={colors[index]}
+                  points={data.map((row, rowIndex) => `${xOf(rowIndex)},${yOf(row[entry.key])}`).join(' ')}
+                  sx={{ strokeWidth: 2, vectorEffect: 'non-scaling-stroke', strokeLinejoin: 'round', strokeLinecap: 'round' }}
+                />
+              ))}
+            </Box>
+
+            {hovered && (
+              <>
+                <Box sx={{ position: 'absolute', top: 0, bottom: 0, left: `${xOf(hover)}%`, width: '1px', bgcolor: 'text.disabled', pointerEvents: 'none' }} />
+                {series.map((entry, index) => (
+                  <Box
+                    key={entry.key}
+                    sx={{
+                      position: 'absolute',
+                      left: `${xOf(hover)}%`,
+                      top: `${yOf(hovered[entry.key])}%`,
+                      width: 8,
+                      height: 8,
+                      ml: '-4px',
+                      mt: '-4px',
+                      borderRadius: '50%',
+                      bgcolor: colors[index],
+                      // A ring of the card's own colour keeps overlapping markers apart.
+                      boxShadow: `0 0 0 2px ${theme.palette.background.paper}`,
+                      pointerEvents: 'none',
+                    }}
+                  />
+                ))}
+                <Box
+                  sx={{
+                    position: 'absolute',
+                    top: 4,
+                    ...(xOf(hover) > 60 ? { right: `${100 - xOf(hover)}%`, mr: 1.5 } : { left: `${xOf(hover)}%`, ml: 1.5 }),
+                    px: 1.25,
+                    py: 0.75,
+                    borderRadius: 1,
+                    bgcolor: 'background.paper',
+                    border: 1,
+                    borderColor: 'divider',
+                    boxShadow: 2,
+                    pointerEvents: 'none',
+                    minWidth: 130,
+                    zIndex: 1,
+                  }}
+                >
+                  <Typography variant="caption" sx={{ display: 'block', fontWeight: 600 }}>
+                    {tooltipLabel(hovered)}
+                  </Typography>
+                  {series.map((entry, index) => (
+                    <Stack key={entry.key} direction="row" spacing={0.75} sx={{ alignItems: 'center' }}>
+                      <Box sx={{ width: 8, height: 8, borderRadius: 0.5, bgcolor: colors[index], flexShrink: 0 }} />
+                      <Typography variant="caption" color="text.secondary" sx={{ flex: 1 }}>
+                        {entry.label}
+                      </Typography>
+                      <Typography variant="caption" fontWeight={600}>
+                        {format(hovered[entry.key] ?? 0)}
+                      </Typography>
+                    </Stack>
+                  ))}
+                </Box>
+              </>
+            )}
+          </Box>
+
+          <Box sx={{ position: 'relative', height: 16, mt: 0.5 }}>
+            {data.map((row, index) =>
+              index % every === 0 || index === count - 1 ? (
+                <Typography
+                  key={row.label}
+                  variant="caption"
+                  color="text.secondary"
+                  sx={{ position: 'absolute', left: `${xOf(index)}%`, transform: 'translateX(-50%)', fontSize: 10, whiteSpace: 'nowrap' }}
+                >
+                  {row.label}
+                </Typography>
+              ) : null,
+            )}
+          </Box>
+        </Box>
+      </Box>
+    </Box>
+  );
+};
+
+export default {
+  BarChart,
+  HorizontalBars,
+  DonutChart,
+  LineChart,
+  CHART_COLORS,
+  SERIES_COLORS,
+  resolveColor,
+  compactCurrency,
+  categoricalColors,
+};

@@ -16,6 +16,7 @@ export const ENDPOINTS = {
   documents: '/documents',
   notifications: '/notifications',
   reports: '/reports',
+  dashboard: '/dashboard',
 };
 
 export default ENDPOINTS;
