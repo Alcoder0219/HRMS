@@ -21,6 +21,7 @@ import documentRoutes from './document/document.routes.js';
 import notificationRoutes from './notification/notification.routes.js';
 import reportRoutes from './report/report.routes.js';
 import adminRoutes from './admin/admin.routes.js';
+import dashboardRoutes from './dashboard/dashboard.routes.js';
 
 const router = Router();
 
@@ -76,6 +77,7 @@ const modules = [
   { path: '/documents', resource: RESOURCES.DOCUMENT, router: documentRoutes },
   { path: '/notifications', resource: RESOURCES.NOTIFICATION, router: notificationRoutes },
   { path: '/reports', resource: RESOURCES.REPORT, router: reportRoutes },
+  { path: '/dashboard', resource: RESOURCES.DASHBOARD, router: dashboardRoutes },
   // Administration spans several resources; USER is the default and the route
   // groups inside name AUDIT, ROLE and TENANT where they differ.
   { path: '/administration', resource: RESOURCES.USER, router: adminRoutes },
