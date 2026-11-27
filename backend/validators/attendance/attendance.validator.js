@@ -208,6 +208,17 @@ export const monthlyReportSchema = {
   }),
 };
 
+/** The Transaction Report: one unit, one day (the terminals' own date). */
+export const transactionReportSchema = {
+  query: Joi.object({
+    unitId: objectId.required(),
+    date: Joi.string()
+      .pattern(/^\d{4}-\d{2}-\d{2}$/)
+      .required()
+      .messages({ 'string.pattern.base': 'Date must be YYYY-MM-DD' }),
+  }),
+};
+
 export const exceptionReportSchema = {
   query: Joi.object({
     from: Joi.date().required(),
@@ -425,6 +436,7 @@ export default {
   monthlyCalendarSchema,
   monthlyReportSchema,
   exceptionReportSchema,
+  transactionReportSchema,
   idParamSchema,
   biometricSchema,
   lockPeriodSchema,

@@ -76,6 +76,10 @@ const attendanceService = {
   groupedReport: (params) => axiosClient.get(url('/reports/grouped'), { params: clean(params) }),
   exportSummaryPdf: (params) =>
     axiosClient.get(url('/reports/summary/pdf'), { params: clean(params), responseType: 'blob' }),
+  // One unit's raw biometric punches on one day, and the same as a PDF.
+  transactionReport: (params) => axiosClient.get(url('/reports/transactions'), { params: clean(params) }),
+  exportTransactionReportPdf: (params) =>
+    axiosClient.get(url('/reports/transactions/pdf'), { params: clean(params), responseType: 'blob' }),
   monthlyRegister: (params) => axiosClient.get(url('/reports/monthly'), { params: clean(params) }),
   monthlySummary: (params) => axiosClient.get(url('/reports/summary'), { params: clean(params) }),
   // A year of overtime totals in one request, for the dashboard's trend chart.
