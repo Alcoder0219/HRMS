@@ -27,6 +27,16 @@ const paging = {
   limit: Joi.number().integer().min(1).max(200).default(25),
 };
 
+/**
+ * Optional report paging, as the Monthly Attendance register takes it: no
+ * default, so a caller that sends neither (every export, the dashboard) gets
+ * the whole report exactly as before.
+ */
+const reportPaging = {
+  page: Joi.number().integer().min(1).max(100000),
+  limit: Joi.number().integer().valid(25, 50, 100),
+};
+
 /* ------------------------------------------------------------- punching -- */
 
 export const punchSchema = {
@@ -161,6 +171,7 @@ export const dayReportSchema = {
     }),
     departmentId: objectId,
     unitId: objectId,
+    ...reportPaging,
   }),
 };
 
@@ -169,6 +180,7 @@ export const groupedReportSchema = {
     year: year.required(),
     month: monthNumber.required(),
     groupBy: Joi.string().valid('department', 'unit').default('department'),
+    ...reportPaging,
   }),
 };
 
@@ -216,6 +228,7 @@ export const transactionReportSchema = {
       .pattern(/^\d{4}-\d{2}-\d{2}$/)
       .required()
       .messages({ 'string.pattern.base': 'Date must be YYYY-MM-DD' }),
+    ...reportPaging,
   }),
 };
 
@@ -224,6 +237,7 @@ export const exceptionReportSchema = {
     from: Joi.date().required(),
     to: Joi.date().min(Joi.ref('from')).required(),
     departmentId: objectId,
+    ...reportPaging,
   }),
 };
 

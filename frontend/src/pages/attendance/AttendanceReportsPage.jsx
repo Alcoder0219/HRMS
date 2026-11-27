@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import Alert from '@mui/material/Alert';
 import Box from '@mui/material/Box';
 import Button from '@mui/material/Button';
@@ -15,6 +15,7 @@ import PdfIcon from '@mui/icons-material/PictureAsPdfOutlined';
 
 import PageHeader from '@components/common/PageHeader.jsx';
 import TransactionReportTab from './components/TransactionReportTab.jsx';
+import ReportPagination, { REPORT_PAGE_SIZES } from './components/ReportPagination.jsx';
 import DataTable from '@components/common/DataTable.jsx';
 import { useAppDispatch, useAppSelector } from '@hooks/useRedux.js';
 import { fetchMasters, selectMasters } from '@redux/slices/employeeSlice.js';
@@ -59,6 +60,7 @@ const AttendanceReportsPage = () => {
   const masters = useAppSelector(selectMasters);
 
   const [tab, setTab] = useState('summary');
+  const [transactionsOpened, setTransactionsOpened] = useState(false);
   const [params, setParams] = useState({
     year: now.getFullYear(),
     month: now.getMonth() + 1,
@@ -73,6 +75,20 @@ const AttendanceReportsPage = () => {
   const [loading, setLoading] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState(null);
+
+  /**
+   * Each tab keeps its own page and page size. A filter change sends every tab
+   * back to page 1; the server's `pagination` is what the bar shows.
+   */
+  const [paging, setPaging] = useState({});
+  const { page, limit } = paging[tab] ?? { page: 1, limit: REPORT_PAGE_SIZES[0] };
+  const setTabPaging = (next) =>
+    setPaging((previous) => ({ ...previous, [tab]: { page, limit, ...next } }));
+  const [pagination, setPagination] = useState(null);
+  // The tab the rows on screen belong to, so one tab never shows another's data.
+  const [loadedTab, setLoadedTab] = useState(null);
+  // Only the latest request may update the screen; a slower earlier one is ignored.
+  const latestRequest = useRef(0);
 
   useEffect(() => {
     dispatch(fetchMasters());
@@ -96,9 +112,10 @@ const AttendanceReportsPage = () => {
 
     setLoading(true);
     setError(null);
-    setSummary([]);
 
     const dayType = DAY_TYPES[tab];
+    // Only this page is fetched; the server returns the totals beside it.
+    const pageParams = { page, limit };
 
     const request = dayType
       ? attendanceService.dayReport({
@@ -106,33 +123,52 @@ const AttendanceReportsPage = () => {
           from: params.from,
           to: params.to,
           departmentId: params.departmentId,
+          ...pageParams,
         })
       : tab === 'summary'
-        ? attendanceService.monthlySummary({ year: params.year, month: params.month, departmentId: params.departmentId })
+        ? attendanceService.monthlySummary({ year: params.year, month: params.month, departmentId: params.departmentId, ...pageParams })
         : tab === 'grouped'
-          ? attendanceService.groupedReport({ year: params.year, month: params.month, groupBy: params.groupBy })
-          : attendanceService.exceptions({ from: params.from, to: params.to, departmentId: params.departmentId });
+          ? attendanceService.groupedReport({ year: params.year, month: params.month, groupBy: params.groupBy, ...pageParams })
+          : attendanceService.exceptions({ from: params.from, to: params.to, departmentId: params.departmentId, ...pageParams });
+
+    const requestId = (latestRequest.current += 1);
+    const current = () => requestId === latestRequest.current;
 
     request
       .then((response) => {
+        if (!current()) return;
         setRows(response.data?.rows ?? response.data?.items ?? []);
         // The day reports return a per-employee roll-up beside the detail:
         // "who" and "how often" are always asked of these together.
         setSummary(response.data?.summary ?? []);
+        setPagination(response.data?.pagination ?? null);
+        setLoadedTab(tab);
       })
       .catch((rejection) => {
+        if (!current()) return;
         setRows([]);
+        setSummary([]);
+        setPagination(null);
+        setLoadedTab(tab);
         setError(rejection?.message ?? 'Could not load the report');
       })
-      .finally(() => setLoading(false));
+      .finally(() => {
+        if (current()) setLoading(false);
+      });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [tab, params]);
+  }, [tab, params, page, limit]);
 
   useEffect(() => {
     load();
   }, [load]);
 
-  const set = (field) => (event) => setParams((previous) => ({ ...previous, [field]: event.target.value }));
+  const set = (field) => (event) => {
+    setParams((previous) => ({ ...previous, [field]: event.target.value }));
+    // New filters, new result set: every tab starts again from page 1.
+    setPaging((previous) =>
+      Object.fromEntries(Object.entries(previous).map(([key, value]) => [key, { ...value, page: 1 }])),
+    );
+  };
 
   const stamp = `${params.year}-${String(params.month).padStart(2, '0')}`;
 
@@ -357,6 +393,13 @@ const AttendanceReportsPage = () => {
     },
   ];
 
+  // What belongs to this tab; while another tab's result is still on hand,
+  // nothing is shown rather than the wrong report.
+  const tabRows = loadedTab === tab ? rows : [];
+  const tabSummary = loadedTab === tab ? summary : [];
+  const tabPagination = loadedTab === tab ? pagination : null;
+  const totalRows = tabPagination?.total ?? tabRows.length;
+
   const isDayReport = Boolean(DAY_TYPES[tab]);
   // The day reports and the exception queue are both date-range driven.
   const isRangeTab = isDayReport || tab === 'exceptions';
@@ -409,7 +452,10 @@ const AttendanceReportsPage = () => {
 
       <Tabs
         value={tab}
-        onChange={(_event, next) => setTab(next)}
+        onChange={(_event, next) => {
+          if (next === 'transactions') setTransactionsOpened(true);
+          setTab(next);
+        }}
         sx={{ mb: 2, borderBottom: 1, borderColor: 'divider' }}
       >
         <Tab value="summary" label="Monthly summary" />
@@ -423,9 +469,15 @@ const AttendanceReportsPage = () => {
         <Tab value="exceptions" label="Exceptions" />
       </Tabs>
 
-      {tab === 'transactions' ? (
-        <TransactionReportTab units={masters?.units ?? []} />
-      ) : (
+      {/* Kept mounted once opened, so its unit, date and page survive a
+          visit to another tab; hidden while another tab is showing. */}
+      {(tab === 'transactions' || transactionsOpened) && (
+        <Box sx={{ display: tab === 'transactions' ? 'block' : 'none' }}>
+          <TransactionReportTab units={masters?.units ?? []} />
+        </Box>
+      )}
+
+      {tab !== 'transactions' && (
       <>
       <Stack direction="row" spacing={1} sx={{ mb: 2 }} flexWrap="wrap" useFlexGap data-print="hide">
         {isRangeTab ? (
@@ -490,12 +542,12 @@ const AttendanceReportsPage = () => {
           </TextField>
         )}
 
-        <Chip label={`${rows.length} row${rows.length === 1 ? '' : 's'}`} size="small" variant="outlined" sx={{ alignSelf: 'center' }} />
+        <Chip label={`${totalRows} row${totalRows === 1 ? '' : 's'}`} size="small" variant="outlined" sx={{ alignSelf: 'center' }} />
       </Stack>
 
       <DataTable
         columns={columns}
-        rows={rows}
+        rows={tabRows}
         loading={loading}
         error={error}
         onRetry={load}
@@ -524,7 +576,28 @@ const AttendanceReportsPage = () => {
         }
       />
 
-      {isDayReport && summary.length > 0 && (
+      {totalRows > 0 && (
+        <ReportPagination
+          pagination={tabPagination}
+          shown={tabRows.length}
+          loading={loading}
+          onPageChange={(next) => setTabPaging({ page: next })}
+          onLimitChange={(next) => setTabPaging({ page: 1, limit: next })}
+          noun={
+            tab === 'summary'
+              ? 'employee'
+              : tab === 'grouped'
+                ? params.groupBy === 'unit'
+                  ? 'unit'
+                  : 'department'
+                : tab === 'exceptions'
+                  ? 'exception'
+                  : 'record'
+          }
+        />
+      )}
+
+      {isDayReport && tabSummary.length > 0 && (
         <Box sx={{ mt: 4 }}>
           <Typography variant="h6" sx={{ mb: 1 }}>
             By employee
@@ -535,7 +608,7 @@ const AttendanceReportsPage = () => {
 
           <DataTable
             columns={SUMMARY_ROLLUP_COLUMNS}
-            rows={summary}
+            rows={tabSummary}
             getKey={(row) => row.employeeCode}
             emptyTitle="Nothing to summarise"
           />

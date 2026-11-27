@@ -39,6 +39,37 @@ const monthWindow = (year, month) => ({
   daysInMonth: new Date(year, month, 0).getDate(),
 });
 
+/**
+ * Report paging: asked for only when the caller sends `page` or `limit` (the
+ * Attendance Reports screen). Exports and the dashboard send neither and keep
+ * getting the whole report.
+ */
+export const isPaged = ({ page, limit } = {}) => page !== undefined || limit !== undefined;
+
+/**
+ * The page window over `total` records. A page past the end -- after a filter
+ * shrank the set -- is answered with the last page rather than an empty one.
+ */
+export const pageOf = (total, { page, limit } = {}) => {
+  const size = Number(limit) || 25;
+  const totalPages = Math.max(1, Math.ceil(total / size));
+  const current = Math.min(Math.max(1, Number(page) || 1), totalPages);
+  return { page: current, limit: size, total, totalPages, skip: (current - 1) * size };
+};
+
+/** The page state a response reports: `pageOf` without its internal offset. */
+const pageInfo = ({ skip, ...info }) => info;
+
+/** One page of an already-built list, with its page state. */
+export const slicePage = (rows, query) => {
+  const window = pageOf(rows.length, query);
+  return { rows: rows.slice(window.skip, window.skip + window.limit), pagination: pageInfo(window) };
+};
+
+/** The query without its paging, for exports that must carry every record. */
+// eslint-disable-next-line no-unused-vars
+export const withoutPaging = ({ page, limit, ...query } = {}) => query;
+
 /** The Employee filter for this caller: scope first, then the requested slice. */
 const scopedEmployeeFilter = (req, filters = {}) => {
   const scope = buildScopeFilter(req, {
@@ -393,11 +424,31 @@ export const monthlyRegister = async (
  * totals consistent with what is shown.
  */
 export const monthlySummary = async (
-  { year, month, departmentId, shiftId, hasOvertime, minOvertimeMinutes },
+  { year, month, departmentId, shiftId, hasOvertime, minOvertimeMinutes, page, limit },
   req,
 ) => {
   const { from, to } = monthWindow(year, month);
-  const employees = await scopedEmployees(req, { departmentId });
+
+  /**
+   * Paged (the Reports screen): with no row filters, the page's employees are
+   * chosen in the database -- counted, then skipped and limited in register
+   * order -- and only they are summarised. The figures for each row are the
+   * same either way; only which employees are computed changes.
+   *
+   * The shift and overtime filters act on the summarised rows, so with any of
+   * them the whole set is summarised and then sliced, exactly as before.
+   */
+  const paged = isPaged({ page, limit });
+  const rowFiltered = Boolean(shiftId) || hasOvertime !== undefined || Number(minOvertimeMinutes) > 0;
+  let window = null;
+  let employees;
+  if (paged && !rowFiltered) {
+    const filter = scopedEmployeeFilter(req, { departmentId });
+    window = pageOf(await Employee.countDocuments(filter), { page, limit });
+    employees = await loadReportEmployees(filter).skip(window.skip).limit(window.limit);
+  } else {
+    employees = await scopedEmployees(req, { departmentId });
+  }
   const employeeIds = employees.map((employee) => employee._id);
 
   const [aggregate, records, holidays, weeklyOffDays] = await Promise.all([
@@ -467,6 +518,8 @@ export const monthlySummary = async (
     return true;
   });
 
+  if (window) return { year, month, rows: filtered, pagination: pageInfo(window) };
+  if (paged) return { year, month, ...slicePage(filtered, { page, limit }) };
   return { year, month, rows: filtered };
 };
 
@@ -474,11 +527,13 @@ export const monthlySummary = async (
  * Days needing attention: missing punches, anomalies, and unresolved absences.
  * This is the queue HR works through before closing a month.
  */
-export const exceptionReport = async ({ from, to, departmentId }, req) => {
-  const employees = await scopedEmployees(req, { departmentId });
-  const employeeIds = employees.map((employee) => employee._id);
+export const exceptionReport = async ({ from, to, departmentId, page, limit }, req) => {
+  // Only the ids: the records carry their own employee details.
+  const employeeIds = (await Employee.find(scopedEmployeeFilter(req, { departmentId })).select('_id').lean()).map(
+    (employee) => employee._id,
+  );
 
-  const records = await attendanceRepository.findForRange({
+  const filter = {
     employeeId: { $in: employeeIds },
     date: { $gte: startOfDay(from), $lte: startOfDay(to) },
     $or: [
@@ -486,10 +541,21 @@ export const exceptionReport = async ({ from, to, departmentId }, req) => {
       { anomalies: { $ne: [] } },
       { status: ATTENDANCE_STATUS.ABSENT, isRegularized: false },
     ],
-  });
+  };
+
+  // Paged in the database: the matching count, then one page of records.
+  let window = null;
+  let records;
+  if (isPaged({ page, limit })) {
+    window = pageOf(await attendanceRepository.countForRange(filter), { page, limit });
+    records = await attendanceRepository.findForRangePage(filter, window);
+  } else {
+    records = await attendanceRepository.findForRange(filter);
+  }
 
   return {
-    total: records.length,
+    total: window ? window.total : records.length,
+    ...(window ? { pagination: pageInfo(window) } : {}),
     items: records.map((record) => ({
       id: String(record._id),
       date: record.date,
@@ -606,8 +672,9 @@ const SUMMARY_COLUMNS = [
 
 export const exportMonthlySummary = async (query, req) => {
   // The whole query is forwarded, so an export reflects the filters that were
-  // on screen rather than silently exporting everybody.
-  const { rows } = await monthlySummary(query, req);
+  // on screen rather than silently exporting everybody. Never paged: an export
+  // carries every matching record.
+  const { rows } = await monthlySummary(withoutPaging(query), req);
   const { year, month } = query;
 
   const buffer = await buildWorkbook({
@@ -654,9 +721,108 @@ const DAY_REPORTS = {
   HALF_DAY: { match: { status: ATTENDANCE_STATUS.HALF_DAY }, metric: null, label: 'Half days' },
 };
 
-export const dayReport = async ({ type, from, to, departmentId, unitId }, req) => {
+/** The per-employee totals a day report's roll-up adds up. */
+const DAY_REPORT_MINUTES = { LATE: 'lateMinutes', EARLY: 'earlyGoingMinutes', OVERTIME: 'overtimeMinutes' };
+
+/**
+ * One page of a day report, chosen in the database.
+ *
+ * The detail rows are counted and paged with skip/limit. The "by employee"
+ * roll-up still covers the whole range -- it is a summary of every matching
+ * day, not of the page -- and is added up by one aggregation instead of by
+ * loading every row. Only the employees the page or the roll-up name are
+ * loaded.
+ */
+const dayReportPage = async ({ type, from, to, departmentId, unitId, page, limit }, definition, req) => {
+  const employeeIds = (await Employee.find(scopedEmployeeFilter(req, { departmentId, unitId })).select('_id').lean()).map(
+    (employee) => employee._id,
+  );
+  const filter = {
+    employeeId: { $in: employeeIds },
+    date: { $gte: startOfDay(from), $lte: startOfDay(to) },
+    ...definition.match,
+  };
+
+  const minutesField = DAY_REPORT_MINUTES[type];
+  const rollup = await Attendance.aggregate([
+    { $match: filter },
+    {
+      $group: {
+        _id: '$employeeId',
+        occurrences: { $sum: 1 },
+        totalMinutes: { $sum: minutesField ? { $ifNull: [`$${minutesField}`, 0] } : 0 },
+        // The employee's first matching record, in the detail's own order.
+        first: { $min: { date: '$date', id: '$_id' } },
+      },
+    },
+  ]);
+  // Every matching day is in exactly one employee's roll-up, so this is the count.
+  const total = rollup.reduce((sum, entry) => sum + entry.occurrences, 0);
+  const window = pageOf(total, { page, limit });
+
+  // The roll-up names everyone the page can, so both load side by side.
+  const [records, loaded] = total
+    ? await Promise.all([
+        attendanceRepository.findRawForRangePage(filter, window),
+        loadReportEmployees({ _id: { $in: rollup.map((entry) => entry._id) } }),
+      ])
+    : [[], []];
+  const byId = new Map(loaded.map((employee) => [String(employee._id), employee]));
+
+  return {
+    type,
+    label: definition.label,
+    from,
+    to,
+    total,
+    pagination: pageInfo(window),
+    rows: records.map((record) => dayReportRow(record, byId.get(String(record.employeeId)))),
+    // Ordered as the unpaged roll-up: most occurrences first, then by who
+    // appeared first in the range.
+    summary: rollup
+      .sort(
+        (a, b) =>
+          b.occurrences - a.occurrences ||
+          new Date(a.first.date) - new Date(b.first.date) ||
+          String(a.first.id).localeCompare(String(b.first.id)),
+      )
+      .map((entry) => {
+        const employee = byId.get(String(entry._id));
+        return {
+          employeeCode: employee?.employeeCode ?? null,
+          employeeId: employee?.employeeId ?? null,
+          fullName: employee ? `${employee.firstName} ${employee.lastName}` : null,
+          department: employee?.departmentId?.name ?? null,
+          occurrences: entry.occurrences,
+          totalMinutes: entry.totalMinutes,
+        };
+      }),
+  };
+};
+
+/** One day-report row, from its attendance record and employee. */
+const dayReportRow = (record, employee) => ({
+  date: record.date,
+  employeeCode: employee?.employeeCode ?? null,
+  employeeId: employee?.employeeId ?? null,
+  fullName: employee ? `${employee.firstName} ${employee.lastName}` : null,
+  department: employee?.departmentId?.name ?? null,
+  status: record.status,
+  checkInAt: record.checkInAt,
+  checkOutAt: record.checkOutAt,
+  lateMinutes: record.lateMinutes,
+  earlyGoingMinutes: record.earlyGoingMinutes,
+  overtimeMinutes: record.overtimeMinutes,
+  workedMinutes: record.workedMinutes,
+});
+
+export const dayReport = async ({ type, from, to, departmentId, unitId, page, limit }, req) => {
   const definition = DAY_REPORTS[type];
   if (!definition) throw new Error(`Unknown report type: ${type}`);
+
+  if (isPaged({ page, limit })) {
+    return dayReportPage({ type, from, to, departmentId, unitId, page, limit }, definition, req);
+  }
 
   const employees = await scopedEmployees(req, { departmentId, unitId });
   const byId = new Map(employees.map((employee) => [String(employee._id), employee]));
@@ -724,7 +890,17 @@ export const dayReport = async ({ type, from, to, departmentId, unitId }, req) =
  * employee scope is applied first so a manager sees only their own team's
  * contribution.
  */
-export const groupedReport = async ({ year, month, groupBy = 'department' }, req) => {
+export const groupedReport = async ({ year, month, groupBy = 'department', page, limit }, req) => {
+  const report = await groupedReportAll({ year, month, groupBy }, req);
+  /**
+   * Each group's figures need every one of its employees' days, so the groups
+   * are always built whole; paging returns a slice of them. There are only as
+   * many rows as departments or units, so the saving here is in the response.
+   */
+  return isPaged({ page, limit }) ? { ...report, ...slicePage(report.rows, { page, limit }) } : report;
+};
+
+const groupedReportAll = async ({ year, month, groupBy = 'department' }, req) => {
   const { from, to } = monthWindow(year, month);
   const employees = await scopedEmployees(req);
 
@@ -821,7 +997,7 @@ const DAY_REPORT_COLUMNS = [
 ];
 
 export const exportDayReport = async (params, req) => {
-  const report = await dayReport(params, req);
+  const report = await dayReport(withoutPaging(params), req);
 
   const buffer = await buildWorkbook({
     sheetName: `${params.type} report`.slice(0, 30),
@@ -843,7 +1019,7 @@ export const exportDayReport = async (params, req) => {
 
 /** Monthly summary as a PDF, for circulation rather than analysis. */
 export const exportMonthlySummaryPdf = async (query, req) => {
-  const { rows } = await monthlySummary(query, req);
+  const { rows } = await monthlySummary(withoutPaging(query), req);
   const { year, month } = query;
 
   const buffer = await buildTablePdf({
