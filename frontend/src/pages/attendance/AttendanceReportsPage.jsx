@@ -14,6 +14,7 @@ import DownloadIcon from '@mui/icons-material/FileDownloadOutlined';
 import PdfIcon from '@mui/icons-material/PictureAsPdfOutlined';
 
 import PageHeader from '@components/common/PageHeader.jsx';
+import TransactionReportTab from './components/TransactionReportTab.jsx';
 import DataTable from '@components/common/DataTable.jsx';
 import { useAppDispatch, useAppSelector } from '@hooks/useRedux.js';
 import { fetchMasters, selectMasters } from '@redux/slices/employeeSlice.js';
@@ -90,6 +91,9 @@ const AttendanceReportsPage = () => {
   };
 
   const load = useCallback(() => {
+    // The Transaction Report tab loads its own data.
+    if (tab === 'transactions') return;
+
     setLoading(true);
     setError(null);
     setSummary([]);
@@ -376,6 +380,8 @@ const AttendanceReportsPage = () => {
           { label: 'Reports' },
         ]}
         actions={
+          // The Transaction Report carries its own Export PDF beside its filters.
+          tab !== 'transactions' && (
           <Stack direction="row" spacing={1} data-print="hide">
             <Button size="small" startIcon={<DownloadIcon />} onClick={() => download('excel')} disabled={busy}>
               Excel
@@ -389,6 +395,7 @@ const AttendanceReportsPage = () => {
               </Button>
             )}
           </Stack>
+          )
         }
       />
 
@@ -406,6 +413,7 @@ const AttendanceReportsPage = () => {
         sx={{ mb: 2, borderBottom: 1, borderColor: 'divider' }}
       >
         <Tab value="summary" label="Monthly summary" />
+        <Tab value="transactions" label="Transaction Report" />
         <Tab value="grouped" label="By department / unit" />
         <Tab value="late" label="Late coming" />
         <Tab value="early" label="Early going" />
@@ -415,6 +423,10 @@ const AttendanceReportsPage = () => {
         <Tab value="exceptions" label="Exceptions" />
       </Tabs>
 
+      {tab === 'transactions' ? (
+        <TransactionReportTab units={masters?.units ?? []} />
+      ) : (
+      <>
       <Stack direction="row" spacing={1} sx={{ mb: 2 }} flexWrap="wrap" useFlexGap data-print="hide">
         {isRangeTab ? (
           <>
@@ -528,6 +540,8 @@ const AttendanceReportsPage = () => {
             emptyTitle="Nothing to summarise"
           />
         </Box>
+      )}
+      </>
       )}
     </Box>
   );

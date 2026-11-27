@@ -3,6 +3,7 @@ import { Router } from 'express';
 import controller from '../../controllers/attendance/attendance.controller.js';
 import regularizationController from '../../controllers/attendance/regularization.controller.js';
 import sheetController from '../../controllers/attendance/attendanceSheet.controller.js';
+import transactionController from '../../controllers/attendance/transactionReport.controller.js';
 import validate from '../../middlewares/validate.js';
 import { requirePermission } from '../../middlewares/authorize.js';
 import { spreadsheetUpload } from '../../config/multer.js';
@@ -211,6 +212,21 @@ router.get(
   requirePermission(ACTIONS.EXPORT),
   validate(schemas.monthlyReportSchema),
   sheetController.exportSummaryPdf,
+);
+
+// Transaction Report: one unit's biometric punches on one day, as recorded.
+router.get(
+  '/reports/transactions',
+  requirePermission(ACTIONS.READ),
+  validate(schemas.transactionReportSchema),
+  transactionController.transactionReport,
+);
+
+router.get(
+  '/reports/transactions/pdf',
+  requirePermission(ACTIONS.EXPORT),
+  validate(schemas.transactionReportSchema),
+  transactionController.transactionReportPdf,
 );
 
 /* -------------------------------------------------------- regularization -- */
