@@ -38,6 +38,18 @@ export const findForRange = (filter) =>
 
 export const findRawForRange = (filter) => Attendance.find(filter).sort({ date: 1 }).lean();
 
+/**
+ * One page of `findForRange`, and the count it pages over. Ordered by date with
+ * the id as a tie-breaker, so consecutive pages never repeat or skip a record.
+ */
+export const findForRangePage = (filter, { skip, limit }) =>
+  Attendance.find(filter).sort({ date: 1, _id: 1 }).skip(skip).limit(limit).populate(POPULATE).lean({ virtuals: true });
+
+export const findRawForRangePage = (filter, { skip, limit }) =>
+  Attendance.find(filter).sort({ date: 1, _id: 1 }).skip(skip).limit(limit).lean();
+
+export const countForRange = (filter) => Attendance.countDocuments(filter);
+
 /* --------------------------------------------------------------- writes -- */
 
 /**
@@ -197,6 +209,9 @@ export default {
   paginate,
   findForRange,
   findRawForRange,
+  findForRangePage,
+  findRawForRangePage,
+  countForRange,
   upsertDay,
   updateById,
   lockRange,

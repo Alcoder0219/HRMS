@@ -259,6 +259,30 @@ describe('transaction report API', { skip: !reachable && 'MongoDB is not reachab
     assert.ok(pageCount(body) >= 2, `expected several pages, got ${pageCount(body)}`);
   });
 
+  test('pages read back as the whole report; the PDF is never paged', async () => {
+    const path = `/attendance/reports/transactions?unitId=${units.BULK._id}&date=${DAY}`;
+    const whole = (await request('admin', path)).body.data;
+    assert.equal(whole.pagination, undefined);
+    assert.equal(whole.rows.length, 80);
+
+    for (const limit of [25, 50, 100]) {
+      const rows = [];
+      let pagination;
+      for (let page = 1; !pagination || page <= pagination.totalPages; page += 1) {
+        const data = (await request('admin', `${path}&page=${page}&limit=${limit}`)).body.data;
+        pagination = data.pagination;
+        assert.equal(data.total, 80);
+        rows.push(...data.rows);
+      }
+      assert.equal(pagination.totalPages, Math.ceil(80 / limit));
+      assert.deepEqual(rows, whole.rows, `pages at ${limit}`);
+    }
+
+    const exported = await request('admin', `/attendance/reports/transactions/pdf?unitId=${units.BULK._id}&date=${DAY}&page=2&limit=25`);
+    assert.equal(exported.status, 200);
+    assert.equal(exported.headers.get('x-total-count'), '80');
+  });
+
   test('no records: an empty table, and no empty PDF', async () => {
     const { body } = await report('admin', 'EAW', EMPTY_DAY);
     assert.equal(body.data.total, 0);

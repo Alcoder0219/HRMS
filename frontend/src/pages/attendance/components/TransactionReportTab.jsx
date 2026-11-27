@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import Alert from '@mui/material/Alert';
 import Box from '@mui/material/Box';
 import Button from '@mui/material/Button';
@@ -11,6 +11,7 @@ import RefreshIcon from '@mui/icons-material/Refresh';
 import PdfIcon from '@mui/icons-material/PictureAsPdfOutlined';
 
 import DataTable from '@components/common/DataTable.jsx';
+import ReportPagination, { REPORT_PAGE_SIZES } from './ReportPagination.jsx';
 import attendanceService from '@services/modules/attendance.service.js';
 import { downloadBlob } from '@services/modules/employee.service.js';
 import { toAttendanceClock } from '@utils/attendanceTime.js';
@@ -51,6 +52,10 @@ const TransactionReportTab = ({ units = [] }) => {
   const [loading, setLoading] = useState(false);
   const [exporting, setExporting] = useState(false);
   const [error, setError] = useState(null);
+  // A new unit or date starts again from page 1.
+  const [page, setPage] = useState(1);
+  const [limit, setLimit] = useState(REPORT_PAGE_SIZES[0]);
+  const latestRequest = useRef(0);
 
   // A single permitted unit needs no choosing.
   useEffect(() => {
@@ -62,23 +67,31 @@ const TransactionReportTab = ({ units = [] }) => {
       setReport(null);
       return;
     }
+    const requestId = (latestRequest.current += 1);
+    const current = () => requestId === latestRequest.current;
     setLoading(true);
     setError(null);
     attendanceService
-      .transactionReport({ unitId, date })
-      .then((response) => setReport(response.data ?? null))
+      .transactionReport({ unitId, date, page, limit })
+      .then((response) => {
+        if (current()) setReport(response.data ?? null);
+      })
       .catch((rejection) => {
+        if (!current()) return;
         setReport(null);
         setError(rejection?.message ?? 'Could not load the report');
       })
-      .finally(() => setLoading(false));
-  }, [unitId, date]);
+      .finally(() => {
+        if (current()) setLoading(false);
+      });
+  }, [unitId, date, page, limit]);
 
   useEffect(() => {
     load();
   }, [load]);
 
   const rows = report?.rows ?? [];
+  const total = report?.total ?? 0;
   const unmapped = report?.unmapped ?? [];
 
   const exportPdf = async () => {
@@ -120,7 +133,10 @@ const TransactionReportTab = ({ units = [] }) => {
           size="small"
           label="Unit"
           value={unitId}
-          onChange={(event) => setUnitId(event.target.value)}
+          onChange={(event) => {
+            setUnitId(event.target.value);
+            setPage(1);
+          }}
           error={!unitId}
           helperText={!unitId ? 'Choose a unit' : ' '}
         >
@@ -137,7 +153,10 @@ const TransactionReportTab = ({ units = [] }) => {
           type="date"
           label="Date"
           value={date}
-          onChange={(event) => setDate(event.target.value)}
+          onChange={(event) => {
+            setDate(event.target.value);
+            setPage(1);
+          }}
           error={!date}
           helperText={!date ? 'Choose a date' : ' '}
           slotProps={{ inputLabel: { shrink: true } }}
@@ -157,7 +176,7 @@ const TransactionReportTab = ({ units = [] }) => {
           variant="contained"
           startIcon={<PdfIcon />}
           onClick={exportPdf}
-          disabled={!rows.length || loading || exporting}
+          disabled={!total || loading || exporting}
           sx={{ mb: 2.75 }}
         >
           Export PDF
@@ -165,7 +184,7 @@ const TransactionReportTab = ({ units = [] }) => {
 
         {report && (
           <Chip
-            label={`${rows.length} punch${rows.length === 1 ? '' : 'es'}`}
+            label={`${total} punch${total === 1 ? '' : 'es'}`}
             size="small"
             variant="outlined"
             sx={{ justifySelf: 'start', mb: 2.75 }}
@@ -181,6 +200,21 @@ const TransactionReportTab = ({ units = [] }) => {
         emptyTitle={unitId ? EMPTY : 'Choose a unit and date'}
         emptyMessage={unitId ? null : 'The report lists every biometric punch for one unit on one day.'}
       />
+
+      {unitId && total > 0 && (
+        <ReportPagination
+          pagination={report?.pagination}
+          shown={rows.length}
+          loading={loading}
+          onPageChange={setPage}
+          onLimitChange={(next) => {
+            setLimit(next);
+            setPage(1);
+          }}
+          noun="punch"
+          plural="punches"
+        />
+      )}
 
       {unmapped.length > 0 && (
         <Box sx={{ mt: 4 }}>

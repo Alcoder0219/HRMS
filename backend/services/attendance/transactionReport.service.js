@@ -10,6 +10,7 @@ import AppSettings from '../../models/admin/appSettings.model.js';
 import BiometricEvent from '../../models/attendance/biometricEvent.model.js';
 import { unitAllowed, unitDenied, visibleEmployeeIds } from '../../helpers/unitScope.helper.js';
 import { buildTransactionReportPdf } from '../../helpers/transactionReportPdf.helper.js';
+import { isPaged, slicePage, withoutPaging } from './attendanceReport.service.js';
 
 /**
  * The Transaction Report: every biometric punch of one unit's employees on one
@@ -58,7 +59,7 @@ const formatDay = (date) => {
  * the terminal shows whatever zone the server runs in; a one-day window on the
  * stored instant keeps the query on the punch-time index.
  */
-export const transactionReport = async ({ unitId, date }, req) => {
+export const transactionReport = async ({ unitId, date, page, limit }, req) => {
   if (!unitId) throw ApiError.badRequest('Choose a unit');
   if (!date || !DATE_PATTERN.test(date)) throw ApiError.badRequest('Choose a date');
   if (!unitAllowed(req, unitId)) {
@@ -156,7 +157,12 @@ export const transactionReport = async ({ unitId, date }, req) => {
     dateLabel: `${formatDay(date)}  --  ${formatDay(date)}`,
     hasLogo: Boolean(LOGO_BY_UNIT_CODE[unit.code]),
     total: rows.length,
-    rows,
+    /**
+     * Paged on request (the Reports screen). Which unit a punch belongs to is
+     * decided by its employee mapping, so the day's punches are classified
+     * whole and the page is a slice of them; the PDF is never paged.
+     */
+    ...(isPaged({ page, limit }) ? slicePage(rows, { page, limit }) : { rows }),
     unmapped,
   };
 };
@@ -167,7 +173,7 @@ export const transactionReport = async ({ unitId, date }, req) => {
  * handed an empty or misleading page.
  */
 export const transactionReportPdf = async (query, req) => {
-  const report = await transactionReport(query, req);
+  const report = await transactionReport(withoutPaging(query), req);
   if (!report.rows.length) {
     throw ApiError.notFound('No transaction records found for the selected unit and date.');
   }
