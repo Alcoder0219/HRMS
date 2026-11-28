@@ -1,6 +1,8 @@
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import Autocomplete from '@mui/material/Autocomplete';
+import Box from '@mui/material/Box';
 import TextField from '@mui/material/TextField';
+import Typography from '@mui/material/Typography';
 
 import employeeService from '@services/modules/employee.service.js';
 import { getRowId, displayName, employeeIdentifiers } from '@utils/dataGrid.js';
@@ -29,20 +31,39 @@ const EmployeePicker = ({
 }) => {
   const [options, setOptions] = useState([]);
   const [loading, setLoading] = useState(false);
+  const [failed, setFailed] = useState(false);
+  const timer = useRef(null);
+  const latest = useRef(0);
 
-  const search = async (term) => {
+  useEffect(() => () => clearTimeout(timer.current), []);
+
+  const search = (term) => {
+    clearTimeout(timer.current);
+    const requestId = (latest.current += 1);
+
     // Two characters is where the result set stops being the whole directory.
-    if (!term || term.length < 2) return;
+    if (!term || term.trim().length < 2) {
+      setLoading(false);
+      return;
+    }
 
     setLoading(true);
-    try {
-      const response = await employeeService.list({ search: term, limit: 20 });
-      setOptions(response.data ?? []);
-    } catch {
-      setOptions([]);
-    } finally {
-      setLoading(false);
-    }
+    // Debounced: one request once typing pauses, not one per keystroke.
+    timer.current = setTimeout(async () => {
+      try {
+        const response = await employeeService.list({ search: term.trim(), limit: 20 });
+        // Only the latest search may fill the list; a slower earlier one is dropped.
+        if (requestId !== latest.current) return;
+        setOptions(response.data ?? []);
+        setFailed(false);
+      } catch {
+        if (requestId !== latest.current) return;
+        setOptions([]);
+        setFailed(true);
+      } finally {
+        if (requestId === latest.current) setLoading(false);
+      }
+    }, 250);
   };
 
   return (
@@ -52,8 +73,23 @@ const EmployeePicker = ({
       loading={loading}
       disabled={disabled}
       onChange={(_event, next) => onChange(next)}
-      onInputChange={(_event, term) => search(term)}
+      // A selection fills the input with the chosen label: that is not a search.
+      onInputChange={(_event, term, reason) => {
+        if (reason !== 'reset') search(term);
+      }}
+      noOptionsText={failed ? 'Could not load employees' : 'No matching employees'}
+      loadingText="Searching…"
       getOptionLabel={(option) => `${employeeIdentifiers(option)} — ${displayName(option)}`}
+      renderOption={({ key, ...props }, option) => (
+        <li key={getRowId(option) ?? key} {...props}>
+          <Box>
+            <Typography variant="body2">{displayName(option)}</Typography>
+            <Typography variant="caption" color="text.secondary">
+              {[employeeIdentifiers(option), option.departmentId?.name, option.unitId?.name].filter(Boolean).join(' · ')}
+            </Typography>
+          </Box>
+        </li>
+      )}
       isOptionEqualToValue={(option, selected) => getRowId(option) === getRowId(selected)}
       // The API already ranked the matches; re-filtering client-side would drop
       // results that matched on a field the label does not show.
