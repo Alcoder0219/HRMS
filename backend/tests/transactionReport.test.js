@@ -62,6 +62,26 @@ const pdf = (role, unit, date = DAY) => request(role, `/attendance/reports/trans
 const pageCount = (buffer) => (buffer.toString('latin1').match(/\/Type\s*\/Page[^s]/g) ?? []).length;
 const hasImage = (buffer) => /\/Subtype\s*\/Image/.test(buffer.toString('latin1'));
 
+/** The text a pdfkit PDF draws: each page stream inflated, its <hex> Tj runs decoded. */
+const { inflateSync } = await import('node:zlib');
+const pdfText = (buffer) => {
+  const raw = buffer.toString('latin1');
+  const pieces = [];
+  for (const match of raw.matchAll(/stream\r?\n([\s\S]*?)\r?\nendstream/g)) {
+    let content;
+    try {
+      content = inflateSync(Buffer.from(match[1], 'latin1')).toString('latin1');
+    } catch {
+      continue;
+    }
+    for (const run of content.matchAll(/\[([^\]]*)\]\s*TJ|<([0-9a-fA-F]+)>\s*Tj/g)) {
+      const hex = run[2] ? [run[2]] : [...run[1].matchAll(/<([0-9a-fA-F]+)>/g)].map((part) => part[1]);
+      pieces.push(hex.map((part) => Buffer.from(part, 'hex').toString('latin1')).join(''));
+    }
+  }
+  return pieces.join('\n');
+};
+
 describe('transaction report API', { skip: !reachable && 'MongoDB is not reachable on localhost' }, () => {
   before(async () => {
     await mongoose.connection.dropDatabase();
@@ -191,12 +211,15 @@ describe('transaction report API', { skip: !reachable && 'MongoDB is not reachab
     assert.equal(data.unit.code, 'EAW');
     assert.equal(data.dateLabel, '11/14/2026  --  11/14/2026');
     assert.deepEqual(
-      data.rows.map((row) => [row.employeeId, row.date]),
+      // Employee ID is the HRMS Employee Code: not the device user ID (11, 12)
+      // and not the master's separate employeeId field (1001, 1002). The
+      // 07:55 punch is still pending and resolves through the device mapping.
+      data.rows.map((row) => [row.employeeId, row.fullName, row.date]),
       [
-        ['1002', '11/14/2026 07:55'],
-        ['1001', '11/14/2026 08:01'],
-        ['1002', '11/14/2026 17:05'],
-        ['1001', '11/14/2026 17:30'],
+        ['E2', 'Baraka Juma', '11/14/2026 07:55'],
+        ['E1', 'Asha Mollel', '11/14/2026 08:01'],
+        ['E2', 'Baraka Juma', '11/14/2026 17:05'],
+        ['E1', 'Asha Mollel', '11/14/2026 17:30'],
       ],
     );
     assert.equal(data.total, 4);
@@ -213,7 +236,14 @@ describe('transaction report API', { skip: !reachable && 'MongoDB is not reachab
 
   test('another unit sees only its own people on the shared terminal', async () => {
     const { body } = await report('admin', 'HQ');
-    assert.deepEqual(body.data.rows.map((row) => row.employeeId), ['2001']);
+    assert.deepEqual(body.data.rows.map((row) => row.employeeId), ['H1']);
+  });
+
+  test('the PDF shows the same Employee Codes as the table', async () => {
+    const { body } = await pdf('admin', 'EAW');
+    const text = pdfText(body);
+    ['E1', 'E2', 'Asha Mollel', 'Baraka Juma'].forEach((value) => assert.ok(text.includes(value), `PDF lists ${value}`));
+    ['1001', '1002'].forEach((value) => assert.equal(text.includes(value), false, `PDF does not list ${value}`));
   });
 
   test('unmapped punches are never attributed, only listed apart', async () => {
