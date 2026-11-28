@@ -136,7 +136,10 @@ export const transactionReport = async ({ unitId, date, page, limit }, req) => {
     if (employee) {
       rows.push({
         ...common,
-        employeeId: employee.employeeId ?? employee.employeeCode,
+        // The "Employee ID" column shows the HRMS Employee Code from the
+        // employee master -- never the device user ID, and not the master's
+        // separate employeeId field.
+        employeeId: employee.employeeCode,
         employeeCode: employee.employeeCode,
         fullName: nameOf(employee),
       });
