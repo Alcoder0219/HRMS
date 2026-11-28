@@ -107,9 +107,10 @@ const EmployeeAssetsPage = () => {
     load();
   }, [load]);
 
-  const handleSaved = (message) => {
+  // A dialog may report a partial success (added, but not issued) as a warning.
+  const handleSaved = (message, severity = 'success') => {
     setDialog(null);
-    setNotice({ severity: 'success', message });
+    setNotice({ severity, message });
     load();
   };
 
