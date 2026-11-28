@@ -13,6 +13,7 @@ import {
   buildSearch,
   buildFilters,
   dateRange,
+  escapeRegex,
 } from '../../utils/queryBuilder.js';
 import employeeRepository from '../../repositories/employee/employee.repository.js';
 import auditLogRepository from '../../repositories/audit/auditLog.repository.js';
@@ -63,6 +64,28 @@ const SEARCHABLE_FIELDS = [
   'personalEmail',
   'mobile',
 ];
+
+const NAME_FIELDS = ['firstName', 'middleName', 'lastName'];
+
+/**
+ * The list search: the term as a prefix of any searchable field, exactly as
+ * before -- or, for a name typed with spaces ("Swabri Swaleh Said", "Baraka
+ * Mas"), every word a prefix of the first, middle or last name. A full name
+ * spans several fields, so on its own the first rule matched nobody.
+ */
+const buildEmployeeSearch = (term) => {
+  const search = buildSearch(term, SEARCHABLE_FIELDS);
+  const words = String(term ?? '').trim().split(/\s+/).filter(Boolean);
+  if (!search || words.length < 2) return search;
+
+  const byName = {
+    $and: words.map((word) => {
+      const pattern = new RegExp(`^${escapeRegex(word)}`, 'i');
+      return { $or: NAME_FIELDS.map((field) => ({ [field]: pattern })) };
+    }),
+  };
+  return { $or: [...search.$or, byName] };
+};
 
 /* -------------------------------------------------------------------------- */
 /*                            Sensitive field masking                         */
@@ -162,7 +185,7 @@ export const listEmployees = async (query, req) => {
     $and: [scope],
   };
 
-  const search = buildSearch(query.search, SEARCHABLE_FIELDS);
+  const search = buildEmployeeSearch(query.search);
   if (search) Object.assign(filter, search);
 
   const { items, total } = await employeeRepository.paginate({ filter, sort, skip, limit });
