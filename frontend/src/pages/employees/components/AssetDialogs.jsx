@@ -53,11 +53,14 @@ export const AssetFormDialog = ({ open, onClose, onSaved }) => {
   const [form, setForm] = useState(EMPTY_ASSET);
   const [error, setError] = useState(null);
   const [submitting, setSubmitting] = useState(false);
+  // Optional: who the new asset is issued to. Left empty, it goes into stock.
+  const [employee, setEmployee] = useState(null);
 
   useEffect(() => {
     if (open) {
       setForm(EMPTY_ASSET);
       setError(null);
+      setEmployee(null);
     }
   }, [open]);
 
@@ -67,10 +70,11 @@ export const AssetFormDialog = ({ open, onClose, onSaved }) => {
     setSubmitting(true);
     setError(null);
 
+    let created = null;
     try {
       // Empty strings are dropped rather than sent: the validator allows null
       // for the optional fields but rejects an empty date.
-      await payrollService.createAsset({
+      const response = await payrollService.createAsset({
         ...(form.assetCode.trim() ? { assetCode: form.assetCode.trim().toUpperCase() } : {}),
         name: form.name.trim(),
         category: form.category,
@@ -83,9 +87,32 @@ export const AssetFormDialog = ({ open, onClose, onSaved }) => {
         condition: form.condition,
         notes: form.notes.trim() || null,
       });
+      created = response.data ?? null;
 
-      onSaved('Asset added to the register');
+      if (!employee) {
+        onSaved('Asset added to the register');
+        return;
+      }
+
+      /**
+       * Issued through the same endpoint as the Issue button (and as the
+       * Excel import does): the assignment record, the ASSIGNED status and the
+       * holder's employee reference are written exactly as they are there.
+       */
+      await payrollService.assignAsset(getRowId(created), {
+        employeeId: getRowId(employee),
+        condition: form.condition,
+      });
+      onSaved(`${created?.assetCode ?? 'Asset'} added and issued to ${displayName(employee)}`);
     } catch (rejection) {
+      if (created) {
+        // The asset exists; saving again would add it twice. Close, and say so.
+        onSaved(
+          `${created.assetCode ?? 'Asset'} added, but not issued: ${rejection?.message ?? 'the issue failed'}. Issue it from the register.`,
+          'warning',
+        );
+        return;
+      }
       setError(rejection?.message ?? 'The asset could not be saved');
     } finally {
       setSubmitting(false);
@@ -205,6 +232,45 @@ export const AssetFormDialog = ({ open, onClose, onSaved }) => {
         <Grid size={12}>
           <TextField label="Notes" value={form.notes} onChange={set('notes')} fullWidth multiline rows={2} />
         </Grid>
+
+        {/* ------------------------------------------------ employee details */}
+        <Grid size={12}>
+          <Typography variant="subtitle2">Employee details</Typography>
+          <Typography variant="caption" color="text.secondary">
+            Optional. Choose an employee to issue the asset to them now; leave empty to add it to stock.
+          </Typography>
+        </Grid>
+
+        <Grid size={12}>
+          <EmployeePicker
+            value={employee}
+            onChange={setEmployee}
+            label="Employee"
+            placeholder="Search by name, Employee Code or Employee ID"
+            size="medium"
+          />
+        </Grid>
+
+        {employee && (
+          <>
+            {[
+              { label: 'Employee Code', value: employee.employeeCode, size: 4 },
+              { label: 'Employee Name', value: displayName(employee), size: 8 },
+              { label: 'Employee ID', value: employee.employeeId, size: 4 },
+              { label: 'Unit', value: employee.unitId?.name, size: 4 },
+              { label: 'Department', value: employee.departmentId?.name, size: 4 },
+            ].map((field) => (
+              <Grid key={field.label} size={{ xs: 12, sm: field.size }}>
+                <TextField
+                  label={field.label}
+                  value={field.value || '—'}
+                  fullWidth
+                  slotProps={{ input: { readOnly: true } }}
+                />
+              </Grid>
+            ))}
+          </>
+        )}
       </Grid>
     </FormDialog>
   );
