@@ -39,6 +39,7 @@ const { signAccessToken } = await import('../helpers/token.helper.js');
 const DAY = '2026-11-14';
 const NEXT_DAY = '2026-11-15';
 const EMPTY_DAY = '2026-11-20';
+const DUP_DAY = '2026-11-16';
 
 let server;
 let base;
@@ -137,13 +138,30 @@ describe('transaction report API', { skip: !reachable && 'MongoDB is not reachab
     );
     device = settings.biometricDevices.at(-1);
 
+    // The same terminal registered a second time, and a different terminal.
+    const extra = await models.AppSettings.findOneAndUpdate(
+      { tenantId: null },
+      {
+        $push: {
+          biometricDevices: {
+            $each: [
+              { name: 'Gate terminal (again)', protocol: 'ADMS_PUSH', serialNumber: 'TXTEST0001', port: 8081, userMappings: [{ deviceUserId: '11', employeeCode: 'E1' }] },
+              { name: 'Office terminal', protocol: 'ADMS_PUSH', serialNumber: 'TXTEST0002', port: 8081, userMappings: [{ deviceUserId: '11', employeeCode: 'E1' }] },
+            ],
+          },
+        },
+      },
+      { new: true },
+    );
+    const [sameTerminal, otherTerminal] = extra.biometricDevices.slice(-2);
+
     let sequence = 0;
-    const punch = (deviceUserId, local, { status = 'IMPORTED', employee = null, workCode = null } = {}) => {
+    const punch = (deviceUserId, local, { status = 'IMPORTED', employee = null, workCode = null, on = device } = {}) => {
       sequence += 1;
       return {
         tenantId: null,
-        deviceId: device._id,
-        deviceSerial: device.serialNumber,
+        deviceId: on._id,
+        deviceSerial: on.serialNumber,
         transport: 'ADMS',
         deviceUserId,
         employeeCode: employee?.employeeCode ?? null,
@@ -172,6 +190,17 @@ describe('transaction report API', { skip: !reachable && 'MongoDB is not reachab
       punch('11', `${NEXT_DAY} 08:00:00`, { employee: people.E1 }),
       // Just after midnight on the terminal clock, still the previous day in UTC.
       punch('12', `${NEXT_DAY} 00:30:00`, { employee: people.E2 }),
+      // Repeats that print identically, and punches that only look close.
+      punch('11', `${DUP_DAY} 06:40:21`, { employee: people.E1 }),
+      punch('11', `${DUP_DAY} 06:40:05`, { employee: people.E1 }), // the original: earliest
+      punch('11', `${DUP_DAY} 06:40:48`, { employee: people.E1 }),
+      punch('11', `${DUP_DAY} 06:40:52`, { employee: people.E1, on: sameTerminal }),
+      punch('11', `${DUP_DAY} 06:40:30`, { employee: people.E1, workCode: '5' }), // another work code
+      punch('11', `${DUP_DAY} 06:40:35`, { employee: people.E1, on: otherTerminal }), // another terminal
+      punch('11', `${DUP_DAY} 06:41:02`, { employee: people.E1 }), // the next minute
+      punch('12', `${DUP_DAY} 06:40:10`, { employee: people.E2 }), // another employee
+      punch('99', `${DUP_DAY} 07:00:01`, { status: 'UNMAPPED' }),
+      punch('99', `${DUP_DAY} 07:00:09`, { status: 'UNMAPPED' }),
       ...Array.from({ length: 40 }, (_, index) => [
         punch(String(300 + index), `${DAY} 08:${String(index % 60).padStart(2, '0')}:00`, { employee: people[`B${index}`] }),
         punch(String(300 + index), `${DAY} 17:${String(index % 60).padStart(2, '0')}:00`, { employee: people[`B${index}`] }),
@@ -311,6 +340,40 @@ describe('transaction report API', { skip: !reachable && 'MongoDB is not reachab
     const exported = await request('admin', `/attendance/reports/transactions/pdf?unitId=${units.BULK._id}&date=${DAY}&page=2&limit=25`);
     assert.equal(exported.status, 200);
     assert.equal(exported.headers.get('x-total-count'), '80');
+  });
+
+  test('a repeat that prints identically is shown once, earliest kept; close punches stay', async () => {
+    const { body } = await report('admin', 'EAW', DUP_DAY);
+    const data = body.data;
+    assert.deepEqual(
+      data.rows.map((row) => [row.employeeId, row.date, row.workCode, row.device, row.deviceLocalTime]),
+      [
+        ['E1', '11/16/2026 06:40', '0', 'Gate terminal', `${DUP_DAY} 06:40:05`],
+        ['E2', '11/16/2026 06:40', '0', 'Gate terminal', `${DUP_DAY} 06:40:10`],
+        ['E1', '11/16/2026 06:40', '5', 'Gate terminal', `${DUP_DAY} 06:40:30`],
+        ['E1', '11/16/2026 06:40', '0', 'Office terminal', `${DUP_DAY} 06:40:35`],
+        ['E1', '11/16/2026 06:41', '0', 'Gate terminal', `${DUP_DAY} 06:41:02`],
+      ],
+    );
+    assert.equal(data.total, 5);
+    // Three repeats of E1 at 06:40 on the gate terminal (one under its second
+    // registration) and one repeated unmapped scan.
+    assert.equal(data.duplicates, 4);
+    assert.equal(data.unmapped.length, 1);
+    assert.equal(data.unmapped[0].deviceLocalTime, `${DUP_DAY} 07:00:01`);
+
+    // The stored punches are all still there.
+    const stored = await models.BiometricEvent.countDocuments({ deviceLocalTime: { $regex: `^${DUP_DAY}` } });
+    assert.equal(stored, 10);
+  });
+
+  test('the PDF leaves out the same repeats', async () => {
+    const exported = await pdf('admin', 'EAW', DUP_DAY);
+    assert.equal(exported.status, 200);
+    assert.equal(exported.headers.get('x-total-count'), '5');
+    const text = pdfText(exported.body);
+    assert.equal((text.match(/11\/16\/2026 06:40/g) ?? []).length, 4);
+    assert.equal((text.match(/11\/16\/2026 06:41/g) ?? []).length, 1);
   });
 
   test('no records: an empty table, and no empty PDF', async () => {
