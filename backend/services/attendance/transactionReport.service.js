@@ -100,7 +100,7 @@ export const transactionReport = async ({ unitId, date, page, limit }, req) => {
         punchTime: { $gte: new Date(midnight.getTime() - DAY_MS), $lt: new Date(midnight.getTime() + 2 * DAY_MS) },
         deviceLocalTime: { $regex: `^${date}[ T]` },
       })
-        .select('deviceId deviceUserId employeeId employeeCode punchTime deviceLocalTime workCode status')
+        .select('deviceId deviceSerial deviceUserId employeeId employeeCode punchTime deviceLocalTime workCode status')
         .sort({ punchTime: 1, deviceLocalTime: 1, deviceUserId: 1 })
         .lean()
     : [];
@@ -114,6 +114,31 @@ export const transactionReport = async ({ unitId, date, page, limit }, req) => {
 
   const rows = [];
   const unmapped = [];
+
+  /**
+   * One row per punch as the report prints it. The receiver already drops a
+   * record seen twice to the second, but a terminal also stores a finger
+   * scanned again within the same minute, and the same punch can arrive under
+   * a second registration of one terminal -- rows that print identically. A
+   * repeat of employee, terminal, printed date and time, work code and record
+   * type is shown once; the events are read earliest first, so the original
+   * is the one kept. The stored punches are not touched.
+   *
+   * The terminal is its serial number where it has one, so one physical
+   * terminal registered twice is still one terminal; punches on different
+   * terminals, or a minute apart, are never merged.
+   */
+  const seen = new Set();
+  let duplicates = 0;
+  const firstTime = (key) => {
+    if (seen.has(key)) {
+      duplicates += 1;
+      return false;
+    }
+    seen.add(key);
+    return true;
+  };
+  const terminalOf = (event) => (event.deviceSerial ? String(event.deviceSerial).toUpperCase() : idOf(event.deviceId));
 
   events.forEach((event) => {
     const deviceId = idOf(event.deviceId);
@@ -134,6 +159,7 @@ export const transactionReport = async ({ unitId, date, page, limit }, req) => {
     };
 
     if (employee) {
+      if (!firstTime(`E|${idOf(employee._id)}|${terminalOf(event)}|${common.date}|${common.workCode}|${common.recordType}`)) return;
       rows.push({
         ...common,
         // The "Employee ID" column shows the HRMS Employee Code from the
@@ -150,6 +176,7 @@ export const transactionReport = async ({ unitId, date, page, limit }, req) => {
     if (event.employeeId || event.employeeCode || mappedCode) return;
 
     if (unitDevices.has(deviceId)) {
+      if (!firstTime(`U|${terminalOf(event)}|${event.deviceUserId}|${common.date}|${common.workCode}`)) return;
       unmapped.push({ ...common, deviceUserId: event.deviceUserId, nameOnDevice: nameOnDevice.get(`${deviceId}|${event.deviceUserId}`) ?? null });
     }
   });
@@ -160,6 +187,8 @@ export const transactionReport = async ({ unitId, date, page, limit }, req) => {
     dateLabel: `${formatDay(date)}  --  ${formatDay(date)}`,
     hasLogo: Boolean(LOGO_BY_UNIT_CODE[unit.code]),
     total: rows.length,
+    // Repeated rows left out, so the count can be reconciled with the store.
+    duplicates,
     /**
      * Paged on request (the Reports screen). Which unit a punch belongs to is
      * decided by its employee mapping, so the day's punches are classified
